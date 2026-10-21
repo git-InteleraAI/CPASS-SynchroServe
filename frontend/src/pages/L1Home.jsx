@@ -41,7 +41,7 @@ function Pick({ label, value, options, disabled, onChange }) {
   return (
     <label>
       {label}
-      <select className="sel" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select…</option>
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -554,24 +554,20 @@ export default function L1Home() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      <div className="hero-banner">
-        <div>
-          <span className="pill-badge">L1 Verification Portal</span>
-          <h2>Candidate Placement Verification</h2>
-          <p>Verify offer letters, salary slips and bank statements for every placed candidate in your batch.</p>
-        </div>
+    <section className="panel">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <h2>L1 Candidate Placement Verification</h2>
+        <span className="badge badge-info">L1 Verification Portal</span>
       </div>
 
-      <section className="panel">
-        {error && (
-          <div className="hold-danger" role="alert" style={{ margin: '0 0 1.25rem 0' }}>
-            <strong>Error:</strong> {error}
-          </div>
-        )}
+      {error && (
+        <div className="hold-danger" role="alert" style={{ margin: '1rem 0' }}>
+          <strong>Error:</strong> {error}
+        </div>
+      )}
 
-        {/* Cascading selectors: State -> Centre -> Sanction Order -> Batch -> Candidate */}
-        <div className="filters" style={{ margin: 0 }}>
+      {/* Cascading selectors: State -> Centre -> Sanction Order -> Batch -> Candidate */}
+      <div className="grid">
         <Pick
           label="State"
           value={sel.state}
@@ -1268,6 +1264,5 @@ export default function L1Home() {
         </div>
       )}
     </section>
-    </div>
   )
 }
