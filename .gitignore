@@ -12,3 +12,4 @@ secrets/
 backend/secrets/
 *.json.key
 .DS_Store
+*.csv

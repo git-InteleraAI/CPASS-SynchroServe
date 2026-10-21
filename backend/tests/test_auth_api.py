@@ -268,3 +268,56 @@ def test_frontend_has_no_direct_supabase_references():
             assert "createClient" not in content, f"createClient found in {file.name}"
             assert "@supabase/supabase-js" not in content, f"@supabase/supabase-js found in {file.name}"
             assert "VITE_SUPABASE" not in content, f"VITE_SUPABASE found in {file.name}"
+
+
+def test_health_check_endpoint():
+    """Verify lightweight health-check endpoint for Render service."""
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok"}
+
+
+def test_cors_allowed_origins_parsing():
+    """Verify settings.allowed_origins parses multiple origins and trims trailing slashes."""
+    from app.config import Settings
+    s = Settings(
+        supabase_url="https://test.supabase.co",
+        supabase_service_role_key="test-key",
+        frontend_origin="https://cpass-synchro-serve.vercel.app/, http://localhost:5173",
+    )
+    assert s.allowed_origins == [
+        "https://cpass-synchro-serve.vercel.app",
+        "http://localhost:5173",
+    ]
+
+
+def test_production_cookie_samesite_none_when_secure(mock_auth_client, mock_supabase_db):
+    """When COOKIE_SECURE is enabled in production, cookies use SameSite=None for cross-site Vercel frontend."""
+    from app.config import settings
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user()
+    auth_resp.session = mock_auth_session()
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+    mock_supabase_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        {"id": "user-123", "email": "user@cpass.org", "full_name": "Test Coordinator", "role": "L1_COORDINATOR", "is_active": True}
+    ]
+
+    original_secure = settings.cookie_secure
+    original_samesite = settings.cookie_samesite
+    try:
+        settings.cookie_secure = True
+        settings.cookie_samesite = None  # test automatic default to 'none'
+
+        res = client.post(
+            "/auth/login",
+            json={"email": "user@cpass.org", "password": "Password123!"},
+        )
+        assert res.status_code == 200
+        # Verify set-cookie headers contain SameSite=None and Secure
+        cookie_headers = res.headers.get_list("set-cookie") if hasattr(res.headers, "get_list") else [res.headers.get("set-cookie", "")]
+        cookie_str = "; ".join(cookie_headers).lower()
+        assert "samesite=none" in cookie_str
+        assert "secure" in cookie_str
+    finally:
+        settings.cookie_secure = original_secure
+        settings.cookie_samesite = original_samesite

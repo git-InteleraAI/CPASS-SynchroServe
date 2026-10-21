@@ -46,11 +46,12 @@ class LoginResponse(BaseModel):
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str | None, expires_in: int | None):
     """Set secure HttpOnly cookies for session management."""
     max_age_access = expires_in or 3600
+    samesite = (settings.cookie_samesite or ("none" if settings.cookie_secure else "lax")).lower()
     response.set_cookie(
         key="cpass_access_token",
         value=access_token,
         httponly=True,
-        samesite="lax",
+        samesite=samesite,
         secure=settings.cookie_secure,
         max_age=max_age_access,
         path="/",
@@ -60,7 +61,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str 
             key="cpass_refresh_token",
             value=refresh_token,
             httponly=True,
-            samesite="lax",
+            samesite=samesite,
             secure=settings.cookie_secure,
             max_age=30 * 86400,  # 30 days
             path="/",
@@ -69,8 +70,9 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str 
 
 def _clear_auth_cookies(response: Response):
     """Clear session cookies."""
-    response.delete_cookie(key="cpass_access_token", path="/")
-    response.delete_cookie(key="cpass_refresh_token", path="/")
+    samesite = (settings.cookie_samesite or ("none" if settings.cookie_secure else "lax")).lower()
+    response.delete_cookie(key="cpass_access_token", path="/", samesite=samesite, secure=settings.cookie_secure)
+    response.delete_cookie(key="cpass_refresh_token", path="/", samesite=samesite, secure=settings.cookie_secure)
 
 
 @router.post("/login", response_model=LoginResponse)
