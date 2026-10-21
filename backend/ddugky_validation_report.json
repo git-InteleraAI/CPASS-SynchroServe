@@ -1,0 +1,198 @@
+{
+  "total_rows_read": 9084,
+  "valid_rows_count": 9084,
+  "error_rows_count": 0,
+  "warning_rows_count": 18,
+  "errors_by_type": {},
+  "warnings_by_type": {
+    "INVALID_DOB": 18
+  },
+  "errors": [],
+  "warnings": [
+    {
+      "row": 25,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '19-04-2023' (parsed as year 2023)",
+      "candidate_id": 2872258,
+      "raw_value": "19-04-2023",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '19-04-2023' (parsed as year 2023)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 3387,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '06-11-2023' (parsed as year 2023)",
+      "candidate_id": 3094407,
+      "raw_value": "06-11-2023",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '06-11-2023' (parsed as year 2023)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 3506,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '04-11-2023' (parsed as year 2023)",
+      "candidate_id": 3083927,
+      "raw_value": "04-11-2023",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '04-11-2023' (parsed as year 2023)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 3584,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '06-11-2023' (parsed as year 2023)",
+      "candidate_id": 3084007,
+      "raw_value": "06-11-2023",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '06-11-2023' (parsed as year 2023)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6380,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '1196-02-14' (parsed as year 1196)",
+      "candidate_id": 3250438,
+      "raw_value": "1196-02-14",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '1196-02-14' (parsed as year 1196)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6438,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '1198-10-01' (parsed as year 1198)",
+      "candidate_id": 3250530,
+      "raw_value": "1198-10-01",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '1198-10-01' (parsed as year 1198)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6439,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '0200-12-10' (parsed as year 200)",
+      "candidate_id": 3250531,
+      "raw_value": "0200-12-10",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '0200-12-10' (parsed as year 200)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6441,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '0200-12-05' (parsed as year 200)",
+      "candidate_id": 3250533,
+      "raw_value": "0200-12-05",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '0200-12-05' (parsed as year 200)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6446,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '0199-10-01' (parsed as year 199)",
+      "candidate_id": 3250538,
+      "raw_value": "0199-10-01",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '0199-10-01' (parsed as year 199)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6452,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '0200-10-01' (parsed as year 200)",
+      "candidate_id": 3250544,
+      "raw_value": "0200-10-01",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '0200-10-01' (parsed as year 200)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6623,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '1197-11-14' (parsed as year 1197)",
+      "candidate_id": 3248612,
+      "raw_value": "1197-11-14",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '1197-11-14' (parsed as year 1197)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6940,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '13-02-2024' (parsed as year 2024)",
+      "candidate_id": 3145014,
+      "raw_value": "13-02-2024",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '13-02-2024' (parsed as year 2024)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 6944,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '13-02-2024' (parsed as year 2024)",
+      "candidate_id": 3145018,
+      "raw_value": "13-02-2024",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '13-02-2024' (parsed as year 2024)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 7060,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '14-02-2024' (parsed as year 2024)",
+      "candidate_id": 3145233,
+      "raw_value": "14-02-2024",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '14-02-2024' (parsed as year 2024)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 7114,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '15-02-2024' (parsed as year 2024)",
+      "candidate_id": 3145287,
+      "raw_value": "15-02-2024",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '15-02-2024' (parsed as year 2024)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 7131,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '15-02-2024' (parsed as year 2024)",
+      "candidate_id": 3145305,
+      "raw_value": "15-02-2024",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '15-02-2024' (parsed as year 2024)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 7166,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '16-02-2024' (parsed as year 2024)",
+      "candidate_id": 3145341,
+      "raw_value": "16-02-2024",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '16-02-2024' (parsed as year 2024)",
+      "error_type": "INVALID_DOB"
+    },
+    {
+      "row": 7565,
+      "field": "DateOfBirth",
+      "warning_type": "INVALID_DOB",
+      "message": "Date out of valid range (1940-2020) for DateOfBirth: '0001-01-01' (parsed as year 1)",
+      "candidate_id": 2893431,
+      "raw_value": "0001-01-01",
+      "reason": "Date out of valid range (1940-2020) for DateOfBirth: '0001-01-01' (parsed as year 1)",
+      "error_type": "INVALID_DOB"
+    }
+  ],
+  "unique_centres_count": 55,
+  "unique_batches_count": 331,
+  "unique_candidates_count": 9084,
+  "dry_run": false,
+  "database_written": false
+}
