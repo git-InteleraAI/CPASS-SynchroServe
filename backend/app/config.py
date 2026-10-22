@@ -24,8 +24,7 @@ class Settings(BaseSettings):
     def allowed_origins(self) -> list[str]:
         """Parse comma-separated origins, stripping whitespace and trailing slashes."""
         raw_origins = self.frontend_origin.split(",")
-        cleaned = [o.strip().rstrip("/") for o in raw_origins if o.strip()]
-        return cleaned or ["http://localhost:5173"]
+        return [o.strip().rstrip("/") for o in raw_origins if o.strip()]
 
 
 settings = Settings()

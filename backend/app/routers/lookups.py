@@ -21,28 +21,55 @@ def _check_centre(user: CurrentUser, tc_id: int) -> None:
         raise HTTPException(403, "You are not assigned to this training centre.")
 
 
+def _mask_bank_account(raw: Any) -> str:
+    """Mask bank account number, displaying XXXX-XXXX-Last4 or Not Available."""
+    if not raw:
+        return "Not Available"
+    s = str(raw).strip()
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) >= 4:
+        return f"XXXX-XXXX-{digits[-4:]}"
+    if s.lower() in ("no", "na", "n/a", "none", "0", "nil"):
+        return "Not Available"
+    return s or "Not Available"
+
+
 @router.get("/states")
 def states(user: CurrentUser = Depends(get_current_user)):
-    """Return all distinct states from ddugky_candidates."""
+    """Return all distinct states from ddugky_candidates, including Mizoram."""
     try:
         res = supabase.rpc("get_cpass_states", {}).execute()
-        return sorted(
-            {
-                row["state"].strip()
-                for row in (res.data or [])
-                if row.get("state") and row["state"].strip()
-            }
-        )
+        rpc_states = {
+            row["state"].strip()
+            for row in (res.data or [])
+            if row.get("state") and row["state"].strip()
+        }
+
+        # Query ddugky_candidates for any candidate state_name not included in training centre RPC
+        if rpc_states:
+            try:
+                missing_res = (
+                    supabase.table("ddugky_candidates")
+                    .select("state_name")
+                    .not_.in_("state_name", tuple(rpc_states))
+                    .execute()
+                )
+                for r in (missing_res.data or []):
+                    st = (r.get("state_name") or "").strip()
+                    if st:
+                        rpc_states.add(st)
+            except Exception:
+                pass
+
+        return sorted(rpc_states)
     except Exception as exc:
-        # Log the actual error instead of silently hiding it.
         import logging
-        logging.getLogger(__name__).exception(
-            "Failed to retrieve CPASS states"
-        )
+        logging.getLogger(__name__).exception("Failed to retrieve CPASS states")
         raise HTTPException(
             status_code=500,
             detail="Failed to retrieve states. Check backend logs."
         ) from exc
+
 
 @router.get("/centres")
 def centres(state: str, user: CurrentUser = Depends(get_current_user)):
@@ -62,6 +89,22 @@ def centres(state: str, user: CurrentUser = Depends(get_current_user)):
             if tcid and name:
                 if allowed is None or tcid in allowed:
                     tc_dict[tcid] = name
+
+        # Fallback to candidate state_name for candidates recruited from other states (e.g. MIZORAM)
+        if not tc_dict:
+            res_cand_state = (
+                supabase.table("ddugky_candidates")
+                .select("tc_id,tc_name")
+                .eq("state_name", state)
+                .execute()
+            )
+            for r in (res_cand_state.data or []):
+                tcid = r.get("tc_id")
+                name = r.get("tc_name")
+                if tcid and name:
+                    if allowed is None or tcid in allowed:
+                        tc_dict[tcid] = name
+
         if tc_dict:
             return sorted(
                 [{"tc_id": k, "name": v} for k, v in tc_dict.items()],
@@ -212,24 +255,41 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
             if r.get("tc_id"):
                 _check_centre(user, r["tc_id"])
 
+            # Clean and mask sensitive data
+            raw_bank = r.get("bank_account")
+            masked_bank = _mask_bank_account(raw_bank)
+            addr = r.get("permanent_address") or r.get("permanent_address_village") or "Not Available"
+            if addr and str(addr).strip() == "0":
+                addr = "Not Available"
+
             cand = {
                 "candidate_id": r["candidate_id"],
                 "first_name": r.get("candidate_first_name"),
                 "last_name": r.get("candidate_last_name"),
-                "father_name": r.get("candidate_father_name"),
-                "gender": r.get("gender"),
-                "dob": r.get("date_of_birth"),
-                "mobile": r.get("mobile_number"),
+                "father_name": r.get("candidate_father_name") or "Not Available",
+                "gender": r.get("gender") or "Not Available",
+                "dob": str(r.get("date_of_birth") or "Not Available"),
+                "date_of_birth": str(r.get("date_of_birth") or "Not Available"),
+                "mobile": r.get("mobile_number") or "Not Available",
                 "appointed": bool(r.get("appointed")),
                 "employer_name": r.get("employer_name"),
                 "kb_batch_id": r.get("kb_batch_id"),
-                "batch_code": r.get("batch_code"),
+                "batch_code": r.get("batch_code") or "Not Available",
+                "batch_start_date": str(r.get("batch_start_date") or "Not Available"),
+                "batch_end_date": str(r.get("batch_end_date") or "Not Available"),
+                "trade_name": r.get("trade_name") or "Not Available",
                 "tc_id": r.get("tc_id"),
                 "tc_name": r.get("tc_name"),
                 "tc_state_name": r.get("tc_state_name"),
-                "sanction_order_number": r.get("sanction_order_number"),
+                "state_name": r.get("state_name") or r.get("tc_state_name"),
+                "sanction_order_number": r.get("sanction_order_number") or "Not Available",
                 "monthly_ctc": r.get("monthly_ctc"),
-                "trade_name": r.get("trade_name"),
+                "candidate_email": r.get("candidate_email") or "Not Available",
+                "candidate_qualification": r.get("candidate_qualification") or "Not Available",
+                "address": addr,
+                "permanent_address": addr,
+                "bank_account": masked_bank,
+                "masked_bank_account": masked_bank,
                 "aadhar": r.get("aadhar"),
                 "aadhaar_number": r.get("aadhar"),
             }

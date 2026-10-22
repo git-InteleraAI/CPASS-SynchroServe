@@ -32,6 +32,7 @@ SUBFOLDER_MAP = {
     "APPOINTMENT_LETTER": "Appointment Letter",
     "SALARY_SLIP": "Salary Slips",
     "BANK_STATEMENT": "Bank Statements",
+    "OTHER_DOCUMENT": "Other Documents",
 }
 
 ALLOWED_MIME_TYPES = {

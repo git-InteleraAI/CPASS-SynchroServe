@@ -86,7 +86,7 @@
 }
 
 #login .fside .logo {
-  height: clamp(40px, 4.4vh, 38px);
+  height: clamp(45px, 4.4vh, 38px);
   width: auto;
   margin-bottom: clamp(14px, 2.8vh, 32px);
   align-self: flex-start;

@@ -231,8 +231,15 @@
 }
 
 /* --------------------------------------------------------------------------
-   Candidate Details & Summary Card
+   Candidate Details & Batch Cards Grid
    -------------------------------------------------------------------------- */
+.l1-dossier-batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
 .l1-cand-summary-card {
   background: var(--card);
   border: 1.5px solid var(--line);
@@ -1096,76 +1103,17 @@
 }
 
 /* ==========================================================================
-   Placement Audit Workflow Tabs & Form Sections
+   Placement Audit Workflow & Form Sections
    ========================================================================== */
-.l1-workflow-nav-tabs {
+.l1-staging-sync-dock {
+  background: linear-gradient(135deg, rgba(2, 132, 199, 0.04) 0%, rgba(11, 79, 184, 0.06) 100%);
+  border: 1.5px dashed rgba(11, 79, 184, 0.25);
   display: flex;
-  gap: 12px;
-  background: var(--card);
-  padding: 8px;
-  border-radius: 20px;
-  border: 1px solid var(--line);
-  box-shadow: 0 4px 16px -6px rgba(10, 42, 122, 0.08);
-}
-
-.l1-workflow-tab {
-  flex: 1;
-  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 12px 18px;
-  border-radius: 14px;
-  border: 1.5px solid transparent;
-  background: none;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
-  text-align: left;
-}
-
-.l1-workflow-tab:hover {
-  background: var(--soft);
-}
-
-.l1-workflow-tab.active {
-  background: var(--soft);
-  border-color: rgba(11, 79, 184, 0.3);
-  box-shadow: 0 4px 14px -4px rgba(11, 79, 184, 0.15);
-}
-
-.l1-tab-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: #ffffff;
-  border: 1px solid var(--line);
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  flex-shrink: 0;
-}
-
-.l1-workflow-tab.active .l1-tab-icon {
-  background: var(--blue);
-  color: #ffffff;
-  border-color: var(--blue);
-}
-
-.l1-tab-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-
-.l1-tab-text strong {
-  font-size: 14.5px;
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.l1-tab-text small {
-  font-size: 12px;
-  color: var(--mut);
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 18px 24px;
 }
 
 /* --------------------------------------------------------------------------
@@ -1726,7 +1674,6 @@
   .l1-hero-banner,
   .l1-selector-panel,
   .l1-cand-summary-card,
-  .l1-workflow-nav-tabs,
   .l1-audit-workflow-container,
   .l1-doc-workspace,
   .l1-submit-dock,

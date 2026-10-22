@@ -10,9 +10,11 @@ app = FastAPI(title="CPASS API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(auth.router)
@@ -27,9 +29,15 @@ async def global_exception_handler(request, exc):
     import logging
     logging.getLogger("cpass.main").exception("Unhandled server error: %s", exc)
     from fastapi.responses import JSONResponse
+    origin = request.headers.get("origin")
+    headers = {}
+    if origin:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(
         status_code=500,
         content={"detail": f"Internal server error: {str(exc)}"},
+        headers=headers,
     )
 
 

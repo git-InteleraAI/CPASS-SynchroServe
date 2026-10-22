@@ -5,10 +5,10 @@ import logoSrc from '../../assets/SynchroServeLogo.png'
 import './Login.css'
 
 const ROLE_TABS = [
-  { key: 'L1', value: 'L1_COORDINATOR', title: 'Placement coordinator', small: 'L1', label: 'Coordinator' },
-  { key: 'L2', value: 'L2_MANAGER', title: 'Centre manager', small: 'L2', label: 'Manager' },
-  { key: 'L3', value: 'L3_LEADER', title: 'Business leader', small: 'L3', label: 'Leader' },
-  { key: 'ADMIN', value: 'ADMIN', title: 'Administrator', small: 'Admin', label: 'Administrator' },
+  { key: 'L1', value: 'L1_COORDINATOR', title: 'Placement coordinator', small: 'L1', label: 'Coordinator', pill: 'L1 verification portal' },
+  { key: 'L2', value: 'L2_MANAGER', title: 'Centre manager', small: 'L2', label: 'Manager', pill: 'L2 manager review portal' },
+  { key: 'L3', value: 'L3_LEADER', title: 'Business leader', small: 'L3', label: 'Leader', pill: 'L3 leadership audit portal' },
+  { key: 'ADMIN', value: 'ADMIN', title: 'Administrator', small: 'Admin', label: 'Administrator', pill: 'System administration portal' },
 ]
 
 const CAROUSEL_TITLES = ['Offer letter', 'Salary slips', 'Bank statements', 'Verified', 'Placed']
@@ -72,6 +72,7 @@ export default function Login() {
   }
 
   useEffect(() => {
+    if (loading) return
     const stage = stageRef.current
     if (!stage) return
 
@@ -239,7 +240,7 @@ export default function Login() {
       stage.removeEventListener('pointercancel', onPointerUp)
       stage.innerHTML = ''
     }
-  }, [])
+  }, [loading])
 
   if (loading) {
     return (
@@ -290,18 +291,15 @@ export default function Login() {
             alt="SynchroServe"
           />
           <span className="badge" data-in="pop" data-d="150">
-            L1 verification portal
+            {ROLE_TABS[selectedTab]?.pill || 'L1 verification portal'}
           </span>
           <h1>
             <span className="line" data-in="rise" data-d="280">
-              Verify & Validate,
-            </span>
-            <span className="line" data-in="rise" data-d="400">
-              Sync & Confirm.
+              C-PASS
             </span>
           </h1>
           <p className="sub" data-in="rise" data-d="540">
-            Sign in to check offer letters, salary slips and bank statements for every candidate in your batch.
+            Candidate Placement Audit &amp; Sign-off System
           </p>
 
           <form id="lf" data-in="rise" data-d="640" onSubmit={submit} noValidate>
@@ -401,8 +399,6 @@ export default function Login() {
                 {busy ? 'Signing in…' : 'Sign in'}
               </button>
             </span>
-
-            <p className="hint">Preview mode: any email and password opens the L1 dashboard.</p>
           </form>
         </section>
 

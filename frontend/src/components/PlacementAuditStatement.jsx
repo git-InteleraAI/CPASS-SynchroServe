@@ -22,7 +22,9 @@ export default function PlacementAuditStatement({
   showModalWrapper = false,
   onClose = () => {},
   extraHeaderActions = null,
+  extraFooterActions = null,
   hasUnsavedChanges = false,
+  showRemarksSection = true,
 }) {
   if (!statementData) return null
 
@@ -117,13 +119,20 @@ export default function PlacementAuditStatement({
       key: 'bank_statement_3',
       fallbackDoc: docList.find(d => d.document_type === 'BANK_STATEMENT' && d.upload_status === 'SUCCESS' && (currentSalaries[2] ? (d.reporting_year === currentSalaries[2].year && d.reporting_month === currentSalaries[2].month) : d.reporting_month === 3)),
     },
+    {
+      code: 'OD',
+      label: 'Other Document (Optional)',
+      key: 'other_document',
+      fallbackDoc: docList.find(d => d.document_type === 'OTHER_DOCUMENT' && d.upload_status === 'SUCCESS'),
+    },
   ].map(item => ({
     code: item.code,
-    label: item.label,
-    available: !!item.fallbackDoc,
-    compliance: item.fallbackDoc ? 'Compliant' : 'Missing / Non-Compliant',
-    repository_status: item.fallbackDoc ? `Stored in Drive: ${item.fallbackDoc.file_name}` : 'No verified file in database',
-    observations: item.fallbackDoc ? 'Verified during placement audit' : 'Pending upload and verification',
+    key: item.key,
+    label: item.fallbackDoc?.document_title ? `Other Document — ${item.fallbackDoc.document_title}` : item.label,
+    available: item.fallbackDoc ? 'Yes' : 'Pending',
+    compliance: item.fallbackDoc ? 'Compliant' : 'Under Verification',
+    repository_status: item.fallbackDoc ? `Stored in Drive: ${item.fallbackDoc.file_name}` : (item.code === 'OD' ? 'Optional document not provided' : 'No verified file in database'),
+    observations: item.fallbackDoc ? 'Verified during placement audit' : (item.code === 'OD' ? 'Optional supporting document' : 'Pending upload and verification'),
   }))
 
   // Helper to check if a field was changed relative to L1 original submission
@@ -134,6 +143,8 @@ export default function PlacementAuditStatement({
     const origVal = origSection[idx][field]
     return origVal !== undefined && String(origVal) !== String(currentVal)
   }
+
+  const submitter = statementData.submitter || statementData.signoff_details?.submitter || null
 
   const sheetContent = (
     <div className={`cpass-statement-sheet ${isEditMode ? 'cpass-statement-editing' : ''}`}>
@@ -167,6 +178,11 @@ export default function PlacementAuditStatement({
         <div className="cpass-header-meta">
           <div><strong>Doc Ref:</strong> CPASS-AUD-{cand.candidate_id || cand.id || 'REF'}</div>
           <div><strong>Date:</strong> {statementData.generated_at ? new Date(statementData.generated_at).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN')}</div>
+          {submitter && (
+            <div>
+              <strong>Submitted By:</strong> {submitter.name || 'Placement Executive'} ({submitter.role_label || 'L1 (PE)'})
+            </div>
+          )}
           <div>
             <strong>Status:</strong>{' '}
             <span style={{ color: cpassStatus === 'L2_APPROVED' ? '#166534' : auditStatus === 'SUBMITTED' ? '#1E40AF' : '#D97706', fontWeight: 700 }}>
@@ -204,6 +220,14 @@ export default function PlacementAuditStatement({
             <span className="v">{cand.father_name || 'N/A'}</span>
           </div>
           <div className="cpass-dossier-item">
+            <span className="k">Gender / DOB</span>
+            <span className="v">{cand.gender || 'N/A'}{cand.dob && cand.dob !== 'Not Available' ? ` • ${cand.dob}` : (cand.date_of_birth && cand.date_of_birth !== 'Not Available' ? ` • ${cand.date_of_birth}` : '')}</span>
+          </div>
+          <div className="cpass-dossier-item">
+            <span className="k">Contact / Email</span>
+            <span className="v">{cand.contact_number || cand.mobile || 'N/A'}{cand.candidate_email && cand.candidate_email !== 'Not Available' ? ` • ${cand.candidate_email}` : ''}</span>
+          </div>
+          <div className="cpass-dossier-item">
             <span className="k">Training Centre</span>
             <span className="v">{cand.training_centre || cand.training_centre_name || cand.tc_name || 'N/A'}</span>
           </div>
@@ -212,20 +236,20 @@ export default function PlacementAuditStatement({
             <span className="v">{cand.trade_name || cand.trade || cand.sector_name || cand.sector || 'N/A'}</span>
           </div>
           <div className="cpass-dossier-item">
-            <span className="k">Contact Number</span>
-            <span className="v">{cand.contact_number || cand.mobile || 'N/A'}</span>
-          </div>
-          <div className="cpass-dossier-item">
             <span className="k">Sanction Order</span>
             <span className="v">{cand.sanction_order || cand.sanction_order_name || 'N/A'}</span>
           </div>
           <div className="cpass-dossier-item">
-            <span className="k">Batch ID / Code</span>
-            <span className="v">{cand.batch_code || cand.batch_id || 'N/A'}</span>
+            <span className="k">Batch Code &amp; Dates</span>
+            <span className="v">{cand.batch_code || cand.batch_id || 'N/A'}{cand.batch_start_date && cand.batch_start_date !== 'Not Available' ? ` (${cand.batch_start_date} to ${cand.batch_end_date || '—'})` : ''}</span>
           </div>
           <div className="cpass-dossier-item">
             <span className="k">State</span>
             <span className="v">{cand.state || 'N/A'}</span>
+          </div>
+          <div className="cpass-dossier-item">
+            <span className="k">Bank Account</span>
+            <span className="v">{cand.masked_bank_account || cand.bank_account || 'Not Available'}</span>
           </div>
           <div className="cpass-dossier-item">
             <span className="k">CPASS Status</span>
@@ -585,17 +609,31 @@ export default function PlacementAuditStatement({
           </thead>
           <tbody>
             {evidenceRows.map((docItem, idx) => (
-              <tr key={idx}>
+              <tr key={docItem.key || idx}>
                 <td><strong>{docItem.code}</strong></td>
                 <td>{docItem.label}</td>
                 <td>
-                  <span style={{ fontWeight: 700, color: docItem.available ? '#166534' : '#DC2626' }}>
-                    {docItem.available ? '✓ Yes' : '✕ No'}
-                  </span>
+                  {docItem.available === 'Yes' || docItem.available === true ? (
+                    <span style={{ fontWeight: 700, color: '#166534' }}>✓ Yes</span>
+                  ) : docItem.available === 'Pending' ? (
+                    <span style={{ fontWeight: 700, color: '#D97706' }}>⏳ Pending</span>
+                  ) : (
+                    <span style={{ fontWeight: 700, color: '#DC2626' }}>✕ No</span>
+                  )}
                 </td>
                 <td>
-                  <span style={{ fontWeight: 600, color: docItem.compliance === 'Compliant' ? '#166534' : '#D97706' }}>
-                    {docItem.compliance}
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      color:
+                        docItem.compliance === 'Compliant'
+                          ? '#166534'
+                          : docItem.compliance === 'Under Verification'
+                          ? '#D97706'
+                          : '#DC2626',
+                    }}
+                  >
+                    {docItem.compliance || 'Under Verification'}
                   </span>
                 </td>
                 <td style={{ fontSize: '11px', color: '#4B5563' }}>
@@ -672,28 +710,33 @@ export default function PlacementAuditStatement({
       </div>
 
       {/* Section 6: Overall Remarks */}
-      <div>
-        <h5 className="cpass-statement-section-title">6. Auditor Remarks &amp; Compliance Notes</h5>
-        {isEditMode ? (
-          <textarea
-            rows={3}
-            className="l1-edit-cell"
-            style={{ width: '100%', padding: '8px 10px', fontSize: '13px' }}
-            placeholder="Enter any additional audit remarks or observations..."
-            value={currentRemarks}
-            onChange={(e) => onUpdateRemarks(e.target.value)}
-          />
-        ) : (
-          <div style={{ padding: '12px 14px', background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px', fontSize: '13px', color: '#1F2937', minHeight: '44px' }}>
-            {currentRemarks || 'No exceptional auditor observations recorded. Placement verified according to DDU-GKY standard guidelines.'}
-          </div>
-        )}
-      </div>
+      {showRemarksSection && (
+        <div>
+          <h5 className="cpass-statement-section-title">6. Auditor Remarks &amp; Compliance Notes</h5>
+          {isEditMode ? (
+            <textarea
+              rows={3}
+              className="l1-edit-cell"
+              style={{ width: '100%', padding: '8px 10px', fontSize: '13px' }}
+              placeholder="Enter any additional audit remarks or observations..."
+              value={currentRemarks}
+              onChange={(e) => onUpdateRemarks(e.target.value)}
+            />
+          ) : (
+            <div style={{ padding: '12px 14px', background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px', fontSize: '13px', color: '#1F2937', minHeight: '44px' }}>
+              {currentRemarks || 'No exceptional auditor observations recorded. Placement verified according to DDU-GKY standard guidelines.'}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Footer */}
       <div className="cpass-statement-footer">
         <div>C-PASS Candidate Placement Audit System • SynchroServe Global Solutions Pvt Ltd</div>
-        <div>Audit Statement ID: CPASS-AUD-{cand.candidate_id || cand.id || 'REF'} • Generated {new Date().toLocaleString('en-IN')}</div>
+        <div>
+          Audit Statement ID: CPASS-AUD-{cand.candidate_id || cand.id || 'REF'} • Generated {new Date().toLocaleString('en-IN')}
+          {submitter?.name ? ` • Submitter: ${submitter.name} (${submitter.role_label || 'L1 (PE)'})` : ''}
+        </div>
       </div>
     </div>
   )
@@ -738,6 +781,7 @@ export default function PlacementAuditStatement({
           </div>
 
           <div className="l1-modal-footer l1-no-print" style={{ padding: '12px 20px', background: '#F8FAFC', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+            {extraFooterActions}
             <button
               type="button"
               className="l1-btn-secondary"

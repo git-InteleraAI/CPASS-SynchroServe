@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -34,7 +35,7 @@ logger = logging.getLogger("cpass.documents")
 
 router = APIRouter(prefix="/candidates/{candidate_id}/documents", tags=["documents"])
 
-VALID_DOCUMENT_TYPES = {"APPOINTMENT_LETTER", "SALARY_SLIP", "BANK_STATEMENT"}
+VALID_DOCUMENT_TYPES = {"APPOINTMENT_LETTER", "SALARY_SLIP", "BANK_STATEMENT", "OTHER_DOCUMENT"}
 
 
 def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -> dict[str, Any]:
@@ -92,7 +93,7 @@ def list_documents(
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,created_at,updated_at")
+        .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,created_at,updated_at,document_title")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .order("created_at")
@@ -117,7 +118,7 @@ def get_documents_summary(
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,created_at")
+        .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,document_title,created_at")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .execute()
@@ -140,6 +141,9 @@ def get_documents_summary(
     )
     bank_statement_months = {(d["reporting_year"], d["reporting_month"]) for d in bank_statements if d.get("reporting_month") and d.get("reporting_year")}
     bank_count = len(bank_statement_months)
+
+    other_document = next((d for d in docs if d["document_type"] == "OTHER_DOCUMENT"), None)
+    other_documents = [d for d in docs if d["document_type"] == "OTHER_DOCUMENT"]
 
     min_satisfied = has_appointment and salary_count >= 3 and bank_count >= 3
 
@@ -168,6 +172,12 @@ def get_documents_summary(
             "satisfied": bank_count >= 3,
             "detail": f"{bank_count} of 3 minimum months uploaded (max 12)" if bank_count < 3 else f"{bank_count} months uploaded",
         },
+        {
+            "item": "Other Document",
+            "required": False,
+            "satisfied": other_document is not None,
+            "detail": f"Uploaded: {other_document['file_name']}" if other_document else "Optional (Not provided)",
+        },
     ]
 
     return {
@@ -178,6 +188,9 @@ def get_documents_summary(
         "salary_slips": salary_slips,
         "bank_statement_count": bank_count,
         "bank_statements": bank_statements,
+        "has_other_document": other_document is not None,
+        "other_document": other_document,
+        "other_documents": other_documents,
         "min_requirements_met": min_satisfied,
         "checklist": checklist,
     }
@@ -191,6 +204,7 @@ async def upload_document(
     reporting_month: int | None = Form(None),
     reporting_year: int | None = Form(None),
     replace_id: str | None = Form(None),
+    document_title: str | None = Form(None),
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
 ):
     """Upload a candidate document to Google Drive and persist metadata in candidate_documents."""
@@ -206,7 +220,10 @@ async def upload_document(
     cand_ctx = _get_candidate_context(candidate_id)
 
     # Document-specific business rules
-    if doc_type == "APPOINTMENT_LETTER":
+    if doc_type == "OTHER_DOCUMENT":
+        reporting_month = None
+        reporting_year = None
+    elif doc_type == "APPOINTMENT_LETTER":
         reporting_month = None
         reporting_year = None
         existing = (
@@ -318,6 +335,7 @@ async def upload_document(
         "upload_status": "SUCCESS",
         "uploaded_by": user.id,
         "error_message": None,
+        "document_title": document_title or (file.filename if file else "Other Document"),
     }
 
     try:
@@ -352,11 +370,16 @@ async def batch_submit_documents(
     salary_slips_meta: str = Form("[]"),
     bank_statements: list[UploadFile] = File(default=[]),
     bank_statements_meta: str = Form("[]"),
+    other_document: UploadFile | None = File(None),
+    other_document_title: str | None = Form(None),
+    other_document_replace_id: str | None = Form(None),
+    allow_partial: bool = Form(False),
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
 ):
     """Atomic batch final submission of all staged candidate documents.
 
-    Validates complete placement package requirements before any external uploads.
+    Validates placement package requirements before any external uploads.
+    Supports partial uploads when allow_partial is set or when updating a submitted audit.
     Includes Google Drive upload rollback if database persistence fails.
     """
     cand_ctx = _get_candidate_context(candidate_id)
@@ -394,8 +417,11 @@ async def batch_submit_documents(
     existing_docs_by_id = {d["id"]: dict(d) for d in existing_docs}
     existing_appointment = next((d for d in existing_docs if d["document_type"] == "APPOINTMENT_LETTER"), None)
 
+    # Determine whether partial document upload is permitted
+    is_partial_allowed = bool(allow_partial)
+
     # 3. Validate Appointment Letter
-    if not existing_appointment and not appointment_letter:
+    if not is_partial_allowed and not existing_appointment and not appointment_letter:
         raise HTTPException(400, "An Appointment / Offer Letter is required for placement verification.")
     if existing_appointment and appointment_letter and not appointment_replace_id:
         raise HTTPException(400, "An active appointment letter already exists. Specify replacement ID to update it.")
@@ -423,7 +449,7 @@ async def batch_submit_documents(
         incoming_salary_months.add(period)
 
     total_salary_months = len(retained_salary_months | incoming_salary_months)
-    if total_salary_months < 3:
+    if not is_partial_allowed and total_salary_months < 3:
         raise HTTPException(400, f"At least 3 distinct salary slip months are required (current total: {total_salary_months}).")
     if total_salary_months > 12:
         raise HTTPException(400, f"Maximum of 12 distinct salary slip months allowed (current total: {total_salary_months}).")
@@ -449,7 +475,7 @@ async def batch_submit_documents(
         incoming_bank_months.add(period)
 
     total_bank_months = len(retained_bank_months | incoming_bank_months)
-    if total_bank_months < 3:
+    if not is_partial_allowed and total_bank_months < 3:
         raise HTTPException(400, f"At least 3 distinct bank statement months are required (current total: {total_bank_months}).")
     if total_bank_months > 12:
         raise HTTPException(400, f"Maximum of 12 distinct bank statement months allowed (current total: {total_bank_months}).")
@@ -494,6 +520,20 @@ async def batch_submit_documents(
             "month": m["month"],
             "year": m["year"],
             "replace_id": m.get("replace_id"),
+        })
+
+    if other_document:
+        od_bytes = await other_document.read()
+        od_mime = _validate_file_upload(other_document.filename or "other_document.pdf", od_bytes, other_document.content_type)
+        staged_uploads.append({
+            "doc_type": "OTHER_DOCUMENT",
+            "file_name": other_document.filename or f"other_doc_{candidate_id}.pdf",
+            "bytes": od_bytes,
+            "mime_type": od_mime,
+            "month": None,
+            "year": None,
+            "replace_id": other_document_replace_id,
+            "title": other_document_title or "Other Document",
         })
 
     if not staged_uploads:
@@ -544,6 +584,7 @@ async def batch_submit_documents(
                     "upload_status": "SUCCESS",
                     "uploaded_by": user.id,
                     "error_message": None,
+                    "document_title": item.get("title"),
                 },
             })
     except GoogleDriveNotConfiguredError:
@@ -622,7 +663,45 @@ async def batch_submit_documents(
             logger.warning("Failed to delete replaced Google Drive file %s: %s", old_fid, e)
             cleanup_warnings.append(f"Replaced Drive file {old_fid} could not be automatically deleted: {e}")
 
-    # 10. Return updated summary
+    # 10. Synchronize placement audit document availability if audit exists
+    try:
+        audit_res = (
+            supabase.table("placement_audits")
+            .select("id,document_audit")
+            .eq("candidate_id", candidate_id)
+            .limit(1)
+            .execute()
+        )
+        if audit_res.data:
+            audit_rec = audit_res.data[0]
+            cur_doc_audit = audit_rec.get("document_audit") or {}
+            now_iso = datetime.now(timezone.utc).isoformat()
+            dirty = False
+
+            for up in staged_uploads:
+                dtype = up.get("doc_type")
+                if dtype == "APPOINTMENT_LETTER":
+                    row = cur_doc_audit.get("appointment_letter") or {}
+                    row["available"] = "Yes"
+                    row["compliance"] = row.get("compliance") or "Compliant"
+                    cur_doc_audit["appointment_letter"] = row
+                    dirty = True
+                elif dtype == "OTHER_DOCUMENT":
+                    row = cur_doc_audit.get("other_document") or {}
+                    row["available"] = "Yes"
+                    row["title"] = up.get("title") or row.get("title") or "Other Document"
+                    cur_doc_audit["other_document"] = row
+                    dirty = True
+
+            if dirty:
+                supabase.table("placement_audits").update({
+                    "document_audit": cur_doc_audit,
+                    "updated_at": now_iso,
+                }).eq("id", audit_rec["id"]).execute()
+    except Exception as audit_sync_err:
+        logger.warning("Could not synchronize placement audit document state: %s", audit_sync_err)
+
+    # 11. Return updated summary
     summary = get_documents_summary(candidate_id, user)
     return {
         "status": "success",

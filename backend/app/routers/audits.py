@@ -64,6 +64,17 @@ class DocumentAuditDetails(BaseModel):
     overall_compliance: bool | None = None
     remarks: str | None = None
 
+    appointment_letter: dict[str, Any] | None = None
+    salary_slip_1: dict[str, Any] | None = None
+    salary_slip_2: dict[str, Any] | None = None
+    salary_slip_3: dict[str, Any] | None = None
+    bank_statement_1: dict[str, Any] | None = None
+    bank_statement_2: dict[str, Any] | None = None
+    bank_statement_3: dict[str, Any] | None = None
+    other_document: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
 
 class SignoffOfficial(BaseModel):
     name: str | None = None
@@ -77,6 +88,10 @@ class SignoffDetails(BaseModel):
     centre_head: SignoffOfficial = Field(default_factory=SignoffOfficial)
     cops_team: SignoffOfficial = Field(default_factory=SignoffOfficial)
     business_leader: SignoffOfficial = Field(default_factory=SignoffOfficial)
+    submitter: dict[str, Any] | None = None
+    placement_executive: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
 
 
 class SaveAuditDraftRequest(BaseModel):
@@ -212,6 +227,19 @@ def _mask_aadhaar(raw: Any) -> tuple[str | None, str]:
     return None, "Not Available"
 
 
+def _mask_bank_account(raw: Any) -> str:
+    """Mask bank account number, displaying XXXX-XXXX-Last4 or Not Available."""
+    if not raw:
+        return "Not Available"
+    s = str(raw).strip()
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) >= 4:
+        return f"XXXX-XXXX-{digits[-4:]}"
+    if s.lower() in ("no", "na", "n/a", "none", "0", "nil"):
+        return "Not Available"
+    return s or "Not Available"
+
+
 def _build_candidate_snapshot(cand: dict[str, Any], candidate_id: int, override: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct a clean, normalized candidate snapshot preserving data integrity."""
     raw_aadhar = cand.get("aadhar")
@@ -221,24 +249,40 @@ def _build_candidate_snapshot(cand: dict[str, Any], candidate_id: int, override:
     last = cand.get("candidate_last_name") or cand.get("last_name") or ""
     full = f"{first} {last}".strip() or f"Candidate {candidate_id}"
 
+    raw_bank = cand.get("bank_account")
+    masked_bank = cand.get("masked_bank_account") or _mask_bank_account(raw_bank)
+    addr = cand.get("address") or cand.get("permanent_address") or cand.get("permanent_address_village") or "Not Available"
+    if addr and str(addr).strip() == "0":
+        addr = "Not Available"
+
     base = {
         "candidate_id": cand.get("candidate_id") or candidate_id,
         "candidate_name": full,
         "full_name": full,
         "first_name": first or None,
         "last_name": last or None,
-        "father_name": cand.get("candidate_father_name") or cand.get("father_name"),
-        "dob": str(cand.get("date_of_birth") or cand.get("dob") or ""),
-        "mobile": cand.get("mobile_number") or cand.get("mobile"),
-        "contact_number": cand.get("mobile_number") or cand.get("mobile"),
+        "father_name": cand.get("candidate_father_name") or cand.get("father_name") or "Not Available",
+        "dob": str(cand.get("date_of_birth") or cand.get("dob") or "Not Available"),
+        "date_of_birth": str(cand.get("date_of_birth") or cand.get("dob") or "Not Available"),
+        "gender": cand.get("gender") or "Not Available",
+        "mobile": cand.get("mobile_number") or cand.get("mobile") or "Not Available",
+        "contact_number": cand.get("mobile_number") or cand.get("mobile") or "Not Available",
         "state": cand.get("tc_state_name") or cand.get("state_name"),
         "tc_name": cand.get("tc_name"),
         "training_centre": cand.get("tc_name"),
-        "batch_code": cand.get("batch_code"),
-        "sanction_order": cand.get("sanction_order_number"),
-        "trade_name": cand.get("trade_name"),
-        "trade": cand.get("trade_name"),
+        "batch_code": cand.get("batch_code") or "Not Available",
+        "batch_start_date": str(cand.get("batch_start_date") or "Not Available"),
+        "batch_end_date": str(cand.get("batch_end_date") or "Not Available"),
+        "trade_name": cand.get("trade_name") or "Not Available",
+        "trade": cand.get("trade_name") or "Not Available",
         "sector": cand.get("sector"),
+        "candidate_email": cand.get("candidate_email") or "Not Available",
+        "candidate_qualification": cand.get("candidate_qualification") or "Not Available",
+        "address": addr,
+        "permanent_address": addr,
+        "bank_account": masked_bank,
+        "masked_bank_account": masked_bank,
+        "sanction_order": cand.get("sanction_order_number") or "Not Available",
         "aadhaar_last4": last4,
         "masked_aadhaar": masked,
         "aadhaar_number": masked,
@@ -384,14 +428,59 @@ def submit_audit(
     now_iso = datetime.now(timezone.utc).isoformat()
     snapshot = _build_candidate_snapshot(cand, candidate_id, payload.candidate_snapshot)
 
+    # Submitter metadata for L1 audit tracking
+    signoff_dict = payload.signoff_details.model_dump()
+    signoff_dict["submitter"] = {
+        "user_id": str(user.id),
+        "name": user.full_name or "L1 Placement Executive",
+        "email": user.email,
+        "role": user.role,
+        "role_label": "L1 (PE)",
+        "submitted_at": now_iso,
+    }
+    signoff_dict["placement_executive"] = {
+        "name": user.full_name or "L1 Placement Executive",
+        "designation": "Placement Executive (L1)",
+        "email": user.email,
+        "date": now_iso[:10],
+        "confirmed": True,
+        "submitted_at": now_iso,
+    }
+
+    doc_audit_data = payload.document_audit.model_dump()
+
+    # Determine compliance status
+    # If any document is explicitly marked unavailable (No / Pending) or not compliant (Non-Compliant / Under Verification), cpass_status is PENDING.
+    # Placement is only VERIFIED when all required documents are available, compliant, and verified.
+    has_pending_or_uncompliant = False
+    for req_key in [
+        "appointment_letter",
+        "salary_slip_1",
+        "salary_slip_2",
+        "salary_slip_3",
+        "bank_statement_1",
+        "bank_statement_2",
+        "bank_statement_3",
+    ]:
+        row = doc_audit_data.get(req_key)
+        if isinstance(row, dict):
+            if row.get("available") in ("No", "Pending") or row.get("compliance") in ("Non-Compliant", "Under Verification"):
+                has_pending_or_uncompliant = True
+                break
+
+    if has_pending_or_uncompliant or doc_audit_data.get("overall_compliance") is False:
+        computed_cpass_status = "PENDING"
+    else:
+        computed_cpass_status = "VERIFIED"
+
     audit_payload = {
         "candidate_id": candidate_id,
         "candidate_snapshot": snapshot,
         "employer_details": [e.model_dump() for e in payload.employer_details],
         "salary_details": [s.model_dump() for s in payload.salary_details],
-        "document_audit": payload.document_audit.model_dump(),
-        "signoff_details": payload.signoff_details.model_dump(),
-        "cpass_status": "VERIFIED",
+        "document_audit": doc_audit_data,
+        "signoff_details": signoff_dict,
+        "cpass_status": computed_cpass_status,
         "audit_status": "SUBMITTED",
         "remarks": payload.remarks,
         "finalized_at": now_iso,
@@ -449,7 +538,7 @@ def get_audit_statement(
     # 2. Fetch persisted documents (exclude FAILED status)
     docs_res = (
         supabase.table("candidate_documents")
-        .select("id,document_type,reporting_month,reporting_year,file_name,file_size_bytes,upload_status,drive_file_id,created_at")
+        .select("id,document_type,reporting_month,reporting_year,file_name,file_size_bytes,upload_status,drive_file_id,document_title,created_at")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .order("created_at")
@@ -462,15 +551,22 @@ def get_audit_statement(
     cand_info = _build_candidate_snapshot(cand, candidate_id, existing_snapshot)
 
     # Add extra candidate profile fields
-    cand_info["gender"] = cand.get("gender")
+    cand_info["gender"] = cand.get("gender") or cand_info.get("gender")
     cand_info["category"] = cand.get("category")
-    cand_info["permanent_address"] = cand.get("permanent_address") or cand.get("permanent_address_village")
+    cand_info["permanent_address"] = cand.get("permanent_address") or cand.get("permanent_address_village") or cand_info.get("permanent_address")
+    cand_info["address"] = cand_info["permanent_address"]
     cand_info["tc_id"] = cand.get("tc_id")
     cand_info["appointed"] = bool(cand.get("appointed"))
     cand_info["sector_name"] = cand.get("sector")
     cand_info["training_centre_name"] = cand.get("tc_name")
     cand_info["sanction_order_name"] = cand.get("sanction_order_number")
     cand_info["batch_id"] = cand.get("batch_code")
+    cand_info["batch_start_date"] = str(cand.get("batch_start_date") or cand_info.get("batch_start_date") or "Not Available")
+    cand_info["batch_end_date"] = str(cand.get("batch_end_date") or cand_info.get("batch_end_date") or "Not Available")
+    cand_info["candidate_email"] = cand.get("candidate_email") or cand_info.get("candidate_email") or "Not Available"
+    cand_info["candidate_qualification"] = cand.get("candidate_qualification") or cand_info.get("candidate_qualification") or "Not Available"
+    cand_info["bank_account"] = cand_info.get("bank_account") or _mask_bank_account(cand.get("bank_account"))
+    cand_info["masked_bank_account"] = cand_info.get("masked_bank_account") or cand_info["bank_account"]
 
     # 4. Salary and Employer Details
     employer_entries = (audit and audit.get("employer_details")) or []
@@ -533,15 +629,44 @@ def get_audit_statement(
             return f"Bank Statement / Passbook — {m_str} {y or ''}".strip()
         return f"Bank Statement / Passbook — Month {idx + 1}"
 
+    saved_doc_audit = (audit and audit.get("document_audit")) or {}
+
+    def get_row_audit(key: str) -> dict[str, Any]:
+        val = saved_doc_audit.get(key)
+        if isinstance(val, dict):
+            return val
+        return {}
+
+    def map_avail_field(raw_val: Any, has_doc: bool) -> tuple[Any, str]:
+        if raw_val is None or raw_val == "":
+            return (bool(has_doc), "Yes" if has_doc else "Missing")
+        if raw_val in ("Yes", True):
+            return (True, "Yes")
+        if raw_val in ("No", False):
+            return (False, "No")
+        return ("Pending", "Pending")
+
+    # AL / OL
+    al_audit = get_row_audit("appointment_letter")
+    al_avail, al_avail_str = map_avail_field(al_audit.get("available"), bool(al_doc))
+    al_comp = al_audit.get("compliance")
+    if not al_comp:
+        al_comp = "Compliant" if al_doc else "Missing / Non-Compliant"
+    al_obs = al_audit.get("remarks")
+    if not al_obs:
+        al_obs = "Appointment letter verified against candidate placement record." if al_doc else "Mandatory appointment/offer letter is pending upload."
+    al_repo = f"Stored in Drive: {al_doc['file_name']}" if al_doc else ("Document marked unavailable by coordinator" if al_avail_str == "No" else ("Document pending upload" if al_avail_str == "Pending" else "No verified file in database"))
+
     evidence_list = [
         {
             "code": "AL / OL",
             "key": "appointment_letter",
             "label": "Appointment / Offer Letter",
-            "available": bool(al_doc),
-            "compliance": "Compliant" if al_doc else "Missing / Non-Compliant",
-            "repository_status": f"Stored in Drive: {al_doc['file_name']}" if al_doc else "No verified file in database",
-            "observations": "Appointment letter verified against candidate placement record." if al_doc else "Mandatory appointment/offer letter is pending upload.",
+            "available": al_avail,
+            "availability_status": al_avail_str,
+            "compliance": al_comp,
+            "repository_status": al_repo,
+            "observations": al_obs,
             "file_name": al_doc["file_name"] if al_doc else None,
             "doc_id": al_doc["id"] if al_doc else None,
         }
@@ -549,37 +674,89 @@ def get_audit_statement(
 
     for i in range(3):
         doc = find_slip_doc(i)
-        is_avail = bool(doc)
+        key = f"salary_slip_{i + 1}"
+        s_audit = get_row_audit(key)
+        s_avail, s_avail_str = map_avail_field(s_audit.get("available"), bool(doc))
+        s_comp = s_audit.get("compliance")
+        if not s_comp:
+            s_comp = "Compliant" if doc else "Missing / Non-Compliant"
+        s_obs = s_audit.get("remarks")
+        if not s_obs:
+            s_obs = "Disbursement slip verified with gross remuneration." if doc else "Salary slip pending upload."
+        s_repo = f"Stored in Drive: {doc['file_name']}" if doc else ("Document marked unavailable by coordinator" if s_avail_str == "No" else ("Document pending upload" if s_avail_str == "Pending" else "No verified file in database"))
+
         evidence_list.append({
             "code": f"PS {i + 1}",
-            "key": f"salary_slip_{i + 1}",
+            "key": key,
             "label": slip_label(i),
-            "available": is_avail,
-            "compliance": "Compliant" if is_avail else "Missing / Non-Compliant",
-            "repository_status": f"Stored in Drive: {doc['file_name']}" if is_avail else "No verified file in database",
-            "observations": "Disbursement slip verified with gross remuneration." if is_avail else "Salary slip pending upload.",
-            "file_name": doc["file_name"] if is_avail else None,
-            "doc_id": doc["id"] if is_avail else None,
+            "available": s_avail,
+            "availability_status": s_avail_str,
+            "compliance": s_comp,
+            "repository_status": s_repo,
+            "observations": s_obs,
+            "file_name": doc["file_name"] if doc else None,
+            "doc_id": doc["id"] if doc else None,
             "reporting_month": doc.get("reporting_month") if doc else None,
             "reporting_year": doc.get("reporting_year") if doc else None,
         })
 
     for i in range(3):
         doc = find_bank_doc(i)
-        is_avail = bool(doc)
+        key = f"bank_statement_{i + 1}"
+        b_audit = get_row_audit(key)
+        b_avail, b_avail_str = map_avail_field(b_audit.get("available"), bool(doc))
+        b_comp = b_audit.get("compliance")
+        if not b_comp:
+            b_comp = "Compliant" if doc else "Missing / Non-Compliant"
+        b_obs = b_audit.get("remarks")
+        if not b_obs:
+            b_obs = "Bank statement credit entry verified." if doc else "Mandatory bank statement is pending upload."
+        b_repo = f"Stored in Drive: {doc['file_name']}" if doc else ("Document marked unavailable by coordinator" if b_avail_str == "No" else ("Document pending upload" if b_avail_str == "Pending" else "No verified file in database"))
+
         evidence_list.append({
             "code": f"BS {i + 1}",
-            "key": f"bank_statement_{i + 1}",
+            "key": key,
             "label": bank_label(i),
-            "available": is_avail,
-            "compliance": "Compliant" if is_avail else "Missing / Non-Compliant",
-            "repository_status": f"Stored in Drive: {doc['file_name']}" if is_avail else "No verified file in database",
-            "observations": "Bank statement credit entry verified." if is_avail else "Mandatory bank statement is pending upload.",
-            "file_name": doc["file_name"] if is_avail else None,
-            "doc_id": doc["id"] if is_avail else None,
+            "available": b_avail,
+            "availability_status": b_avail_str,
+            "compliance": b_comp,
+            "repository_status": b_repo,
+            "observations": b_obs,
+            "file_name": doc["file_name"] if doc else None,
+            "doc_id": doc["id"] if doc else None,
             "reporting_month": doc.get("reporting_month") if doc else None,
             "reporting_year": doc.get("reporting_year") if doc else None,
         })
+
+    # Row 8: Optional Other Document
+    other_doc = next(
+        (d for d in docs if d.get("document_type") == "OTHER_DOCUMENT" and d.get("upload_status") == "SUCCESS"),
+        None,
+    )
+    od_audit = get_row_audit("other_document")
+    od_avail, od_avail_str = map_avail_field(od_audit.get("available"), bool(other_doc))
+    od_comp = od_audit.get("compliance") or ("Compliant" if other_doc else "Under Verification")
+    od_title = od_audit.get("title") or (other_doc and other_doc.get("document_title")) or "Other Document"
+    od_obs = od_audit.get("remarks") or (
+        "Supporting candidate placement document verified." if other_doc else "Optional supporting document."
+    )
+    od_repo = (
+        f"Stored in Drive: {other_doc['file_name']}"
+        if other_doc
+        else ("Document marked unavailable by coordinator" if od_avail_str == "No" else ("Document pending upload" if od_avail_str == "Pending" else "Optional document not provided"))
+    )
+    evidence_list.append({
+        "code": "OD",
+        "key": "other_document",
+        "label": f"Other Document — {od_title}" if od_title and od_title != "Other Document" else "Other Document (Optional)",
+        "available": od_avail,
+        "availability_status": od_avail_str,
+        "compliance": od_comp,
+        "repository_status": od_repo,
+        "observations": od_obs,
+        "file_name": other_doc["file_name"] if other_doc else None,
+        "doc_id": other_doc["id"] if other_doc else None,
+    })
 
     audit_status = (audit and audit.get("audit_status")) or "DRAFT"
     cpass_status = (audit and audit.get("cpass_status")) or "PENDING"
@@ -613,6 +790,8 @@ def get_audit_statement(
         "l2_document_reviews": ((audit and audit.get("document_audit")) or {}).get("l2_document_reviews") or {},
         "l2_approval": ((audit and audit.get("signoff_details")) or {}).get("l2_approval") or None,
         "l1_original_submission": ((audit and audit.get("signoff_details")) or {}).get("l1_original_submission") or None,
+        "submitter": ((audit and audit.get("signoff_details")) or {}).get("submitter") or None,
+        "placement_executive": ((audit and audit.get("signoff_details")) or {}).get("placement_executive") or None,
         "revision_history": ((audit and audit.get("signoff_details")) or {}).get("revision_history") or [],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "verified_by_user": user.full_name,

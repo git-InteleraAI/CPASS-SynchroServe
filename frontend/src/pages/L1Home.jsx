@@ -217,18 +217,48 @@ function createDefaultSalaryList(year) {
 
 function createDefaultDocAudit() {
   return {
-    appointment_letter_status: 'Available',
-    appointment_letter_compliant: true,
-    appointment_letter_remarks: 'Official appointment / offer letter with designation and compensation structure verified.',
-    salary_slips_status: 'Available (3 Months)',
-    salary_slips_compliant: true,
-    salary_slips_remarks: '3 consecutive monthly salary slips verified against wage criteria.',
-    bank_statements_status: 'Available (3 Months)',
-    bank_statements_compliant: true,
-    bank_statements_remarks: 'Bank credit entries match net salary disbursement amounts.',
-    overall_compliance: true,
+    appointment_letter: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    salary_slip_1: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    salary_slip_2: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    salary_slip_3: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    bank_statement_1: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    bank_statement_2: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    bank_statement_3: { available: 'Pending', compliance: 'Under Verification', remarks: '' },
+    other_document: { available: 'Pending', compliance: 'Under Verification', remarks: '', title: '' },
+    overall_compliance: false,
     remarks: '',
   }
+}
+
+function normalizeDocAudit(data) {
+  const defaults = createDefaultDocAudit()
+  if (!data || typeof data !== 'object') return defaults
+
+  const out = { ...defaults, ...data }
+  const docKeys = [
+    'appointment_letter',
+    'salary_slip_1',
+    'salary_slip_2',
+    'salary_slip_3',
+    'bank_statement_1',
+    'bank_statement_2',
+    'bank_statement_3',
+    'other_document',
+  ]
+  for (const k of docKeys) {
+    const raw = data[k]
+    if (raw && typeof raw === 'object') {
+      out[k] = {
+        available: raw.available || 'Pending',
+        compliance: raw.compliance || 'Under Verification',
+        remarks: raw.remarks || '',
+        title: raw.title || '',
+      }
+    } else {
+      out[k] = { ...defaults[k] }
+    }
+  }
+  return out
 }
 
 function createDefaultSignoffs() {
@@ -275,7 +305,6 @@ export default function L1Home() {
   const [error, setError] = useState('')
 
   // Primary Workflow Tab ('audit' | 'docs')
-  const [activeWorkflowTab, setActiveWorkflowTab] = useState('audit')
 
   // Placement Audit States
   const [auditRecord, setAuditRecord] = useState(null)
@@ -310,6 +339,12 @@ export default function L1Home() {
   const [replacingAppointment, setReplacingAppointment] = useState(false)
   const [appointmentError, setAppointmentError] = useState('')
 
+  // Other document staging: { file, fileName, fileSize, replaceId } | null
+  const [stagedOtherDoc, setStagedOtherDoc] = useState(null)
+  const [otherDocTitle, setOtherDocTitle] = useState('')
+  const [replacingOtherDoc, setReplacingOtherDoc] = useState(false)
+  const [otherDocError, setOtherDocError] = useState('')
+
   // Monthly document staging: Array of { id, month, year, file, fileName, fileSize, replaceId, error }
   // EXACTLY 3 rows by default
   const createDefaultRows = (defaultOffset = 0) => [
@@ -331,6 +366,8 @@ export default function L1Home() {
   const [showReviewModal, setShowReviewModal] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitSuccessData, setSubmitSuccessData] = useState(null)
+  const [downloadingDocId, setDownloadingDocId] = useState(null)
+  const [finalSubmitSuccessData, setFinalSubmitSuccessData] = useState(null)
 
   const fill = (key, promise) =>
     promise.then((rows) => setLists((l) => ({ ...l, [key]: rows }))).catch((e) => setError(e.message))
@@ -338,6 +375,19 @@ export default function L1Home() {
   useEffect(() => {
     fill('state', api('/lookups/states'))
   }, [])
+
+  async function handleDownloadFile(docId, fileName) {
+    if (!sel.cand || !docId) return
+    setDownloadingDocId(docId)
+    try {
+      await downloadDocument(sel.cand, docId, fileName)
+    } catch (err) {
+      setError(err.message || 'Failed to download file.')
+      setAuditToast({ message: err.message || 'Download failed.', type: 'error' })
+    } finally {
+      setDownloadingDocId(null)
+    }
+  }
 
   function resetAuditForm() {
     setAuditRecord(null)
@@ -355,29 +405,42 @@ export default function L1Home() {
     setStagedAppointment(null)
     setReplacingAppointment(false)
     setAppointmentError('')
+    setStagedOtherDoc(null)
+    setOtherDocTitle('')
+    setReplacingOtherDoc(false)
+    setOtherDocError('')
     setSalaryRows(createDefaultRows(0))
     setBankRows(createDefaultRows(0))
     setStagedSalaryReplacements({})
     setStagedBankReplacements({})
     setActiveReplaceIds(new Set())
     setShowReviewModal(false)
-    setSubmitSuccessData(null)
-    resetAuditForm()
   }
 
-  function refreshDocuments(candidateId) {
+  async function refreshDocuments(candidateId) {
     if (!candidateId) return
     setLoadingDocs(true)
-    Promise.all([
-      api(`/candidates/${candidateId}/documents/summary`),
-      api(`/candidates/${candidateId}/documents`),
-    ])
-      .then(([summary, docs]) => {
-        setDocSummary(summary)
-        setDocuments(docs || [])
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoadingDocs(false))
+    try {
+      const [summaryRes, docsRes] = await Promise.allSettled([
+        api(`/candidates/${candidateId}/documents/summary`),
+        api(`/candidates/${candidateId}/documents`),
+      ])
+      if (summaryRes.status === 'fulfilled') {
+        setDocSummary(summaryRes.value)
+      }
+      if (docsRes.status === 'fulfilled') {
+        const rawDocs = docsRes.value
+        setDocuments(Array.isArray(rawDocs) ? rawDocs : (Array.isArray(rawDocs?.documents) ? rawDocs.documents : []))
+      } else {
+        console.warn('Could not load documents:', docsRes.reason)
+        setDocuments([])
+      }
+    } catch (e) {
+      console.warn('Error refreshing documents:', e)
+      setDocuments([])
+    } finally {
+      setLoadingDocs(false)
+    }
   }
 
   function loadAudit(candidateId, detail) {
@@ -428,7 +491,7 @@ export default function L1Home() {
           }
 
           if (a.document_audit) {
-            setDocumentAudit((prev) => ({ ...prev, ...a.document_audit }))
+            setDocumentAudit(normalizeDocAudit(a.document_audit))
           }
           if (a.signoff_details) {
             setSignoffDetails({
@@ -570,9 +633,22 @@ export default function L1Home() {
     )
   }
 
-  function handleUpdateDocAudit(field, value) {
+  function handleUpdateDocAudit(docKey, field, value) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
-    setDocumentAudit((prev) => ({ ...prev, [field]: value }))
+    setDocumentAudit((prev) => {
+      const prevDoc = prev?.[docKey] && typeof prev[docKey] === 'object' ? prev[docKey] : {}
+      return {
+        ...prev,
+        [docKey]: {
+          available: prevDoc.available || 'Pending',
+          compliance: prevDoc.compliance || 'Under Verification',
+          remarks: prevDoc.remarks || '',
+          title: prevDoc.title || '',
+          ...prevDoc,
+          [field]: value,
+        },
+      }
+    })
   }
 
   function handleUpdateSignoff(official, field, value) {
@@ -584,15 +660,15 @@ export default function L1Home() {
   }
 
   // --- Audit Draft & Submit Handlers ---
-  async function handleSaveDraft() {
+  async function handleSaveDraft(isSilent = false) {
     if (!sel.cand || !candDetail) return
     if (auditLoadError) {
       setError('Cannot save draft while audit record failed to load. Please retry loading first.')
-      setAuditToast({ message: 'Cannot save draft: please retry loading first.', type: 'error' })
+      if (!isSilent) setAuditToast({ message: 'Cannot save draft: please retry loading first.', type: 'error' })
       return
     }
     if (auditRecord?.audit_status === 'SUBMITTED') {
-      setAuditToast({ message: 'This placement audit is already submitted and locked against editing.', type: 'info' })
+      if (!isSilent) setAuditToast({ message: 'This placement audit is already submitted and locked against editing.', type: 'info' })
       return
     }
     setAuditSavingDraft(true)
@@ -645,10 +721,16 @@ export default function L1Home() {
         body: JSON.stringify(payload),
       })
       setAuditRecord(res.audit)
-      setAuditToast({ message: '✓ Draft placement audit saved successfully.', type: 'success' })
+      if (!isSilent) {
+        setAuditToast({ message: '✓ Draft placement audit saved successfully.', type: 'success' })
+      }
+      return res.audit
     } catch (err) {
       setError(err.message || 'Failed to save audit draft.')
-      setAuditToast({ message: err.message || 'Failed to save draft.', type: 'error' })
+      if (!isSilent) {
+        setAuditToast({ message: err.message || 'Failed to save draft.', type: 'error' })
+      }
+      throw err
     } finally {
       setAuditSavingDraft(false)
     }
@@ -663,6 +745,7 @@ export default function L1Home() {
     }
     if (auditRecord?.audit_status === 'SUBMITTED') {
       setAuditToast({ message: 'This placement audit has already been submitted.', type: 'info' })
+      handleOpenStatementModal()
       return
     }
 
@@ -691,9 +774,54 @@ export default function L1Home() {
       return
     }
 
+    // Validate that documents explicitly marked "Yes" have physical evidence in Drive or browser staging
+    const docFileMap = {
+      appointment_letter: !!appointmentDoc || !!stagedAppointment?.file,
+      salary_slip_1: salarySlips.length > 0 || !!salaryRows[0]?.file,
+      salary_slip_2: salarySlips.length > 1 || !!salaryRows[1]?.file,
+      salary_slip_3: salarySlips.length > 2 || !!salaryRows[2]?.file,
+      bank_statement_1: bankStatements.length > 0 || !!bankRows[0]?.file,
+      bank_statement_2: bankStatements.length > 1 || !!bankRows[1]?.file,
+      bank_statement_3: bankStatements.length > 2 || !!bankRows[2]?.file,
+      other_document: !!otherDoc || !!stagedOtherDoc?.file,
+    }
+
+    const checkLabels = [
+      ['appointment_letter', 'Appointment / Offer Letter'],
+      ['salary_slip_1', 'Salary Slip Month 1'],
+      ['salary_slip_2', 'Salary Slip Month 2'],
+      ['salary_slip_3', 'Salary Slip Month 3'],
+      ['bank_statement_1', 'Bank Statement Month 1'],
+      ['bank_statement_2', 'Bank Statement Month 2'],
+      ['bank_statement_3', 'Bank Statement Month 3'],
+    ]
+
+    for (const [key, label] of checkLabels) {
+      const row = documentAudit?.[key]
+      if (row?.available === 'Yes' && !docFileMap[key]) {
+        setError(`"${label}" is marked as "Yes" (Available), but no physical file has been uploaded to Drive or staged. Please attach the file or mark availability as "Pending" or "No".`)
+        setAuditToast({ message: `Physical file missing for ${label}`, type: 'error' })
+        return
+      }
+    }
+
+    setError('')
+    // Save draft first so the statement preview has all latest inputs
+    try {
+      await handleSaveDraft(true)
+      // Open statement modal for coordinator preview BEFORE submission!
+      await handleOpenStatementModal()
+    } catch {
+      // Error handled in handleSaveDraft
+    }
+  }
+
+  async function handleConfirmFinalSubmit() {
+    if (!sel.cand || !candDetail) return
     setAuditSubmitting(true)
     setError('')
     try {
+      const validEmployers = employerList.filter((e) => e.employer_name && e.employer_name.trim())
       const payload = {
         candidate_snapshot: {
           candidate_id: candDetail.candidate_id,
@@ -739,14 +867,33 @@ export default function L1Home() {
         body: JSON.stringify(payload),
       })
       setAuditRecord(res.audit)
+      setStatementModalOpen(false)
+      setFinalSubmitSuccessData({
+        candidateId: candDetail.candidate_id,
+        candidateName: `${candDetail.first_name} ${candDetail.last_name}`,
+        batch: lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch,
+        submittedAt: res.submitted_at || new Date().toISOString(),
+      })
       setAuditToast({ message: '✓ Placement Audit Statement submitted successfully!', type: 'success' })
-      handleOpenStatementModal()
     } catch (err) {
       setError(err.message || 'Failed to submit placement audit statement.')
       setAuditToast({ message: err.message || 'Submission failed.', type: 'error' })
     } finally {
       setAuditSubmitting(false)
     }
+  }
+
+  function handleFinalSubmissionCompleteReset() {
+    setFinalSubmitSuccessData(null)
+    setSubmitSuccessData(null)
+    clearStagedFiles()
+    setSel({ state: '', tc: '', order: '', batch: '', cand: '' })
+    setLists((l) => ({ ...l, tc: [], order: [], batch: [], cand: [] }))
+    setCandDetail(null)
+    setDocSummary(null)
+    setDocuments([])
+    resetAuditForm()
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   async function handleOpenStatementModal() {
@@ -789,9 +936,11 @@ export default function L1Home() {
     if (!c) return ''
     return `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim()
   }
-  const appointmentDoc = documents.find((d) => d.document_type === 'APPOINTMENT_LETTER')
-  const salarySlips = documents.filter((d) => d.document_type === 'SALARY_SLIP')
-  const bankStatements = documents.filter((d) => d.document_type === 'BANK_STATEMENT')
+  const safeDocs = Array.isArray(documents) ? documents : []
+  const appointmentDoc = safeDocs.find((d) => d.document_type === 'APPOINTMENT_LETTER')
+  const salarySlips = safeDocs.filter((d) => d.document_type === 'SALARY_SLIP')
+  const bankStatements = safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT')
+  const otherDoc = safeDocs.find((d) => d.document_type === 'OTHER_DOCUMENT')
 
   // --- Staging Handlers for Appointment Letter ---
   function handleSelectAppointment(file, isReplacement = false) {
@@ -814,6 +963,32 @@ export default function L1Home() {
     setStagedAppointment(null)
     setAppointmentError('')
     setReplacingAppointment(false)
+  }
+
+  function handleSelectOtherDoc(file) {
+    if (!file) {
+      setStagedOtherDoc(null)
+      setOtherDocError('')
+      return
+    }
+    const err = validateFile(file)
+    if (err) {
+      setOtherDocError(err)
+      return
+    }
+    setOtherDocError('')
+    setStagedOtherDoc({
+      file,
+      fileName: file.name,
+      fileSize: file.size,
+      replaceId: replacingOtherDoc && otherDoc ? otherDoc.id : null,
+    })
+  }
+
+  function handleRemoveStagedOtherDoc() {
+    setStagedOtherDoc(null)
+    setOtherDocError('')
+    setReplacingOtherDoc(false)
   }
 
   // --- Staging Handlers for Monthly Rows (Salary / Bank) ---
@@ -920,38 +1095,18 @@ export default function L1Home() {
 
   // --- Submission Pre-Validation ---
   function validateSubmissionPackage() {
-    setError('')
-
-    if (!sel.cand || !candDetail) {
-      return 'Please select a candidate before submitting.'
-    }
-
-    if (candDetail.has_active_hold) {
-      return `Placement submission blocked: Candidate has an active administrative hold (${candDetail.active_holds?.[0]?.hold_reason || 'Under Review'}).`
-    }
-
-    // 1. Appointment Letter check
-    const hasValidAppointment = appointmentDoc || (stagedAppointment && stagedAppointment.file)
-    if (!hasValidAppointment) {
-      return 'An Appointment / Offer Letter is required before final submission.'
-    }
+    // Check if staged files have validation errors
     if (stagedAppointment && appointmentError) {
       return `Appointment letter validation failed: ${appointmentError}`
     }
-
-    // 2. Salary Slips check
-    const replacedSalaryIds = new Set(Object.keys(stagedSalaryReplacements))
-    const retainedSalaryMonths = new Set(
-      salarySlips
-        .filter((d) => !replacedSalaryIds.has(d.id))
-        .map((d) => `${d.reporting_year}-${d.reporting_month}`)
-    )
+    if (stagedOtherDoc && otherDocError) {
+      return `Other document validation failed: ${otherDocError}`
+    }
 
     const stagedSalaryEntries = [
       ...salaryRows.filter((r) => r.file),
       ...Object.values(stagedSalaryReplacements).filter((r) => r.file),
     ]
-
     const stagedSalaryMonths = new Set()
     for (const item of stagedSalaryEntries) {
       if (item.error) {
@@ -961,33 +1116,13 @@ export default function L1Home() {
       if (stagedSalaryMonths.has(key)) {
         return `Duplicate reporting period selected for Salary Slips: ${MONTH_NAMES[item.month - 1]} ${item.year}.`
       }
-      if (retainedSalaryMonths.has(key)) {
-        return `A salary slip for ${MONTH_NAMES[item.month - 1]} ${item.year} already exists in records. Please select a different month or use replacement.`
-      }
       stagedSalaryMonths.add(key)
     }
-
-    const totalSalaryMonthsCount = retainedSalaryMonths.size + stagedSalaryMonths.size
-    if (totalSalaryMonthsCount < 3) {
-      return `At least 3 distinct reporting months of Salary Slips are required. Currently satisfied: ${totalSalaryMonthsCount}.`
-    }
-    if (totalSalaryMonthsCount > 12) {
-      return `Maximum 12 distinct reporting months allowed for Salary Slips. Currently provided: ${totalSalaryMonthsCount}.`
-    }
-
-    // 3. Bank Statements check
-    const replacedBankIds = new Set(Object.keys(stagedBankReplacements))
-    const retainedBankMonths = new Set(
-      bankStatements
-        .filter((d) => !replacedBankIds.has(d.id))
-        .map((d) => `${d.reporting_year}-${d.reporting_month}`)
-    )
 
     const stagedBankEntries = [
       ...bankRows.filter((r) => r.file),
       ...Object.values(stagedBankReplacements).filter((r) => r.file),
     ]
-
     const stagedBankMonths = new Set()
     for (const item of stagedBankEntries) {
       if (item.error) {
@@ -997,24 +1132,17 @@ export default function L1Home() {
       if (stagedBankMonths.has(key)) {
         return `Duplicate reporting period selected for Bank Statements: ${MONTH_NAMES[item.month - 1]} ${item.year}.`
       }
-      if (retainedBankMonths.has(key)) {
-        return `A bank statement for ${MONTH_NAMES[item.month - 1]} ${item.year} already exists in records. Please select a different month or use replacement.`
-      }
       stagedBankMonths.add(key)
     }
 
-    const totalBankMonthsCount = retainedBankMonths.size + stagedBankMonths.size
-    if (totalBankMonthsCount < 3) {
-      return `At least 3 distinct reporting months of Bank Statements are required. Currently satisfied: ${totalBankMonthsCount}.`
-    }
-    if (totalBankMonthsCount > 12) {
-      return `Maximum 12 distinct reporting months allowed for Bank Statements. Currently provided: ${totalBankMonthsCount}.`
-    }
+    const totalFilesToSubmit =
+      (stagedAppointment?.file ? 1 : 0) +
+      stagedSalaryEntries.length +
+      stagedBankEntries.length +
+      (stagedOtherDoc?.file ? 1 : 0)
 
-    // Check if there are any new or replacement files to submit
-    const totalFilesToSubmit = (stagedAppointment?.file ? 1 : 0) + stagedSalaryEntries.length + stagedBankEntries.length
     if (totalFilesToSubmit === 0) {
-      return 'All placement requirements are already satisfied from previous submissions, and no new or replacement documents have been staged.'
+      return 'No new or replacement files have been staged for upload.'
     }
 
     return null
@@ -1095,12 +1223,28 @@ export default function L1Home() {
       }
       formData.append('bank_statements_meta', JSON.stringify(bankMeta))
 
+      if (stagedOtherDoc?.file) {
+        formData.append('other_document', stagedOtherDoc.file)
+        if (otherDocTitle && otherDocTitle.trim()) {
+          formData.append('other_document_title', otherDocTitle.trim())
+        }
+        if (stagedOtherDoc.replaceId) {
+          formData.append('other_document_replace_id', stagedOtherDoc.replaceId)
+        }
+      }
+      formData.append('allow_partial', 'true')
+
       const res = await api(`/candidates/${sel.cand}/documents/submit`, null, {
         method: 'POST',
         body: formData,
       })
 
       setShowReviewModal(false)
+      clearStagedFiles()
+      await refreshDocuments(sel.cand)
+      if (candDetail) {
+        await loadAudit(sel.cand, candDetail)
+      }
       setSubmitSuccessData({
         candidateId: sel.cand,
         candidateName: `${candDetail.first_name} ${candDetail.last_name}`,
@@ -1109,31 +1253,32 @@ export default function L1Home() {
         bankMonths: bankMeta.map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
         totalSubmitted: res.submitted_count,
       })
+      setAuditToast({
+        message: `✓ Successfully synced ${res.submitted_count} file(s) to Google Drive. Candidate and form data preserved.`,
+        type: 'success',
+      })
     } catch (err) {
       setShowReviewModal(false)
       setError(err.message || 'Submission failed. Any created Google Drive files were safely cleaned up.')
-      window.scrollTo({ top: 0, behavior: 'smooth' })
+      setAuditToast({
+        message: err.message || 'Drive sync failed. Staged files preserved for retry.',
+        type: 'error',
+      })
     } finally {
       setSubmitting(false)
     }
   }
 
-  // Workflow reset after viewing success dialog
-  function handleCompleteWorkflowReset() {
+  // Dismiss Drive upload confirmation modal without resetting the form or candidate
+  function handleDismissUploadSuccess() {
     setSubmitSuccessData(null)
-    clearStagedFiles()
-    setSel({ state: '', tc: '', order: '', batch: '', cand: '' })
-    setLists((l) => ({ ...l, tc: [], order: [], batch: [], cand: [] }))
-    setCandDetail(null)
-    setDocSummary(null)
-    setDocuments([])
-    setError('')
   }
 
   // Calculations for Checklist & Progress
   const stagedSalaryCount = salaryRows.filter((r) => r.file).length + Object.values(stagedSalaryReplacements).filter((r) => r.file).length
   const stagedBankCount = bankRows.filter((r) => r.file).length + Object.values(stagedBankReplacements).filter((r) => r.file).length
-  const totalStagedFiles = (stagedAppointment?.file ? 1 : 0) + stagedSalaryCount + stagedBankCount
+  const otherDocStagedCount = stagedOtherDoc?.file ? 1 : 0
+  const totalStagedFiles = (stagedAppointment?.file ? 1 : 0) + stagedSalaryCount + stagedBankCount + otherDocStagedCount
 
   const appointmentSatisfied = !!appointmentDoc || !!stagedAppointment?.file
   const salarySatisfied = salarySlips.length + stagedSalaryCount >= 3
@@ -1319,116 +1464,66 @@ export default function L1Home() {
         </div>
       )}
 
-      {/* --------------------------------------------------------------------
-         Candidate Summary Profile Card
-         -------------------------------------------------------------------- */}
       {candDetail && (
         <section className="l1-cand-summary-card">
           <div className="l1-cand-header">
             <div className="l1-cand-identity">
-              <div className="l1-cand-avatar">{candInitials}</div>
+              <div className="l1-cand-avatar" style={{ background: 'linear-gradient(135deg, #0284C7 0%, #0369A1 100%)' }}>📦</div>
               <div className="l1-cand-names">
-                <h2>{candDetail.first_name} {candDetail.last_name}</h2>
+                <h2>Batch Details</h2>
                 <div className="l1-cand-id-badge">
-                  Candidate ID: <strong>{candDetail.candidate_id}</strong>
+                  Batch Code: <strong>{candDetail.batch_code || lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch || '—'}</strong>
                 </div>
               </div>
             </div>
             <div>
-              <span className={`l1-status-pill ${candDetail.appointed ? 'success' : 'info'}`}>
-                {candDetail.appointed ? '✓ Placed & Appointed' : '● Under Training / Pending Placement'}
+              <span className="l1-status-pill info">
+                {candDetail.state_name || sel.state || 'DDU-GKY'}
               </span>
             </div>
           </div>
 
           <div className="l1-cand-meta-grid">
             <div className="l1-meta-item">
-              <span className="l1-meta-label">Father's Name</span>
-              <span className="l1-meta-val">{candDetail.father_name || '—'}</span>
+              <span className="l1-meta-label">Batch Code / ID</span>
+              <span className="l1-meta-val">{candDetail.batch_code || lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch || '—'}</span>
             </div>
             <div className="l1-meta-item">
-              <span className="l1-meta-label">Date of Birth</span>
-              <span className="l1-meta-val">{candDetail.dob || '—'}</span>
+              <span className="l1-meta-label">Batch Start Date</span>
+              <span className="l1-meta-val">{candDetail.batch_start_date || '—'}</span>
             </div>
             <div className="l1-meta-item">
-              <span className="l1-meta-label">Mobile Contact</span>
-              <span className="l1-meta-val">{candDetail.mobile || '—'}</span>
+              <span className="l1-meta-label">Batch End Date</span>
+              <span className="l1-meta-val">{candDetail.batch_end_date || '—'}</span>
             </div>
             <div className="l1-meta-item">
-              <span className="l1-meta-label">Assigned Centre</span>
-              <span className="l1-meta-val">{lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc}</span>
+              <span className="l1-meta-label">Trade / Course Name</span>
+              <span className="l1-meta-val">{candDetail.trade_name || '—'}</span>
+            </div>
+            <div className="l1-meta-item">
+              <span className="l1-meta-label">Sanction Order</span>
+              <span className="l1-meta-val">{candDetail.sanction_order_number || sel.order || '—'}</span>
+            </div>
+            <div className="l1-meta-item">
+              <span className="l1-meta-label">Training Centre</span>
+              <span className="l1-meta-val">{candDetail.tc_name || lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc}</span>
+            </div>
+            <div className="l1-meta-item">
+              <span className="l1-meta-label">Centre State</span>
+              <span className="l1-meta-val">{candDetail.tc_state_name || sel.state || '—'}</span>
             </div>
           </div>
-
-          {/* Informational Duplicate Warning */}
-          {candDetail.has_duplicate_warning && (
-            <div className="l1-banner-warning" role="status">
-              <span style={{ fontSize: '16px' }}>ℹ️</span>
-              <div>
-                <strong>Informational Notice:</strong> Possible duplicate candidate record under administrative review. This notice does not block placement verification or file submission.
-              </div>
-            </div>
-          )}
-
-          {/* Blocking Submission Hold */}
-          {candDetail.has_active_hold && (
-            <div className="l1-banner-danger" role="alert">
-              <span style={{ fontSize: '18px' }}>⚠️</span>
-              <div>
-                <strong>Placement Submission Blocked:</strong> Administrative hold in effect ({candDetail.active_holds?.[0]?.hold_reason || 'Under review hold placed by centre manager'}). Final document upload is locked until the hold is resolved.
-              </div>
-            </div>
-          )}
         </section>
       )}
 
+
       {/* --------------------------------------------------------------------
-         Document Workspaces & Verification Sections (When Candidate Selected)
+         Unified Continuous L1 Placement Verification & Audit Workflow
          -------------------------------------------------------------------- */}
       {sel.cand && (
-        <>
-          {/* Navigation Tabs: Audit Statement vs Document Upload Workspaces */}
-          <div className="l1-workflow-nav-tabs l1-no-print">
-            <button
-              type="button"
-              className={`l1-workflow-tab ${activeWorkflowTab === 'audit' ? 'active' : ''}`}
-              onClick={() => setActiveWorkflowTab('audit')}
-            >
-              <div className="l1-tab-icon">📋</div>
-              <div className="l1-tab-text">
-                <strong>Placement Audit &amp; Sign-off Statement</strong>
-                <small>
-                  {auditRecord
-                    ? `Status: ${auditRecord.audit_status} (${auditRecord.audit_status === 'SUBMITTED' ? 'Locked' : 'Draft'})`
-                    : 'Employer, salary, document audit & sign-offs'}
-                </small>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              className={`l1-workflow-tab ${activeWorkflowTab === 'docs' ? 'active' : ''}`}
-              onClick={() => setActiveWorkflowTab('docs')}
-            >
-              <div className="l1-tab-icon">📁</div>
-              <div className="l1-tab-text">
-                <strong>Document Upload Workspaces</strong>
-                <small>
-                  {totalStagedFiles > 0
-                    ? `${totalStagedFiles} staged ${totalStagedFiles === 1 ? 'file' : 'files'} pending upload`
-                    : allRequirementsSatisfied ? 'All mandatory files verified' : 'Upload appointment letter, salary slips, bank statements'}
-                </small>
-              </div>
-            </button>
-          </div>
-
-          {/* ================================================================
-             WORKFLOW TAB 1: PLACEMENT AUDIT & SIGN-OFF STATEMENT
-             ================================================================ */}
-          {activeWorkflowTab === 'audit' && (
-            <ErrorBoundary title="Placement Audit Statement Workflow">
-              <div className="l1-audit-workflow-container" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Audit Header Actions Bar */}
+        <ErrorBoundary title="Placement Audit Statement Workflow">
+          <div className="l1-audit-workflow-container" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            {/* Audit Header Actions Bar */}
                 <div className="l1-audit-actions-bar">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
                     <span className={`l1-audit-status-badge ${isAuditSubmitted ? 'submitted' : 'draft'}`}>
@@ -1451,7 +1546,7 @@ export default function L1Home() {
                         disabled={loadingStatement}
                         style={{ padding: '8px 16px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
                       >
-                        <span>📄</span> {loadingStatement ? 'Loading...' : 'View Statement'}
+                        <span>📄</span> {loadingStatement ? 'Loading...' : 'Preview Statement'}
                       </button>
                     )}
                     {!isAuditSubmitted && (
@@ -1459,7 +1554,7 @@ export default function L1Home() {
                         <button
                           type="button"
                           className="l1-btn-secondary"
-                          onClick={handleSaveDraft}
+                          onClick={() => handleSaveDraft(false)}
                           disabled={auditSavingDraft || auditSubmitting || !candDetail || Boolean(auditLoadError)}
                           style={{ padding: '8px 16px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
                         >
@@ -1472,7 +1567,7 @@ export default function L1Home() {
                           disabled={auditSubmitting || auditSavingDraft || !candDetail || candDetail?.has_active_hold || Boolean(auditLoadError)}
                           style={{ padding: '8px 18px', fontSize: '13px' }}
                         >
-                          {auditSubmitting ? 'Submitting...' : 'Submit Statement →'}
+                          {auditSubmitting ? 'Preparing Statement…' : 'Preview & Submit →'}
                         </button>
                       </>
                     )}
@@ -1573,7 +1668,8 @@ export default function L1Home() {
                       </div>
                     )}
 
-                    {/* Section 1: Candidate Dossier Summary Card */}
+
+                    {/* Section 1: Candidate Placement Dossier */}
                     <div className="l1-audit-card">
                       <div className="l1-audit-card-header">
                         <div className="l1-audit-card-title">
@@ -1583,43 +1679,113 @@ export default function L1Home() {
                             <p>Verified candidate registration and batch allocation records from DDU-GKY Master</p>
                           </div>
                         </div>
-                        <span className="l1-status-pill info">Read-only Master Data</span>
+                        <div>
+                          <span className={`l1-status-pill ${candDetail?.appointed ? 'success' : 'info'}`}>
+                            {candDetail?.appointed ? '✓ Placed & Appointed' : '● Under Training / Pending Placement'}
+                          </span>
+                        </div>
                       </div>
+
+                      {/* Informational Duplicate Warning */}
+                      {candDetail?.has_duplicate_warning && (
+                        <div className="l1-banner-warning" role="status" style={{ margin: '0 0 16px 0' }}>
+                          <span style={{ fontSize: '16px' }}>ℹ️</span>
+                          <div>
+                            <strong>Informational Notice:</strong> Possible duplicate candidate record under administrative review. This notice does not block placement verification or file submission.
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Blocking Submission Hold */}
+                      {candDetail?.has_active_hold && (
+                        <div className="l1-banner-danger" role="alert" style={{ margin: '0 0 16px 0' }}>
+                          <span style={{ fontSize: '18px' }}>⚠️</span>
+                          <div>
+                            <strong>Placement Submission Blocked:</strong> Administrative hold in effect ({candDetail.active_holds?.[0]?.hold_reason || 'Under review hold placed by centre manager'}). Final document upload is locked until the hold is resolved.
+                          </div>
+                        </div>
+                      )}
 
                       <div className="cpass-dossier-grid">
                         <div className="cpass-dossier-item">
                           <span className="k">Candidate Name</span>
-                          <span className="v">{name(candDetail)}</span>
+                          <span className="v">{name(candDetail) || 'Not Available'}</span>
                         </div>
                         <div className="cpass-dossier-item">
                           <span className="k">Candidate ID</span>
-                          <span className="v">{candDetail?.candidate_id || sel.cand}</span>
+                          <span className="v">{candDetail?.candidate_id || sel.cand || 'Not Available'}</span>
                         </div>
                         <div className="cpass-dossier-item">
-                          <span className="k">Aadhaar (Last 4)</span>
-                          <span className="v">
-                            {candDetail?.aadhaar_number ? `XXXX-XXXX-${String(candDetail.aadhaar_number).slice(-4)}` : 'N/A'}
-                          </span>
-                        </div>
-                        <div className="cpass-dossier-item">
-                          <span className="k">Father's Name</span>
-                          <span className="v">{candDetail?.father_name || 'N/A'}</span>
+                          <span className="k">State</span>
+                          <span className="v">{candDetail?.state_name || sel.state || 'Not Available'}</span>
                         </div>
                         <div className="cpass-dossier-item">
                           <span className="k">Training Centre</span>
-                          <span className="v">{lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc || 'N/A'}</span>
+                          <span className="v">{candDetail?.tc_name || lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc || 'Not Available'}</span>
                         </div>
                         <div className="cpass-dossier-item">
                           <span className="k">Sanction Order</span>
-                          <span className="v">{sel.order || 'N/A'}</span>
+                          <span className="v">{candDetail?.sanction_order_number || sel.order || 'Not Available'}</span>
                         </div>
                         <div className="cpass-dossier-item">
-                          <span className="k">Batch Code</span>
-                          <span className="v">{lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch || 'N/A'}</span>
+                          <span className="k">Batch Code / KB Batch ID</span>
+                          <span className="v">
+                            {candDetail?.batch_code || lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || (candDetail?.kb_batch_id ? String(candDetail.kb_batch_id) : 'Not Available')}
+                          </span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Course / Trade Name</span>
+                          <span className="v">{candDetail?.trade_name || candDetail?.course_name || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Batch Start Date</span>
+                          <span className="v">{candDetail?.batch_start_date || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Batch End Date</span>
+                          <span className="v">{candDetail?.batch_end_date || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Father's Name</span>
+                          <span className="v">{candDetail?.father_name || candDetail?.candidate_father_name || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Gender</span>
+                          <span className="v">{candDetail?.gender || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Date of Birth</span>
+                          <span className="v">{candDetail?.dob || candDetail?.date_of_birth || 'Not Available'}</span>
                         </div>
                         <div className="cpass-dossier-item">
                           <span className="k">Mobile Number</span>
-                          <span className="v">{candDetail?.mobile || 'N/A'}</span>
+                          <span className="v">{candDetail?.mobile || candDetail?.mobile_number || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Candidate Email</span>
+                          <span className="v">{candDetail?.candidate_email || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Qualification</span>
+                          <span className="v">{candDetail?.candidate_qualification || candDetail?.qualification || 'Not Available'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Aadhaar (Masked)</span>
+                          <span className="v">
+                            {candDetail?.masked_aadhaar || (candDetail?.aadhaar_number ? `XXXX-XXXX-${String(candDetail.aadhaar_number).slice(-4)}` : (candDetail?.aadhar ? `XXXX-XXXX-${String(candDetail.aadhar).slice(-4)}` : 'Not Available'))}
+                          </span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Bank Account (Masked)</span>
+                          <span className="v">
+                            {candDetail?.masked_bank_account || (candDetail?.bank_account ? `XXXX-XXXX-${String(candDetail.bank_account).slice(-4)}` : 'Not Available')}
+                          </span>
+                        </div>
+                        <div className="cpass-dossier-item" style={{ gridColumn: 'span 2' }}>
+                          <span className="k">Address</span>
+                          <span className="v" title={candDetail?.address || candDetail?.permanent_address}>
+                            {candDetail?.address || candDetail?.permanent_address || 'Not Available'}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1956,6 +2122,619 @@ export default function L1Home() {
                 </div>
               </div>
 
+              <section className="l1-overview-card">
+            <div className="l1-overview-header">
+              <h3>Document Verification Progress</h3>
+              <span className={`l1-status-pill ${allRequirementsSatisfied ? 'success' : 'warning'}`}>
+                {allRequirementsSatisfied ? '✓ Placement Requirements Satisfied' : 'Pending Verification Requirements'}
+              </span>
+            </div>
+
+            <div className="l1-requirements-grid">
+              {/* Category 1: Appointment Letter */}
+              <div className={`l1-req-card ${appointmentDoc ? 'satisfied' : stagedAppointment?.file ? 'staged-only' : ''}`}>
+                <div className="l1-req-card-top">
+                  <div className="l1-req-title">
+                    <span className="l1-req-icon">✉</span>
+                    Appointment Letter
+                  </div>
+                  <span className={`l1-status-pill ${appointmentDoc ? 'success' : stagedAppointment?.file ? 'info' : 'danger'}`}>
+                    {appointmentDoc ? 'Verified' : stagedAppointment?.file ? 'Staged' : 'Missing'}
+                  </span>
+                </div>
+                <div className="l1-req-detail">
+                  Exactly 1 signed appointment or offer letter per candidate.
+                </div>
+                <div className="l1-req-status-row">
+                  <span>Requirement: 1 file</span>
+                  <strong>{appointmentDoc ? '1 Verified' : stagedAppointment?.file ? '1 Staged' : '0 Provided'}</strong>
+                </div>
+              </div>
+
+              {/* Category 2: Salary Slips */}
+              <div className={`l1-req-card ${salarySlips.length >= 3 ? 'satisfied' : salarySlips.length + stagedSalaryCount >= 3 ? 'staged-only' : ''}`}>
+                <div className="l1-req-card-top">
+                  <div className="l1-req-title">
+                    <span className="l1-req-icon">₹</span>
+                    Salary Slips
+                  </div>
+                  <span className={`l1-status-pill ${salarySlips.length >= 3 ? 'success' : salarySlips.length + stagedSalaryCount >= 3 ? 'info' : 'warning'}`}>
+                    {salarySlips.length >= 3 ? 'Satisfied' : salarySlips.length + stagedSalaryCount >= 3 ? 'Staged Satisfied' : 'Incomplete'}
+                  </span>
+                </div>
+                <div className="l1-req-detail">
+                  At least 3 distinct reporting months required (up to 12).
+                </div>
+                <div className="l1-req-status-row">
+                  <span>Requirement: Min 3 months</span>
+                  <strong>{salarySlips.length} Persisted + {stagedSalaryCount} Staged</strong>
+                </div>
+              </div>
+
+              {/* Category 3: Bank Statements */}
+              <div className={`l1-req-card ${bankStatements.length >= 3 ? 'satisfied' : bankStatements.length + stagedBankCount >= 3 ? 'staged-only' : ''}`}>
+                <div className="l1-req-card-top">
+                  <div className="l1-req-title">
+                    <span className="l1-req-icon">▤</span>
+                    Bank Statements
+                  </div>
+                  <span className={`l1-status-pill ${bankStatements.length >= 3 ? 'success' : bankStatements.length + stagedBankCount >= 3 ? 'info' : 'warning'}`}>
+                    {bankStatements.length >= 3 ? 'Satisfied' : bankStatements.length + stagedBankCount >= 3 ? 'Staged Satisfied' : 'Incomplete'}
+                  </span>
+                </div>
+                <div className="l1-req-detail">
+                  At least 3 distinct reporting months required matching salary disbursement.
+                </div>
+                <div className="l1-req-status-row">
+                  <span>Requirement: Min 3 months</span>
+                  <strong>{bankStatements.length} Persisted + {stagedBankCount} Staged</strong>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* ================================================================
+             SECTION 1: APPOINTMENT / OFFER LETTER
+             ================================================================ */}
+          <section className="l1-doc-workspace">
+            <div className="l1-workspace-header">
+              <div className="l1-workspace-title-box">
+                <span className="l1-step-badge">1</span>
+                <div>
+                  <h3>Appointment / Offer Letter</h3>
+                  <p>Attach the official signed appointment or offer letter. Exactly 1 active document per candidate.</p>
+                </div>
+              </div>
+              <span className={`l1-status-pill ${appointmentDoc ? 'success' : stagedAppointment?.file ? 'info' : 'danger'}`}>
+                {appointmentDoc ? '✓ Persisted in Drive' : stagedAppointment?.file ? '● Staged (Pending Submit)' : 'Required'}
+              </span>
+            </div>
+
+            {/* Display Persisted Appointment Letter if exists */}
+            {appointmentDoc && (
+              <div className={`l1-doc-item-card persisted ${replacingAppointment ? 'replacing' : ''}`}>
+                <div className="l1-doc-item-row">
+                  <div className="l1-file-info">
+                    <div className="l1-file-icon-box">✓</div>
+                    <div className="l1-file-details">
+                      <span className="title">{appointmentDoc.file_name}</span>
+                      <span className="meta">
+                        Size: {formatFileSize(appointmentDoc.file_size_bytes)} · Persisted: {new Date(appointmentDoc.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="l1-btn-group">
+                    <button
+                      type="button"
+                      className="l1-btn-outline"
+                      onClick={() => handleDownloadFile(appointmentDoc.id, appointmentDoc.file_name)}
+                      disabled={downloadingDocId === appointmentDoc.id}
+                    >
+                      {downloadingDocId === appointmentDoc.id ? 'Downloading…' : 'Download / Preview'}
+                    </button>
+                    <button
+                      type="button"
+                      className="l1-btn-secondary"
+                      onClick={() => {
+                        if (replacingAppointment) {
+                          handleRemoveStagedAppointment()
+                        } else {
+                          setReplacingAppointment(true)
+                        }
+                      }}
+                    >
+                      {replacingAppointment ? 'Cancel Replacement' : 'Replace Letter'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Staging Dropzone (New Upload or Replacement) */}
+            {(!appointmentDoc || replacingAppointment) && (
+              <div style={{ marginTop: '4px' }}>
+                <FileUploadControl
+                  file={stagedAppointment?.file}
+                  fileName={stagedAppointment?.fileName}
+                  fileSize={stagedAppointment?.fileSize}
+                  error={appointmentError}
+                  label={appointmentDoc ? 'Attach Replacement Appointment Letter' : 'Choose Appointment / Offer Letter'}
+                  helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
+                  stagedLabel={appointmentDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
+                  onSelect={(file) => handleSelectAppointment(file, !!appointmentDoc)}
+                  onRemove={handleRemoveStagedAppointment}
+                />
+              </div>
+            )}
+          </section>
+
+          {/* ================================================================
+             SECTION 2: SALARY SLIPS
+             ================================================================ */}
+          <section className="l1-doc-workspace">
+            <div className="l1-workspace-header">
+              <div className="l1-workspace-title-box">
+                <span className="l1-step-badge">2</span>
+                <div>
+                  <h3>Salary Slips</h3>
+                  <p>At least 3 distinct reporting months required. You may add up to 12 months for extended placements.</p>
+                </div>
+              </div>
+              <span className={`l1-status-pill ${salarySlips.length + stagedSalaryCount >= 3 ? 'success' : 'warning'}`}>
+                {salarySlips.length} Persisted + {stagedSalaryCount} Staged
+              </span>
+            </div>
+
+            {/* Persisted Salary Slips */}
+            {salarySlips.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Persisted Salary Slips ({salarySlips.length})
+                </span>
+                {salarySlips.map((doc) => {
+                  const isReplacing = activeReplaceIds.has(doc.id)
+                  const stagedRepl = stagedSalaryReplacements[doc.id]
+
+                  return (
+                    <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
+                      <div className="l1-doc-item-row">
+                        <div className="l1-file-info">
+                          <div className="l1-file-icon-box">₹</div>
+                          <div className="l1-file-details">
+                            <span className="title">
+                              {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
+                            </span>
+                            <span className="meta">
+                              Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
+                            </span>
+                          </div>
+                        </div>
+                        <div className="l1-btn-group">
+                          <button
+                            type="button"
+                            className="l1-btn-outline"
+                            onClick={() => handleDownloadFile(doc.id, doc.file_name)}
+                            disabled={downloadingDocId === doc.id}
+                          >
+                            {downloadingDocId === doc.id ? 'Downloading…' : 'Download / Preview'}
+                          </button>
+                          <button
+                            type="button"
+                            className="l1-btn-secondary"
+                            onClick={() => toggleReplaceMode(doc.id)}
+                          >
+                            {isReplacing ? 'Cancel Replacement' : 'Replace'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Inline Staged Replacement */}
+                      {isReplacing && (
+                        <div style={{ marginTop: '6px', paddingTop: '10px', borderTop: '1px dashed var(--line)' }}>
+                          <FileUploadControl
+                            file={stagedRepl?.file}
+                            fileName={stagedRepl?.fileName}
+                            fileSize={stagedRepl?.fileSize}
+                            error={stagedRepl?.error}
+                            label={`Attach Replacement for ${MONTH_NAMES[doc.reporting_month - 1]} ${doc.reporting_year}`}
+                            stagedLabel="Staged Replacement"
+                            onSelect={(file) => handleSelectReplacement(doc, file)}
+                            onRemove={() => toggleReplaceMode(doc.id)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Pending / Staged Monthly Slots */}
+            <div style={{ marginTop: '8px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
+                Pending / Staged Monthly Slots ({salaryRows.length})
+              </span>
+
+              {salaryRows.map((row, index) => (
+                <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
+                  <div className="l1-slot-top">
+                    <span className="l1-slot-badge">
+                      <span className="l1-step-dot">{index + 1}</span>
+                      Monthly Slot {index + 1}
+                    </span>
+                    <button
+                      type="button"
+                      className="l1-btn-danger-ghost"
+                      onClick={() => handleRemoveRow('SALARY', row.id)}
+                    >
+                      {salaryRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                    </button>
+                  </div>
+
+                  <div className="l1-slot-controls">
+                    <div className="l1-period-picker">
+                      <select
+                        value={row.month}
+                        aria-label={`Slot ${index + 1} Month`}
+                        onChange={(e) => updateRowField('SALARY', row.id, 'month', parseInt(e.target.value, 10))}
+                      >
+                        {MONTH_NAMES.map((m, mIdx) => (
+                          <option key={mIdx + 1} value={mIdx + 1}>{m}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={row.year}
+                        aria-label={`Slot ${index + 1} Year`}
+                        onChange={(e) => updateRowField('SALARY', row.id, 'year', parseInt(e.target.value, 10))}
+                      >
+                        {years.map((y) => (
+                          <option key={y} value={y}>{y}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <FileUploadControl
+                      file={row.file}
+                      fileName={row.fileName}
+                      fileSize={row.fileSize}
+                      error={row.error}
+                      label={`Attach Salary Slip (${MONTH_NAMES[row.month - 1]} ${row.year})`}
+                      helperText="PDF, PNG, JPG (up to 10MB)"
+                      stagedLabel="Staged (Pending Submit)"
+                      onSelect={(file) => updateRowField('SALARY', row.id, 'file', file)}
+                      onRemove={() => updateRowField('SALARY', row.id, 'file', null)}
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {salaryRows.length + salarySlips.length < 12 && (
+                <button
+                  type="button"
+                  className="l1-btn-add-slot"
+                  onClick={() => handleAddRow('SALARY')}
+                >
+                  + Add Another Salary Slip Month
+                </button>
+              )}
+            </div>
+          </section>
+
+          {/* ================================================================
+             SECTION 3: BANK STATEMENTS
+             ================================================================ */}
+          <section className="l1-doc-workspace">
+            <div className="l1-workspace-header">
+              <div className="l1-workspace-title-box">
+                <span className="l1-step-badge">3</span>
+                <div>
+                  <h3>Bank Statements</h3>
+                  <p>At least 3 distinct reporting months required showing direct salary credits. Up to 12 months maximum.</p>
+                </div>
+              </div>
+              <span className={`l1-status-pill ${bankStatements.length + stagedBankCount >= 3 ? 'success' : 'warning'}`}>
+                {bankStatements.length} Persisted + {stagedBankCount} Staged
+              </span>
+            </div>
+
+            {/* Persisted Bank Statements */}
+            {bankStatements.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Persisted Bank Statements ({bankStatements.length})
+                </span>
+                {bankStatements.map((doc) => {
+                  const isReplacing = activeReplaceIds.has(doc.id)
+                  const stagedRepl = stagedBankReplacements[doc.id]
+
+                  return (
+                    <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
+                      <div className="l1-doc-item-row">
+                        <div className="l1-file-info">
+                          <div className="l1-file-icon-box">▤</div>
+                          <div className="l1-file-details">
+                            <span className="title">
+                              {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
+                            </span>
+                            <span className="meta">
+                              Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
+                            </span>
+                          </div>
+                        </div>
+                        <div className="l1-btn-group">
+                          <button
+                            type="button"
+                            className="l1-btn-outline"
+                            onClick={() => handleDownloadFile(doc.id, doc.file_name)}
+                            disabled={downloadingDocId === doc.id}
+                          >
+                            {downloadingDocId === doc.id ? 'Downloading…' : 'Download / Preview'}
+                          </button>
+                          <button
+                            type="button"
+                            className="l1-btn-secondary"
+                            onClick={() => toggleReplaceMode(doc.id)}
+                          >
+                            {isReplacing ? 'Cancel Replacement' : 'Replace'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Inline Staged Replacement */}
+                      {isReplacing && (
+                        <div style={{ marginTop: '6px', paddingTop: '10px', borderTop: '1px dashed var(--line)' }}>
+                          <FileUploadControl
+                            file={stagedRepl?.file}
+                            fileName={stagedRepl?.fileName}
+                            fileSize={stagedRepl?.fileSize}
+                            error={stagedRepl?.error}
+                            label={`Attach Replacement for ${MONTH_NAMES[doc.reporting_month - 1]} ${doc.reporting_year}`}
+                            stagedLabel="Staged Replacement"
+                            onSelect={(file) => handleSelectReplacement(doc, file)}
+                            onRemove={() => toggleReplaceMode(doc.id)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Pending / Staged Monthly Slots */}
+            <div style={{ marginTop: '8px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
+                Pending / Staged Monthly Slots ({bankRows.length})
+              </span>
+
+              {bankRows.map((row, index) => (
+                <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
+                  <div className="l1-slot-top">
+                    <span className="l1-slot-badge">
+                      <span className="l1-step-dot">{index + 1}</span>
+                      Monthly Slot {index + 1}
+                    </span>
+                    <button
+                      type="button"
+                      className="l1-btn-danger-ghost"
+                      onClick={() => handleRemoveRow('BANK', row.id)}
+                    >
+                      {bankRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                    </button>
+                  </div>
+
+                  <div className="l1-slot-controls">
+                    <div className="l1-period-picker">
+                      <select
+                        value={row.month}
+                        aria-label={`Bank Slot ${index + 1} Month`}
+                        onChange={(e) => updateRowField('BANK', row.id, 'month', parseInt(e.target.value, 10))}
+                      >
+                        {MONTH_NAMES.map((m, mIdx) => (
+                          <option key={mIdx + 1} value={mIdx + 1}>{m}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={row.year}
+                        aria-label={`Bank Slot ${index + 1} Year`}
+                        onChange={(e) => updateRowField('BANK', row.id, 'year', parseInt(e.target.value, 10))}
+                      >
+                        {years.map((y) => (
+                          <option key={y} value={y}>{y}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <FileUploadControl
+                      file={row.file}
+                      fileName={row.fileName}
+                      fileSize={row.fileSize}
+                      error={row.error}
+                      label={`Attach Bank Statement (${MONTH_NAMES[row.month - 1]} ${row.year})`}
+                      helperText="PDF, PNG, JPG (up to 10MB)"
+                      stagedLabel="Staged (Pending Submit)"
+                      onSelect={(file) => updateRowField('BANK', row.id, 'file', file)}
+                      onRemove={() => updateRowField('BANK', row.id, 'file', null)}
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {bankRows.length + bankStatements.length < 12 && (
+                <button
+                  type="button"
+                  className="l1-btn-add-slot"
+                  onClick={() => handleAddRow('BANK')}
+                >
+                  + Add Another Bank Statement Month
+                </button>
+              )}
+            </div>
+          </section>
+
+          {/* Section 4: Other Document (Optional) Workspace */}
+          <section className="l1-doc-workspace">
+            <div className="l1-workspace-header">
+              <div className="l1-workspace-title">
+                <span className="l1-step-badge">4</span>
+                <div>
+                  <h3>Other Document (Optional)</h3>
+                  <p>Upload an optional supporting candidate document (e.g. joining report, id card, certification).</p>
+                </div>
+              </div>
+              <div className="l1-workspace-status">
+                {otherDoc ? (
+                  <span className="l1-status-pill success">
+                    ✓ Uploaded ({otherDoc.document_title || otherDoc.file_name})
+                  </span>
+                ) : stagedOtherDoc?.file ? (
+                  <span className="l1-status-pill info">
+                    1 File Staged (Optional)
+                  </span>
+                ) : (
+                  <span className="l1-status-pill secondary">
+                    Optional — Not Provided
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="l1-workspace-body">
+              {otherDoc && !replacingOtherDoc && (
+                <div className="l1-persisted-card" style={{ marginBottom: '14px' }}>
+                  <div className="l1-persisted-meta">
+                    <div className="l1-persisted-title">
+                      <strong>{otherDoc.document_title || 'Other Supporting Document'}</strong>
+                      <span className="l1-status-pill success" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                        ✓ Stored in Drive
+                      </span>
+                    </div>
+                    <div className="l1-persisted-sub">
+                      File: <code>{otherDoc.file_name}</code> ({formatFileSize(otherDoc.file_size_bytes)})
+                      {otherDoc.created_at && (
+                        <span> • Uploaded {new Date(otherDoc.created_at).toLocaleDateString('en-IN')}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="l1-persisted-actions">
+                    <button
+                      type="button"
+                      className="l1-btn-download"
+                      onClick={() => handleDownloadFile(otherDoc.id, otherDoc.file_name)}
+                      disabled={downloadingDocId === otherDoc.id}
+                      title="Download file from Google Drive"
+                    >
+                      {downloadingDocId === otherDoc.id ? 'Downloading…' : '⬇ Download'}
+                    </button>
+                    <button
+                      type="button"
+                      className="l1-btn-replace"
+                      onClick={() => {
+                        setReplacingOtherDoc(true)
+                        setOtherDocTitle(otherDoc.document_title || '')
+                      }}
+                      title="Replace existing file in Drive"
+                    >
+                      Replace File
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(!otherDoc || replacingOtherDoc) && (
+                <div className="l1-staged-box">
+                  {replacingOtherDoc && (
+                    <div className="l1-replace-banner">
+                      <span>Replacing <strong>{otherDoc?.document_title || otherDoc?.file_name}</strong></span>
+                      <button
+                        type="button"
+                        className="l1-btn-cancel-replace"
+                        onClick={() => {
+                          setReplacingOtherDoc(false)
+                          handleRemoveStagedOtherDoc()
+                        }}
+                      >
+                        Cancel Replacement
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="l1-field-group" style={{ marginBottom: '12px' }}>
+                    <label style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--txt)', marginBottom: '4px', display: 'block' }}>
+                      Document Title / Description (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      className="l1-input"
+                      placeholder="e.g. Joining Report, ID Card Copy, Transfer Certificate"
+                      value={otherDocTitle}
+                      onChange={(e) => setOtherDocTitle(e.target.value)}
+                      style={{ maxWidth: '400px' }}
+                    />
+                  </div>
+
+                  <FileUploadControl
+                    file={stagedOtherDoc?.file}
+                    fileName={stagedOtherDoc?.fileName}
+                    fileSize={stagedOtherDoc?.fileSize}
+                    error={otherDocError}
+                    label={replacingOtherDoc ? 'Attach Replacement File' : 'Attach Other Supporting Document (Optional)'}
+                    helperText="PDF, PNG, JPG (up to 10MB) — Optional"
+                    stagedLabel="Staged (Pending Submit)"
+                    onSelect={handleSelectOtherDoc}
+                    onRemove={handleRemoveStagedOtherDoc}
+                  />
+                </div>
+              )}
+            </div>
+          </section>
+
+              {/* Staging / Sync Dock */}
+              <div className="l1-audit-card l1-staging-sync-dock" style={{
+                background: 'linear-gradient(135deg, rgba(2, 132, 199, 0.04) 0%, rgba(11, 79, 184, 0.06) 100%)',
+                border: '1.5px dashed rgba(11, 79, 184, 0.25)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '16px',
+                padding: '18px 24px',
+              }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '20px' }}>☁️</span>
+                    <strong style={{ fontSize: '15px', color: 'var(--ink)' }}>
+                      Document Staging &amp; Google Drive Synchronization
+                    </strong>
+                    <span className={`l1-status-pill ${totalStagedFiles > 0 ? 'info' : 'secondary'}`} style={{ fontSize: '12px', padding: '3px 10px' }}>
+                      {totalStagedFiles} Staged {totalStagedFiles === 1 ? 'file' : 'files'}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '13px', color: 'var(--mut)' }}>
+                    {totalStagedFiles > 0
+                      ? 'Files are safely staged in browser memory. You can upload and sync them to Google Drive now, or proceed to complete the audit statement below.'
+                      : 'All document slots are synchronized. You can mark availability and compliance in Section 4 below.'}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  {totalStagedFiles > 0 ? (
+                    <button
+                      type="button"
+                      className="l1-btn-primary-action"
+                      onClick={handleOpenReviewModal}
+                      disabled={submitting}
+                      style={{ padding: '10px 20px', fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                      <span>☁️</span> Review &amp; Upload to Drive ({totalStagedFiles}) →
+                    </button>
+                  ) : (
+                    <span className="l1-status-pill success" style={{ padding: '6px 14px', fontSize: '12.5px' }}>
+                      ✓ Staging Area Clean
+                    </span>
+                  )}
+                </div>
+              </div>
+
               {/* Section 4: Document Verification & Criteria Compliance Audit */}
               <div className="l1-audit-card">
                 <div className="l1-audit-card-header">
@@ -1990,17 +2769,18 @@ export default function L1Home() {
                         { code: 'BS 1', label: 'Bank Statement / Passbook — Month 1', key: 'bank_statement_1', fileDoc: bankStatements[0], staged: bankRows[0]?.file },
                         { code: 'BS 2', label: 'Bank Statement / Passbook — Month 2', key: 'bank_statement_2', fileDoc: bankStatements[1], staged: bankRows[1]?.file },
                         { code: 'BS 3', label: 'Bank Statement / Passbook — Month 3', key: 'bank_statement_3', fileDoc: bankStatements[2], staged: bankRows[2]?.file },
-                      ].map((item, idx) => {
-                        const entry = documentAudit[item.key] || { available: 'Yes', compliance: 'Compliant', remarks: '' }
+                        { code: 'OD', label: `Other Document ${otherDocTitle || otherDoc?.document_title ? `— ${otherDocTitle || otherDoc?.document_title}` : '(Optional)'}`, key: 'other_document', fileDoc: otherDoc, staged: stagedOtherDoc?.file, isOptional: true },
+                      ].map((item) => {
+                        const entry = (documentAudit && typeof documentAudit[item.key] === 'object' && documentAudit[item.key]) || { available: 'Pending', compliance: 'Under Verification', remarks: '' }
                         const hasDriveDoc = !!item.fileDoc
                         const hasStaged = !!item.staged
                         return (
-                          <tr key={idx}>
+                          <tr key={item.key}>
                             <td><strong>{item.code}</strong></td>
                             <td>{item.label}</td>
                             <td>
                               <select
-                                value={entry.available || 'Yes'}
+                                value={entry.available || 'Pending'}
                                 onChange={(e) => handleUpdateDocAudit(item.key, 'available', e.target.value)}
                                 disabled={isAuditSubmitted}
                               >
@@ -2011,7 +2791,7 @@ export default function L1Home() {
                             </td>
                             <td>
                               <select
-                                value={entry.compliance || 'Compliant'}
+                                value={entry.compliance || 'Under Verification'}
                                 onChange={(e) => handleUpdateDocAudit(item.key, 'compliance', e.target.value)}
                                 disabled={isAuditSubmitted}
                               >
@@ -2028,6 +2808,10 @@ export default function L1Home() {
                               ) : hasStaged ? (
                                 <span className="l1-status-pill info" style={{ fontSize: '11px', padding: '2px 8px' }}>
                                   Staged in Browser
+                                </span>
+                              ) : item.isOptional ? (
+                                <span className="l1-status-pill secondary" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  Optional / Omitted
                                 </span>
                               ) : (
                                 <span className="l1-status-pill danger" style={{ fontSize: '11px', padding: '2px 8px' }}>
@@ -2224,11 +3008,16 @@ export default function L1Home() {
                   />
                 </div>
               </div>
+
                   </>
                 )}
+          </div>
+        </ErrorBoundary>
+      )}
 
-              {/* Sticky Bottom Action Dock for Audit */}
-              <div className="l1-submit-dock l1-no-print">
+      {/* Sticky Bottom Action Dock for Audit */}
+      {sel.cand && (
+        <div className="l1-submit-dock l1-no-print">
                 <div className="l1-dock-info">
                   <span className="l1-dock-title">
                     {isAuditSubmitted ? 'Placement Statement Finalized' : 'Placement Audit Statement Workflow'}
@@ -2259,7 +3048,7 @@ export default function L1Home() {
                       <button
                         type="button"
                         className="l1-btn-secondary"
-                        onClick={handleSaveDraft}
+                        onClick={() => handleSaveDraft(false)}
                         disabled={auditSavingDraft || auditSubmitting || !candDetail || Boolean(auditLoadError)}
                         style={{ padding: '10px 18px', fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '6px' }}
                       >
@@ -2272,497 +3061,13 @@ export default function L1Home() {
                         disabled={auditSubmitting || auditSavingDraft || !candDetail || candDetail?.has_active_hold || Boolean(auditLoadError)}
                         style={{ padding: '10px 20px', fontSize: '13.5px' }}
                       >
-                        {auditSubmitting ? 'Submitting...' : 'Submit Placement Statement →'}
+                        {auditSubmitting ? 'Preparing Statement…' : 'Preview & Submit Statement →'}
                       </button>
                     </>
                   )}
                 </div>
               </div>
-            </div>
-          </ErrorBoundary>
-          )}
-
-          {/* ================================================================
-             WORKFLOW TAB 2: DOCUMENT UPLOADS & STAGING WORKSPACES
-             ================================================================ */}
-          {activeWorkflowTab === 'docs' && (
-            <>
-              {/* Document Completion Progress Card */}
-              <section className="l1-overview-card">
-            <div className="l1-overview-header">
-              <h3>Document Verification Progress</h3>
-              <span className={`l1-status-pill ${allRequirementsSatisfied ? 'success' : 'warning'}`}>
-                {allRequirementsSatisfied ? '✓ Placement Requirements Satisfied' : 'Pending Verification Requirements'}
-              </span>
-            </div>
-
-            <div className="l1-requirements-grid">
-              {/* Category 1: Appointment Letter */}
-              <div className={`l1-req-card ${appointmentDoc ? 'satisfied' : stagedAppointment?.file ? 'staged-only' : ''}`}>
-                <div className="l1-req-card-top">
-                  <div className="l1-req-title">
-                    <span className="l1-req-icon">✉</span>
-                    Appointment Letter
-                  </div>
-                  <span className={`l1-status-pill ${appointmentDoc ? 'success' : stagedAppointment?.file ? 'info' : 'danger'}`}>
-                    {appointmentDoc ? 'Verified' : stagedAppointment?.file ? 'Staged' : 'Missing'}
-                  </span>
-                </div>
-                <div className="l1-req-detail">
-                  Exactly 1 signed appointment or offer letter per candidate.
-                </div>
-                <div className="l1-req-status-row">
-                  <span>Requirement: 1 file</span>
-                  <strong>{appointmentDoc ? '1 Verified' : stagedAppointment?.file ? '1 Staged' : '0 Provided'}</strong>
-                </div>
-              </div>
-
-              {/* Category 2: Salary Slips */}
-              <div className={`l1-req-card ${salarySlips.length >= 3 ? 'satisfied' : salarySlips.length + stagedSalaryCount >= 3 ? 'staged-only' : ''}`}>
-                <div className="l1-req-card-top">
-                  <div className="l1-req-title">
-                    <span className="l1-req-icon">₹</span>
-                    Salary Slips
-                  </div>
-                  <span className={`l1-status-pill ${salarySlips.length >= 3 ? 'success' : salarySlips.length + stagedSalaryCount >= 3 ? 'info' : 'warning'}`}>
-                    {salarySlips.length >= 3 ? 'Satisfied' : salarySlips.length + stagedSalaryCount >= 3 ? 'Staged Satisfied' : 'Incomplete'}
-                  </span>
-                </div>
-                <div className="l1-req-detail">
-                  At least 3 distinct reporting months required (up to 12).
-                </div>
-                <div className="l1-req-status-row">
-                  <span>Requirement: Min 3 months</span>
-                  <strong>{salarySlips.length} Persisted + {stagedSalaryCount} Staged</strong>
-                </div>
-              </div>
-
-              {/* Category 3: Bank Statements */}
-              <div className={`l1-req-card ${bankStatements.length >= 3 ? 'satisfied' : bankStatements.length + stagedBankCount >= 3 ? 'staged-only' : ''}`}>
-                <div className="l1-req-card-top">
-                  <div className="l1-req-title">
-                    <span className="l1-req-icon">▤</span>
-                    Bank Statements
-                  </div>
-                  <span className={`l1-status-pill ${bankStatements.length >= 3 ? 'success' : bankStatements.length + stagedBankCount >= 3 ? 'info' : 'warning'}`}>
-                    {bankStatements.length >= 3 ? 'Satisfied' : bankStatements.length + stagedBankCount >= 3 ? 'Staged Satisfied' : 'Incomplete'}
-                  </span>
-                </div>
-                <div className="l1-req-detail">
-                  At least 3 distinct reporting months required matching salary disbursement.
-                </div>
-                <div className="l1-req-status-row">
-                  <span>Requirement: Min 3 months</span>
-                  <strong>{bankStatements.length} Persisted + {stagedBankCount} Staged</strong>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* ================================================================
-             SECTION 1: APPOINTMENT / OFFER LETTER
-             ================================================================ */}
-          <section className="l1-doc-workspace">
-            <div className="l1-workspace-header">
-              <div className="l1-workspace-title-box">
-                <span className="l1-step-badge">1</span>
-                <div>
-                  <h3>Appointment / Offer Letter</h3>
-                  <p>Attach the official signed appointment or offer letter. Exactly 1 active document per candidate.</p>
-                </div>
-              </div>
-              <span className={`l1-status-pill ${appointmentDoc ? 'success' : stagedAppointment?.file ? 'info' : 'danger'}`}>
-                {appointmentDoc ? '✓ Persisted in Drive' : stagedAppointment?.file ? '● Staged (Pending Submit)' : 'Required'}
-              </span>
-            </div>
-
-            {/* Display Persisted Appointment Letter if exists */}
-            {appointmentDoc && (
-              <div className={`l1-doc-item-card persisted ${replacingAppointment ? 'replacing' : ''}`}>
-                <div className="l1-doc-item-row">
-                  <div className="l1-file-info">
-                    <div className="l1-file-icon-box">✓</div>
-                    <div className="l1-file-details">
-                      <span className="title">{appointmentDoc.file_name}</span>
-                      <span className="meta">
-                        Size: {formatFileSize(appointmentDoc.file_size_bytes)} · Persisted: {new Date(appointmentDoc.created_at).toLocaleDateString()}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="l1-btn-group">
-                    <button
-                      type="button"
-                      className="l1-btn-outline"
-                      onClick={() => downloadDocument(sel.cand, appointmentDoc.id, appointmentDoc.file_name)}
-                    >
-                      Download / Preview
-                    </button>
-                    <button
-                      type="button"
-                      className="l1-btn-secondary"
-                      onClick={() => {
-                        if (replacingAppointment) {
-                          handleRemoveStagedAppointment()
-                        } else {
-                          setReplacingAppointment(true)
-                        }
-                      }}
-                    >
-                      {replacingAppointment ? 'Cancel Replacement' : 'Replace Letter'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Staging Dropzone (New Upload or Replacement) */}
-            {(!appointmentDoc || replacingAppointment) && (
-              <div style={{ marginTop: '4px' }}>
-                <FileUploadControl
-                  file={stagedAppointment?.file}
-                  fileName={stagedAppointment?.fileName}
-                  fileSize={stagedAppointment?.fileSize}
-                  error={appointmentError}
-                  label={appointmentDoc ? 'Attach Replacement Appointment Letter' : 'Choose Appointment / Offer Letter'}
-                  helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
-                  stagedLabel={appointmentDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
-                  onSelect={(file) => handleSelectAppointment(file, !!appointmentDoc)}
-                  onRemove={handleRemoveStagedAppointment}
-                />
-              </div>
-            )}
-          </section>
-
-          {/* ================================================================
-             SECTION 2: SALARY SLIPS
-             ================================================================ */}
-          <section className="l1-doc-workspace">
-            <div className="l1-workspace-header">
-              <div className="l1-workspace-title-box">
-                <span className="l1-step-badge">2</span>
-                <div>
-                  <h3>Salary Slips</h3>
-                  <p>At least 3 distinct reporting months required. You may add up to 12 months for extended placements.</p>
-                </div>
-              </div>
-              <span className={`l1-status-pill ${salarySlips.length + stagedSalaryCount >= 3 ? 'success' : 'warning'}`}>
-                {salarySlips.length} Persisted + {stagedSalaryCount} Staged
-              </span>
-            </div>
-
-            {/* Persisted Salary Slips */}
-            {salarySlips.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Persisted Salary Slips ({salarySlips.length})
-                </span>
-                {salarySlips.map((doc) => {
-                  const isReplacing = activeReplaceIds.has(doc.id)
-                  const stagedRepl = stagedSalaryReplacements[doc.id]
-
-                  return (
-                    <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
-                      <div className="l1-doc-item-row">
-                        <div className="l1-file-info">
-                          <div className="l1-file-icon-box">₹</div>
-                          <div className="l1-file-details">
-                            <span className="title">
-                              {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
-                            </span>
-                            <span className="meta">
-                              Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
-                            </span>
-                          </div>
-                        </div>
-                        <div className="l1-btn-group">
-                          <button
-                            type="button"
-                            className="l1-btn-outline"
-                            onClick={() => downloadDocument(sel.cand, doc.id, doc.file_name)}
-                          >
-                            Download / Preview
-                          </button>
-                          <button
-                            type="button"
-                            className="l1-btn-secondary"
-                            onClick={() => toggleReplaceMode(doc.id)}
-                          >
-                            {isReplacing ? 'Cancel Replacement' : 'Replace'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Inline Staged Replacement */}
-                      {isReplacing && (
-                        <div style={{ marginTop: '6px', paddingTop: '10px', borderTop: '1px dashed var(--line)' }}>
-                          <FileUploadControl
-                            file={stagedRepl?.file}
-                            fileName={stagedRepl?.fileName}
-                            fileSize={stagedRepl?.fileSize}
-                            error={stagedRepl?.error}
-                            label={`Attach Replacement for ${MONTH_NAMES[doc.reporting_month - 1]} ${doc.reporting_year}`}
-                            stagedLabel="Staged Replacement"
-                            onSelect={(file) => handleSelectReplacement(doc, file)}
-                            onRemove={() => toggleReplaceMode(doc.id)}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
-            {/* Pending / Staged Monthly Slots */}
-            <div style={{ marginTop: '8px' }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
-                Pending / Staged Monthly Slots ({salaryRows.length})
-              </span>
-
-              {salaryRows.map((row, index) => (
-                <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
-                  <div className="l1-slot-top">
-                    <span className="l1-slot-badge">
-                      <span className="l1-step-dot">{index + 1}</span>
-                      Monthly Slot {index + 1}
-                    </span>
-                    <button
-                      type="button"
-                      className="l1-btn-danger-ghost"
-                      onClick={() => handleRemoveRow('SALARY', row.id)}
-                    >
-                      {salaryRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
-                    </button>
-                  </div>
-
-                  <div className="l1-slot-controls">
-                    <div className="l1-period-picker">
-                      <select
-                        value={row.month}
-                        aria-label={`Slot ${index + 1} Month`}
-                        onChange={(e) => updateRowField('SALARY', row.id, 'month', parseInt(e.target.value, 10))}
-                      >
-                        {MONTH_NAMES.map((m, mIdx) => (
-                          <option key={mIdx + 1} value={mIdx + 1}>{m}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={row.year}
-                        aria-label={`Slot ${index + 1} Year`}
-                        onChange={(e) => updateRowField('SALARY', row.id, 'year', parseInt(e.target.value, 10))}
-                      >
-                        {years.map((y) => (
-                          <option key={y} value={y}>{y}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <FileUploadControl
-                      file={row.file}
-                      fileName={row.fileName}
-                      fileSize={row.fileSize}
-                      error={row.error}
-                      label={`Attach Salary Slip (${MONTH_NAMES[row.month - 1]} ${row.year})`}
-                      helperText="PDF, PNG, JPG (up to 10MB)"
-                      stagedLabel="Staged (Pending Submit)"
-                      onSelect={(file) => updateRowField('SALARY', row.id, 'file', file)}
-                      onRemove={() => updateRowField('SALARY', row.id, 'file', null)}
-                    />
-                  </div>
-                </div>
-              ))}
-
-              {salaryRows.length + salarySlips.length < 12 && (
-                <button
-                  type="button"
-                  className="l1-btn-add-slot"
-                  onClick={() => handleAddRow('SALARY')}
-                >
-                  + Add Another Salary Slip Month
-                </button>
-              )}
-            </div>
-          </section>
-
-          {/* ================================================================
-             SECTION 3: BANK STATEMENTS
-             ================================================================ */}
-          <section className="l1-doc-workspace">
-            <div className="l1-workspace-header">
-              <div className="l1-workspace-title-box">
-                <span className="l1-step-badge">3</span>
-                <div>
-                  <h3>Bank Statements</h3>
-                  <p>At least 3 distinct reporting months required showing direct salary credits. Up to 12 months maximum.</p>
-                </div>
-              </div>
-              <span className={`l1-status-pill ${bankStatements.length + stagedBankCount >= 3 ? 'success' : 'warning'}`}>
-                {bankStatements.length} Persisted + {stagedBankCount} Staged
-              </span>
-            </div>
-
-            {/* Persisted Bank Statements */}
-            {bankStatements.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Persisted Bank Statements ({bankStatements.length})
-                </span>
-                {bankStatements.map((doc) => {
-                  const isReplacing = activeReplaceIds.has(doc.id)
-                  const stagedRepl = stagedBankReplacements[doc.id]
-
-                  return (
-                    <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
-                      <div className="l1-doc-item-row">
-                        <div className="l1-file-info">
-                          <div className="l1-file-icon-box">▤</div>
-                          <div className="l1-file-details">
-                            <span className="title">
-                              {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
-                            </span>
-                            <span className="meta">
-                              Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
-                            </span>
-                          </div>
-                        </div>
-                        <div className="l1-btn-group">
-                          <button
-                            type="button"
-                            className="l1-btn-outline"
-                            onClick={() => downloadDocument(sel.cand, doc.id, doc.file_name)}
-                          >
-                            Download / Preview
-                          </button>
-                          <button
-                            type="button"
-                            className="l1-btn-secondary"
-                            onClick={() => toggleReplaceMode(doc.id)}
-                          >
-                            {isReplacing ? 'Cancel Replacement' : 'Replace'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Inline Staged Replacement */}
-                      {isReplacing && (
-                        <div style={{ marginTop: '6px', paddingTop: '10px', borderTop: '1px dashed var(--line)' }}>
-                          <FileUploadControl
-                            file={stagedRepl?.file}
-                            fileName={stagedRepl?.fileName}
-                            fileSize={stagedRepl?.fileSize}
-                            error={stagedRepl?.error}
-                            label={`Attach Replacement for ${MONTH_NAMES[doc.reporting_month - 1]} ${doc.reporting_year}`}
-                            stagedLabel="Staged Replacement"
-                            onSelect={(file) => handleSelectReplacement(doc, file)}
-                            onRemove={() => toggleReplaceMode(doc.id)}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
-            {/* Pending / Staged Monthly Slots */}
-            <div style={{ marginTop: '8px' }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
-                Pending / Staged Monthly Slots ({bankRows.length})
-              </span>
-
-              {bankRows.map((row, index) => (
-                <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
-                  <div className="l1-slot-top">
-                    <span className="l1-slot-badge">
-                      <span className="l1-step-dot">{index + 1}</span>
-                      Monthly Slot {index + 1}
-                    </span>
-                    <button
-                      type="button"
-                      className="l1-btn-danger-ghost"
-                      onClick={() => handleRemoveRow('BANK', row.id)}
-                    >
-                      {bankRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
-                    </button>
-                  </div>
-
-                  <div className="l1-slot-controls">
-                    <div className="l1-period-picker">
-                      <select
-                        value={row.month}
-                        aria-label={`Bank Slot ${index + 1} Month`}
-                        onChange={(e) => updateRowField('BANK', row.id, 'month', parseInt(e.target.value, 10))}
-                      >
-                        {MONTH_NAMES.map((m, mIdx) => (
-                          <option key={mIdx + 1} value={mIdx + 1}>{m}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={row.year}
-                        aria-label={`Bank Slot ${index + 1} Year`}
-                        onChange={(e) => updateRowField('BANK', row.id, 'year', parseInt(e.target.value, 10))}
-                      >
-                        {years.map((y) => (
-                          <option key={y} value={y}>{y}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <FileUploadControl
-                      file={row.file}
-                      fileName={row.fileName}
-                      fileSize={row.fileSize}
-                      error={row.error}
-                      label={`Attach Bank Statement (${MONTH_NAMES[row.month - 1]} ${row.year})`}
-                      helperText="PDF, PNG, JPG (up to 10MB)"
-                      stagedLabel="Staged (Pending Submit)"
-                      onSelect={(file) => updateRowField('BANK', row.id, 'file', file)}
-                      onRemove={() => updateRowField('BANK', row.id, 'file', null)}
-                    />
-                  </div>
-                </div>
-              ))}
-
-              {bankRows.length + bankStatements.length < 12 && (
-                <button
-                  type="button"
-                  className="l1-btn-add-slot"
-                  onClick={() => handleAddRow('BANK')}
-                >
-                  + Add Another Bank Statement Month
-                </button>
-              )}
-            </div>
-          </section>
-
-          {/* ================================================================
-             STICKY BOTTOM FINAL SUBMISSION DOCK
-             ================================================================ */}
-          <div className="l1-submit-dock">
-            <div className="l1-dock-info">
-              <span className="l1-dock-title">
-                {allRequirementsSatisfied ? '✓ Placement Requirements Satisfied' : 'Pending Verification Requirements'}
-                <span className={`l1-status-pill ${totalStagedFiles > 0 ? 'info' : 'secondary'}`} style={{ fontSize: '12px', padding: '3px 10px' }}>
-                  {totalStagedFiles} Staged {totalStagedFiles === 1 ? 'file' : 'files'}
-                </span>
-              </span>
-              <p className="l1-dock-desc">
-                Files remain staged safely in your browser. Nothing is uploaded to Google Drive until you confirm.
-              </p>
-            </div>
-            <button
-              type="button"
-              className="l1-btn-primary-action"
-              onClick={handleOpenReviewModal}
-            >
-              Review & Final Submit →
-            </button>
-          </div>
-            </>
-          )}
-        </>
       )}
-
       {/* --------------------------------------------------------------------
          Empty Workspace Guidance (When No Candidate Selected)
          -------------------------------------------------------------------- */}
@@ -2877,6 +3182,24 @@ export default function L1Home() {
                 )}
               </div>
 
+              {/* 4. Other Document Summary  */}
+              {
+                otherRows.length > 0 && (
+                  <div>
+                    <strong style={{ display: 'block', marginBottom: '6px', fontSize: '13.5px' }}>
+                      4. Other Documents:
+                    </strong>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {otherRows.map((r) => (
+                        <div key={r.id} style={{ padding: '6px 12px', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '8px', fontSize: '13px' }}>
+                          {r.label}: {r.fileName} ({formatFileSize(r.fileSize)})
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              }
+
               <div className="l1-banner-warning" style={{ margin: '4px 0 0 0' }}>
                 <span style={{ fontSize: '16px' }}>☁️</span>
                 <div>
@@ -2957,7 +3280,48 @@ export default function L1Home() {
                 type="button"
                 className="l1-btn-primary-action"
                 style={{ width: '100%', justifyContent: 'center' }}
-                onClick={handleCompleteWorkflowReset}
+                onClick={handleDismissUploadSuccess}
+              >
+                Continue Placement Audit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+         FINAL PLACEMENT STATEMENT SUBMISSION CONFIRMATION MODAL
+         ==================================================================== */}
+      {finalSubmitSuccessData && (
+        <div className="l1-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="final-submit-title">
+          <div className="l1-modal-card" style={{ maxWidth: '520px' }}>
+            <div className="l1-modal-header" style={{ background: '#F0FDF4', borderBottom: '1px solid #BBF7D0' }}>
+              <h3 id="final-submit-title" style={{ color: '#166534', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                ✓ Placement Statement Finalized &amp; Submitted!
+              </h3>
+            </div>
+
+            <div className="l1-modal-body">
+              <p style={{ margin: 0, fontSize: '14.5px', color: 'var(--ink)', lineHeight: 1.5 }}>
+                The official Placement Audit Statement for candidate <strong>{finalSubmitSuccessData.candidateName}</strong> (ID: <strong>{finalSubmitSuccessData.candidateId}</strong>) has been finalized and submitted for L2 verification.
+              </p>
+
+              <div style={{ background: 'var(--soft)', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(11, 79, 184, 0.1)', marginTop: '8px' }}>
+                <div style={{ fontSize: '13px', color: 'var(--mut)' }}>
+                  Batch: <strong>{finalSubmitSuccessData.batch}</strong>
+                </div>
+                <div style={{ fontSize: '12.5px', color: 'var(--mut)', marginTop: '4px' }}>
+                  Submitted on: <strong>{new Date(finalSubmitSuccessData.submittedAt).toLocaleString('en-IN')}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="l1-modal-footer">
+              <button
+                type="button"
+                className="l1-btn-primary-action"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={handleFinalSubmissionCompleteReset}
               >
                 Done / Verify Next Candidate
               </button>
@@ -2974,6 +3338,29 @@ export default function L1Home() {
           statementData={statementData}
           showModalWrapper={true}
           onClose={() => setStatementModalOpen(false)}
+          extraFooterActions={
+            !isAuditSubmitted ? (
+              <>
+                <button
+                  type="button"
+                  className="l1-btn-secondary"
+                  onClick={() => setStatementModalOpen(false)}
+                  style={{ padding: '8px 16px', fontSize: '13px' }}
+                >
+                  ← Back to Edit
+                </button>
+                <button
+                  type="button"
+                  className="l1-btn-primary-action"
+                  disabled={auditSubmitting}
+                  onClick={handleConfirmFinalSubmit}
+                  style={{ padding: '8px 18px', fontSize: '13px' }}
+                >
+                  {auditSubmitting ? 'Finalizing Submission…' : 'Confirm & Final Submit Statement →'}
+                </button>
+              </>
+            ) : null
+          }
         />
       )}
 
