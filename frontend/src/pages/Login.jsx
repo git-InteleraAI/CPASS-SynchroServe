@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import logoSrc from '../../assets/synchro-serve-logo-4k.png'
+import logoSrc from '../../assets/SynchroServeLogo.png'
 import './Login.css'
 
 const ROLE_TABS = [
@@ -49,7 +49,7 @@ function rp(p, r) {
 }
 
 export default function Login() {
-  const { profile, login } = useAuth()
+  const { profile, loading, login } = useAuth()
   const [selectedTab, setSelectedTab] = useState(0)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -240,6 +240,16 @@ export default function Login() {
       stage.innerHTML = ''
     }
   }, [])
+
+  if (loading) {
+    return (
+      <main id="login" className="view" style={{ display: 'grid', placeItems: 'center' }}>
+        <div style={{ color: '#fff', fontSize: '15px', fontWeight: 500, letterSpacing: '0.01em' }}>
+          Restoring session…
+        </div>
+      </main>
+    )
+  }
 
   if (profile) return <Navigate to="/" replace />
 

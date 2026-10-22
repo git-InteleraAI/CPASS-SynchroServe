@@ -4,7 +4,7 @@ import Login from './pages/Login'
 import L1Home from './pages/L1Home'
 import AdminHome from './pages/AdminHome'
 
-import logoSrc from '../assets/synchro-serve-logo-4k.png'
+import logoSrc from '../assets/SynchroServeLogo.png'
 
 function Shell() {
   const { profile, loading, logout } = useAuth()

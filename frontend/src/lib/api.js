@@ -1,6 +1,7 @@
 const rawBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const BASE = rawBase.replace(/\/+$/, '')
 const TOKEN_KEY = 'cpass_token'
+const REFRESH_TOKEN_KEY = 'cpass_refresh_token'
 
 export function getToken() {
   try {
@@ -10,27 +11,95 @@ export function getToken() {
   }
 }
 
-export function setToken(token) {
+export function getRefreshToken() {
   try {
-    if (token) {
-      localStorage.setItem(TOKEN_KEY, token)
-    } else {
-      localStorage.removeItem(TOKEN_KEY)
-    }
+    return localStorage.getItem(REFRESH_TOKEN_KEY)
   } catch {
-    // LocalStorage may be unavailable in some private browsing contexts
+    return null
   }
 }
 
-export function clearToken() {
+export function setTokens({ accessToken, refreshToken }) {
   try {
-    localStorage.removeItem(TOKEN_KEY)
+    if (accessToken) {
+      localStorage.setItem(TOKEN_KEY, accessToken)
+    } else {
+      localStorage.removeItem(TOKEN_KEY)
+    }
+    if (refreshToken) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
+    } else if (refreshToken === null) {
+      localStorage.removeItem(REFRESH_TOKEN_KEY)
+    }
   } catch {
     // LocalStorage fallback
   }
 }
 
-export async function api(path, params, options = {}) {
+export function setToken(token) {
+  setTokens({ accessToken: token })
+}
+
+export function clearTokens() {
+  try {
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(REFRESH_TOKEN_KEY)
+  } catch {
+    // LocalStorage fallback
+  }
+}
+
+export function clearToken() {
+  clearTokens()
+}
+
+// In-flight refresh promise mutex to prevent concurrent refresh races
+let refreshPromise = null
+
+export async function refreshSession() {
+  if (refreshPromise) {
+    return refreshPromise
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const storedRefreshToken = getRefreshToken()
+      const res = await fetch(`${BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          refresh_token: storedRefreshToken || null,
+        }),
+        credentials: 'include',
+      })
+
+      if (!res.ok) {
+        clearTokens()
+        const errData = await res.json().catch(() => ({}))
+        const err = new Error(errData.detail || 'Session expired. Please log in again.')
+        err.status = res.status
+        throw err
+      }
+
+      const data = await res.json()
+      if (data.access_token) {
+        setTokens({
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token,
+        })
+      }
+      return data
+    } finally {
+      refreshPromise = null
+    }
+  })()
+
+  return refreshPromise
+}
+
+export async function api(path, params, options = {}, _isRetry = false) {
   const token = getToken()
   const qs = params ? '?' + new URLSearchParams(params).toString() : ''
   const headers = {
@@ -50,6 +119,32 @@ export async function api(path, params, options = {}) {
     credentials: 'include',
   })
 
+  // Handle 401 with automatic token refresh if token expired and not an auth management endpoint
+  const isAuthManagement =
+    path === '/auth/login' ||
+    path === '/auth/refresh' ||
+    path === '/auth/logout'
+
+  if (res.status === 401 && !isAuthManagement && !_isRetry) {
+    // Check if we have credentials or tokens to attempt refresh
+    const hasRefreshToken = !!getRefreshToken()
+    const hasToken = !!token
+
+    if (hasRefreshToken || hasToken) {
+      try {
+        await refreshSession()
+        // Retry the request once with refreshed token
+        return api(path, params, options, true)
+      } catch (refreshErr) {
+        // Refresh failed; clear tokens and propagate original 401
+        clearTokens()
+        const err = new Error(refreshErr.message || 'Session expired')
+        err.status = 401
+        throw err
+      }
+    }
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     const msg = body.detail || body.message || `Request failed (${res.status})`
@@ -61,7 +156,7 @@ export async function api(path, params, options = {}) {
   return res.json()
 }
 
-export async function downloadDocument(candidateId, documentId, fallbackFilename) {
+export async function downloadDocument(candidateId, documentId, fallbackFilename, _isRetry = false) {
   const token = getToken()
   const headers = {}
   if (token) {
@@ -71,10 +166,24 @@ export async function downloadDocument(candidateId, documentId, fallbackFilename
     headers,
     credentials: 'include',
   })
+
+  if (res.status === 401 && !_isRetry) {
+    try {
+      await refreshSession()
+      return downloadDocument(candidateId, documentId, fallbackFilename, true)
+    } catch {
+      clearTokens()
+      throw new Error('Session expired. Please log in again to download documents.')
+    }
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail || `Download failed (${res.status})`)
+    const err = new Error(body.detail || `Download failed (${res.status})`)
+    err.status = res.status
+    throw err
   }
+
   const blob = await res.blob()
   const url = window.URL.createObjectURL(blob)
   const a = document.createElement('a')

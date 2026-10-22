@@ -86,7 +86,7 @@
 }
 
 #login .fside .logo {
-  height: clamp(30px, 4.4vh, 38px);
+  height: clamp(40px, 4.4vh, 38px);
   width: auto;
   margin-bottom: clamp(14px, 2.8vh, 32px);
   align-self: flex-start;
@@ -118,6 +118,7 @@
 
 #login h1 .line {
   display: block;
+  font-size: clamp(28px, 2.6vw, 48px);
 }
 
 #login .sub {

@@ -321,3 +321,72 @@ def test_production_cookie_samesite_none_when_secure(mock_auth_client, mock_supa
     finally:
         settings.cookie_secure = original_secure
         settings.cookie_samesite = original_samesite
+
+
+def test_post_logout_get_me_returns_401(mock_supabase_db):
+    """After logging out, calling /auth/me returns 401 Missing authentication token."""
+    with patch("app.routers.auth.supabase"):
+        logout_res = client.post(
+            "/auth/logout",
+            headers={"Authorization": "Bearer sample-token"},
+        )
+        assert logout_res.status_code == 200
+
+    # Request without credentials represents post-logout client state
+    me_res = client.get("/auth/me")
+    assert me_res.status_code == 401
+    assert "Missing authentication token" in me_res.json()["detail"]
+
+
+def test_repeated_session_checks_are_idempotent():
+    """Repeated calls to /auth/me with valid Bearer token consistently return profile."""
+    with patch("app.auth.supabase") as mock_sb:
+        mock_u = MagicMock()
+        mock_u.user = mock_auth_user("u-1", "user@cpass.org")
+        mock_sb.auth.get_user.return_value = mock_u
+
+        mock_sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"id": "u-1", "email": "user@cpass.org", "full_name": "User One", "role": "L1_COORDINATOR", "is_active": True}
+        ]
+
+        for _ in range(3):
+            res = client.get("/auth/me", headers={"Authorization": "Bearer test-valid-token"})
+            assert res.status_code == 200
+            assert res.json()["role"] == "L1_COORDINATOR"
+
+
+def test_refresh_missing_token():
+    """Calling /auth/refresh without payload token or cookie returns 401."""
+    res = client.post("/auth/refresh", json={})
+    assert res.status_code == 401
+    assert "Missing refresh token." in res.json()["detail"]
+
+
+def test_refresh_invalid_token(mock_auth_client):
+    """Calling /auth/refresh with an expired or invalid refresh token returns 401."""
+    mock_auth_client.auth.refresh_session.side_effect = Exception("Invalid refresh token")
+    res = client.post("/auth/refresh", json={"refresh_token": "expired-refresh-token"})
+    assert res.status_code == 401
+    assert "Invalid or expired refresh token." in res.json()["detail"]
+
+
+def test_role_boundary_l1_coordinator_protected_endpoint():
+    """Verifies ADMIN users receive 403 on strictly L1-scoped document endpoints."""
+    with patch("app.auth.supabase") as mock_sb:
+        mock_u = MagicMock()
+        mock_u.user = mock_auth_user("admin-1", "admin@cpass.org")
+        mock_sb.auth.get_user.return_value = mock_u
+
+        # User is an ADMIN
+        mock_sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"id": "admin-1", "email": "admin@cpass.org", "full_name": "Admin User", "role": "ADMIN", "is_active": True}
+        ]
+
+        # ADMIN attempts to list documents (L1 only)
+        res = client.get(
+            "/candidates/123/documents",
+            headers={"Authorization": "Bearer admin-token"},
+        )
+        assert res.status_code == 403
+        assert "Your role cannot do this." in res.json()["detail"]
+

@@ -110,7 +110,7 @@ button, select, input, textarea {
 }
 
 .top .logo {
-  height: 36px;
+  height: 46px;
   width: auto;
   display: block;
   object-fit: contain;
@@ -796,7 +796,7 @@ dialog ul {
     padding: 10px 16px;
   }
   .top .logo {
-    height: 30px;
+    height: 40px;
   }
   .user-info {
     display: none;

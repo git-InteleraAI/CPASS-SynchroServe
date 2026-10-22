@@ -23,7 +23,9 @@ def extract_token(request: Request, authorization: str | None = None) -> str:
     """Extract token from Authorization header or HttpOnly cookie."""
     auth_header = authorization or request.headers.get("authorization") or request.headers.get("Authorization")
     if auth_header and isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
-        return auth_header.split(" ", 1)[1].strip()
+        token = auth_header.split(" ", 1)[1].strip()
+        if token:
+            return token
 
     cookie_token = request.cookies.get("cpass_access_token")
     if cookie_token:
