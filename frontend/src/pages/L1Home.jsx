@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, downloadDocument } from '../lib/api'
+import synchroLogo from '../../assets/SynchroServeLogo.png'
 import './L1Home.css'
+import ErrorBoundary from '../components/ErrorBoundary'
+import PlacementAuditStatement from '../components/PlacementAuditStatement'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -148,6 +151,113 @@ function FileUploadControl({
   )
 }
 
+// -----------------------------------------------------------------------------
+// Placement Audit Default State Creators
+// -----------------------------------------------------------------------------
+function createDefaultEmployer(detail) {
+  return {
+    id: `emp_${Date.now()}_1`,
+    employer_name: detail?.employer_name || '',
+    months_worked: '',
+    appointment_date: detail?.appointed_date || '',
+    designation: detail?.designation || '',
+    place_of_work: detail?.work_location || '',
+    monthly_ctc: detail?.monthly_ctc || '',
+    minimum_wages: '',
+  }
+}
+
+function createDefaultSalaryList(year) {
+  const y = year || new Date().getFullYear()
+  return [
+    {
+      id: `sal_${Date.now()}_1`,
+      month: 1,
+      year: y,
+      working_days: 26,
+      pay_days: 26,
+      leave_days: 0,
+      credit_date: '',
+      amount_credited: '',
+      gross_salary: '',
+      deductions: '',
+      net_salary: '',
+      bank_name: '',
+    },
+    {
+      id: `sal_${Date.now()}_2`,
+      month: 2,
+      year: y,
+      working_days: 26,
+      pay_days: 26,
+      leave_days: 0,
+      credit_date: '',
+      amount_credited: '',
+      gross_salary: '',
+      deductions: '',
+      net_salary: '',
+      bank_name: '',
+    },
+    {
+      id: `sal_${Date.now()}_3`,
+      month: 3,
+      year: y,
+      working_days: 26,
+      pay_days: 26,
+      leave_days: 0,
+      credit_date: '',
+      amount_credited: '',
+      gross_salary: '',
+      deductions: '',
+      net_salary: '',
+      bank_name: '',
+    },
+  ]
+}
+
+function createDefaultDocAudit() {
+  return {
+    appointment_letter_status: 'Available',
+    appointment_letter_compliant: true,
+    appointment_letter_remarks: 'Official appointment / offer letter with designation and compensation structure verified.',
+    salary_slips_status: 'Available (3 Months)',
+    salary_slips_compliant: true,
+    salary_slips_remarks: '3 consecutive monthly salary slips verified against wage criteria.',
+    bank_statements_status: 'Available (3 Months)',
+    bank_statements_compliant: true,
+    bank_statements_remarks: 'Bank credit entries match net salary disbursement amounts.',
+    overall_compliance: true,
+    remarks: '',
+  }
+}
+
+function createDefaultSignoffs() {
+  const today = new Date().toISOString().split('T')[0]
+  return {
+    centre_head: {
+      name: '',
+      designation: 'Centre Head',
+      date: today,
+      remarks: 'Candidate verification and placement documents verified.',
+      confirmed: false,
+    },
+    cops_team: {
+      name: '',
+      designation: 'COPS Lead / Coordinator',
+      date: today,
+      remarks: 'Salary credits and document compliance verified.',
+      confirmed: false,
+    },
+    business_leader: {
+      name: '',
+      designation: 'Business Head',
+      date: today,
+      remarks: 'Placement audit endorsed for formal sign-off.',
+      confirmed: false,
+    },
+  }
+}
+
 export default function L1Home() {
   const currentYear = new Date().getFullYear()
   const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1]
@@ -163,6 +273,36 @@ export default function L1Home() {
   const [documents, setDocuments] = useState([])
   const [loadingDocs, setLoadingDocs] = useState(false)
   const [error, setError] = useState('')
+
+  // Primary Workflow Tab ('audit' | 'docs')
+  const [activeWorkflowTab, setActiveWorkflowTab] = useState('audit')
+
+  // Placement Audit States
+  const [auditRecord, setAuditRecord] = useState(null)
+  const [loadingAudit, setLoadingAudit] = useState(false)
+  const [auditLoadError, setAuditLoadError] = useState('')
+  const [auditSavingDraft, setAuditSavingDraft] = useState(false)
+  const [auditSubmitting, setAuditSubmitting] = useState(false)
+  const [auditToast, setAuditToast] = useState(null) // { message, type }
+  const [auditRemarks, setAuditRemarks] = useState('')
+
+  const [employerList, setEmployerList] = useState(() => [createDefaultEmployer(null)])
+  const [salaryDetailList, setSalaryDetailList] = useState(() => createDefaultSalaryList(currentYear))
+  const [documentAudit, setDocumentAudit] = useState(createDefaultDocAudit)
+  const [signoffDetails, setSignoffDetails] = useState(createDefaultSignoffs)
+
+  // Statement View Modal State
+  const [statementModalOpen, setStatementModalOpen] = useState(false)
+  const [statementData, setStatementData] = useState(null)
+  const [loadingStatement, setLoadingStatement] = useState(false)
+
+  // Auto-dismiss toast notification
+  useEffect(() => {
+    if (auditToast) {
+      const t = setTimeout(() => setAuditToast(null), 4000)
+      return () => clearTimeout(t)
+    }
+  }, [auditToast])
 
   // Browser-Only Document Staging State (NEVER uploaded prematurely)
   // Appointment letter staging: { file, fileName, fileSize, replaceId } | null
@@ -199,6 +339,18 @@ export default function L1Home() {
     fill('state', api('/lookups/states'))
   }, [])
 
+  function resetAuditForm() {
+    setAuditRecord(null)
+    setAuditLoadError('')
+    setEmployerList([createDefaultEmployer(null)])
+    setSalaryDetailList(createDefaultSalaryList(currentYear))
+    setDocumentAudit(createDefaultDocAudit())
+    setSignoffDetails(createDefaultSignoffs())
+    setAuditRemarks('')
+    setStatementModalOpen(false)
+    setStatementData(null)
+  }
+
   function clearStagedFiles() {
     setStagedAppointment(null)
     setReplacingAppointment(false)
@@ -210,6 +362,7 @@ export default function L1Home() {
     setActiveReplaceIds(new Set())
     setShowReviewModal(false)
     setSubmitSuccessData(null)
+    resetAuditForm()
   }
 
   function refreshDocuments(candidateId) {
@@ -227,6 +380,87 @@ export default function L1Home() {
       .finally(() => setLoadingDocs(false))
   }
 
+  function loadAudit(candidateId, detail) {
+    if (!candidateId) return
+    setLoadingAudit(true)
+    setAuditLoadError('')
+    api(`/candidates/${candidateId}/audit`)
+      .then((res) => {
+        if (res?.exists && res.audit) {
+          const a = res.audit
+          setAuditRecord(a)
+          if (Array.isArray(a.employer_details) && a.employer_details.length > 0) {
+            setEmployerList(
+              a.employer_details.map((e, idx) => ({
+                id: `emp_${idx + 1}`,
+                employer_name: e.employer_name || '',
+                months_worked: e.months_worked ?? '',
+                appointment_date: e.appointment_date || '',
+                designation: e.designation || '',
+                place_of_work: e.place_of_work || '',
+                monthly_ctc: e.monthly_ctc ?? '',
+                minimum_wages: e.minimum_wages ?? '',
+              }))
+            )
+          } else {
+            setEmployerList([createDefaultEmployer(detail)])
+          }
+
+          if (Array.isArray(a.salary_details) && a.salary_details.length > 0) {
+            setSalaryDetailList(
+              a.salary_details.map((s, idx) => ({
+                id: `sal_${idx + 1}`,
+                month: s.month,
+                year: s.year,
+                working_days: s.working_days ?? '',
+                pay_days: s.pay_days ?? '',
+                leave_days: s.leave_days ?? '',
+                credit_date: s.credit_date || '',
+                amount_credited: s.amount_credited ?? '',
+                gross_salary: s.gross_salary ?? '',
+                deductions: s.deductions ?? '',
+                net_salary: s.net_salary ?? '',
+                bank_name: s.bank_name || '',
+              }))
+            )
+          } else {
+            setSalaryDetailList(createDefaultSalaryList(currentYear))
+          }
+
+          if (a.document_audit) {
+            setDocumentAudit((prev) => ({ ...prev, ...a.document_audit }))
+          }
+          if (a.signoff_details) {
+            setSignoffDetails({
+              centre_head: { ...createDefaultSignoffs().centre_head, ...(a.signoff_details.centre_head || {}) },
+              cops_team: { ...createDefaultSignoffs().cops_team, ...(a.signoff_details.cops_team || {}) },
+              business_leader: { ...createDefaultSignoffs().business_leader, ...(a.signoff_details.business_leader || {}) },
+            })
+          }
+          setAuditRemarks(a.remarks || '')
+        } else {
+          setAuditRecord(null)
+          setEmployerList([createDefaultEmployer(detail)])
+          setSalaryDetailList(createDefaultSalaryList(currentYear))
+          setDocumentAudit(createDefaultDocAudit())
+          setSignoffDetails(createDefaultSignoffs())
+          setAuditRemarks('')
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not load candidate audit:', err)
+        setAuditLoadError(err.message || 'Could not load placement audit record.')
+        setAuditRecord(null)
+        setEmployerList([createDefaultEmployer(detail)])
+        setSalaryDetailList(createDefaultSalaryList(currentYear))
+        setDocumentAudit(createDefaultDocAudit())
+        setSignoffDetails(createDefaultSignoffs())
+      })
+      .finally(() => {
+        setLoadingAudit(false)
+      })
+  }
+
   function pick(level, value) {
     setError('')
     setSel((s) => ({ ...s, ...Object.fromEntries(RESET[level].map((k) => [k, ''])), [level]: value }))
@@ -235,6 +469,7 @@ export default function L1Home() {
     setDocSummary(null)
     setDocuments([])
     clearStagedFiles()
+    resetAuditForm()
 
     if (!value) return
     if (level === 'state') fill('tc', api('/lookups/centres', { state: value }))
@@ -247,13 +482,313 @@ export default function L1Home() {
         .then((detail) => {
           setCandDetail(detail)
           refreshDocuments(value)
+          loadAudit(value, detail)
         })
         .catch((e) => setError(e.message))
         .finally(() => setLoadingDetail(false))
     }
   }
 
-  const name = (c) => `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim()
+  // --- Audit Employer List Handlers ---
+  function handleAddEmployerRow() {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    const newRow = {
+      id: `emp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      employer_name: '',
+      months_worked: '',
+      appointment_date: '',
+      designation: '',
+      place_of_work: '',
+      monthly_ctc: '',
+      minimum_wages: '',
+    }
+    setEmployerList((prev) => [...prev, newRow])
+  }
+
+  function handleRemoveEmployerRow(id) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (employerList.length <= 1) return
+    setEmployerList((prev) => prev.filter((e) => e.id !== id))
+  }
+
+  function handleUpdateEmployerField(id, field, value) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    setEmployerList((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, [field]: value } : e))
+    )
+  }
+
+  // --- Audit Salary List Handlers ---
+  function handleAddSalaryRow() {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (salaryDetailList.length >= 12) {
+      setAuditToast({ message: 'Maximum 12 monthly salary entries allowed.', type: 'info' })
+      return
+    }
+    const nextMonth = ((salaryDetailList.length) % 12) + 1
+    const newRow = {
+      id: `sal_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      month: nextMonth,
+      year: currentYear,
+      working_days: 26,
+      pay_days: 26,
+      leave_days: 0,
+      credit_date: '',
+      amount_credited: '',
+      gross_salary: '',
+      deductions: '',
+      net_salary: '',
+      bank_name: '',
+    }
+    setSalaryDetailList((prev) => [...prev, newRow])
+  }
+
+  function handleRemoveSalaryRow(id) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (salaryDetailList.length <= 3) {
+      setAuditToast({ message: 'At least 3 monthly salary entries are required.', type: 'info' })
+      return
+    }
+    setSalaryDetailList((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  function handleUpdateSalaryField(id, field, value) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    setSalaryDetailList((prev) =>
+      prev.map((s) => {
+        if (s.id !== id) return s
+        const updated = { ...s, [field]: value }
+        if (field === 'gross_salary' || field === 'deductions') {
+          const g = parseFloat(field === 'gross_salary' ? value : s.gross_salary) || 0
+          const d = parseFloat(field === 'deductions' ? value : s.deductions) || 0
+          if (g > 0) {
+            updated.net_salary = Math.max(0, g - d).toString()
+          }
+        }
+        return updated
+      })
+    )
+  }
+
+  function handleUpdateDocAudit(field, value) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    setDocumentAudit((prev) => ({ ...prev, [field]: value }))
+  }
+
+  function handleUpdateSignoff(official, field, value) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    setSignoffDetails((prev) => ({
+      ...prev,
+      [official]: { ...prev[official], [field]: value },
+    }))
+  }
+
+  // --- Audit Draft & Submit Handlers ---
+  async function handleSaveDraft() {
+    if (!sel.cand || !candDetail) return
+    if (auditLoadError) {
+      setError('Cannot save draft while audit record failed to load. Please retry loading first.')
+      setAuditToast({ message: 'Cannot save draft: please retry loading first.', type: 'error' })
+      return
+    }
+    if (auditRecord?.audit_status === 'SUBMITTED') {
+      setAuditToast({ message: 'This placement audit is already submitted and locked against editing.', type: 'info' })
+      return
+    }
+    setAuditSavingDraft(true)
+    setError('')
+    try {
+      const payload = {
+        candidate_snapshot: {
+          candidate_id: candDetail.candidate_id,
+          first_name: candDetail.first_name,
+          last_name: candDetail.last_name,
+          father_name: candDetail.father_name,
+          dob: candDetail.dob,
+          mobile: candDetail.mobile,
+          state: sel.state,
+          tc_name: lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc,
+          batch_code: lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch,
+          sanction_order: sel.order,
+        },
+        employer_details: employerList
+          .filter((e) => e.employer_name && e.employer_name.trim())
+          .map((e) => ({
+            employer_name: e.employer_name.trim(),
+            months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
+            appointment_date: e.appointment_date || null,
+            designation: e.designation || null,
+            place_of_work: e.place_of_work || null,
+            monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null ? parseFloat(e.monthly_ctc) : null,
+            minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
+          })),
+        salary_details: salaryDetailList.map((s) => ({
+          month: parseInt(s.month, 10),
+          year: parseInt(s.year, 10),
+          working_days: s.working_days !== '' && s.working_days !== null ? parseInt(s.working_days, 10) : null,
+          pay_days: s.pay_days !== '' && s.pay_days !== null ? parseInt(s.pay_days, 10) : null,
+          leave_days: s.leave_days !== '' && s.leave_days !== null ? parseInt(s.leave_days, 10) : null,
+          credit_date: s.credit_date || null,
+          amount_credited: s.amount_credited !== '' && s.amount_credited !== null ? parseFloat(s.amount_credited) : null,
+          gross_salary: s.gross_salary !== '' && s.gross_salary !== null ? parseFloat(s.gross_salary) : null,
+          deductions: s.deductions !== '' && s.deductions !== null ? parseFloat(s.deductions) : null,
+          net_salary: s.net_salary !== '' && s.net_salary !== null ? parseFloat(s.net_salary) : null,
+          bank_name: s.bank_name || null,
+        })),
+        document_audit: documentAudit,
+        signoff_details: signoffDetails,
+        remarks: auditRemarks || null,
+      }
+
+      const res = await api(`/candidates/${sel.cand}/audit/draft`, null, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setAuditRecord(res.audit)
+      setAuditToast({ message: '✓ Draft placement audit saved successfully.', type: 'success' })
+    } catch (err) {
+      setError(err.message || 'Failed to save audit draft.')
+      setAuditToast({ message: err.message || 'Failed to save draft.', type: 'error' })
+    } finally {
+      setAuditSavingDraft(false)
+    }
+  }
+
+  async function handleSubmitAuditStatement() {
+    if (!sel.cand || !candDetail) return
+    if (auditLoadError) {
+      setError('Cannot submit statement while audit record failed to load. Please retry loading first.')
+      setAuditToast({ message: 'Cannot submit statement: please retry loading first.', type: 'error' })
+      return
+    }
+    if (auditRecord?.audit_status === 'SUBMITTED') {
+      setAuditToast({ message: 'This placement audit has already been submitted.', type: 'info' })
+      return
+    }
+
+    if (candDetail.has_active_hold) {
+      setError(`Cannot submit placement audit: ${candDetail.active_holds?.[0]?.hold_reason || 'Administrative hold in effect'}.`)
+      return
+    }
+
+    const validEmployers = employerList.filter((e) => e.employer_name && e.employer_name.trim())
+    if (validEmployers.length === 0) {
+      setError('At least one Employer Name is required to finalize placement audit.')
+      setAuditToast({ message: 'Employer name is required.', type: 'error' })
+      return
+    }
+
+    if (salaryDetailList.length < 3) {
+      setError('At least 3 distinct monthly salary records are required to finalize placement audit.')
+      setAuditToast({ message: 'Min 3 salary entries required.', type: 'error' })
+      return
+    }
+
+    const periods = new Set(salaryDetailList.map((s) => `${s.month}-${s.year}`))
+    if (periods.size < salaryDetailList.length) {
+      setError('Duplicate reporting month and year found in salary details. Each reporting month must be unique.')
+      setAuditToast({ message: 'Duplicate reporting months found.', type: 'error' })
+      return
+    }
+
+    setAuditSubmitting(true)
+    setError('')
+    try {
+      const payload = {
+        candidate_snapshot: {
+          candidate_id: candDetail.candidate_id,
+          first_name: candDetail.first_name,
+          last_name: candDetail.last_name,
+          father_name: candDetail.father_name,
+          dob: candDetail.dob,
+          mobile: candDetail.mobile,
+          state: sel.state,
+          tc_name: lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc,
+          batch_code: lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch,
+          sanction_order: sel.order,
+        },
+        employer_details: validEmployers.map((e) => ({
+          employer_name: e.employer_name.trim(),
+          months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
+          appointment_date: e.appointment_date || null,
+          designation: e.designation || null,
+          place_of_work: e.place_of_work || null,
+          monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null ? parseFloat(e.monthly_ctc) : null,
+          minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
+        })),
+        salary_details: salaryDetailList.map((s) => ({
+          month: parseInt(s.month, 10),
+          year: parseInt(s.year, 10),
+          working_days: s.working_days !== '' && s.working_days !== null ? parseInt(s.working_days, 10) : null,
+          pay_days: s.pay_days !== '' && s.pay_days !== null ? parseInt(s.pay_days, 10) : null,
+          leave_days: s.leave_days !== '' && s.leave_days !== null ? parseInt(s.leave_days, 10) : null,
+          credit_date: s.credit_date || null,
+          amount_credited: s.amount_credited !== '' && s.amount_credited !== null ? parseFloat(s.amount_credited) : null,
+          gross_salary: s.gross_salary !== '' && s.gross_salary !== null ? parseFloat(s.gross_salary) : null,
+          deductions: s.deductions !== '' && s.deductions !== null ? parseFloat(s.deductions) : null,
+          net_salary: s.net_salary !== '' && s.net_salary !== null ? parseFloat(s.net_salary) : null,
+          bank_name: s.bank_name || null,
+        })),
+        document_audit: documentAudit,
+        signoff_details: signoffDetails,
+        remarks: auditRemarks || null,
+      }
+
+      const res = await api(`/candidates/${sel.cand}/audit/submit`, null, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setAuditRecord(res.audit)
+      setAuditToast({ message: '✓ Placement Audit Statement submitted successfully!', type: 'success' })
+      handleOpenStatementModal()
+    } catch (err) {
+      setError(err.message || 'Failed to submit placement audit statement.')
+      setAuditToast({ message: err.message || 'Submission failed.', type: 'error' })
+    } finally {
+      setAuditSubmitting(false)
+    }
+  }
+
+  async function handleOpenStatementModal() {
+    if (!sel.cand) return
+    setLoadingStatement(true)
+    try {
+      const res = await api(`/candidates/${sel.cand}/audit/statement`)
+      setStatementData(res)
+      setStatementModalOpen(true)
+    } catch (err) {
+      setError(err.message || 'Failed to load placement statement.')
+      setAuditToast({ message: err.message || 'Failed to load statement.', type: 'error' })
+    } finally {
+      setLoadingStatement(false)
+    }
+  }
+
+  // Calculated totals for salary details
+  const computedSalaryTotals = salaryDetailList.reduce(
+    (acc, row) => {
+      const gross = parseFloat(row.gross_salary) || 0
+      const ded = parseFloat(row.deductions) || 0
+      const net = parseFloat(row.net_salary) || 0
+      const cred = parseFloat(row.amount_credited) || 0
+      acc.gross += gross
+      acc.deductions += ded
+      acc.net += net
+      acc.credited += cred
+      if (gross > 0) acc.validMonths += 1
+      return acc
+    },
+    { gross: 0, deductions: 0, net: 0, credited: 0, validMonths: 0 }
+  )
+  const computedAvgGross =
+    computedSalaryTotals.validMonths > 0 ? computedSalaryTotals.gross / computedSalaryTotals.validMonths : 0
+  const isAuditSubmitted = auditRecord?.audit_status === 'SUBMITTED'
+
+
+  const name = (c) => {
+    if (!c) return ''
+    return `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim()
+  }
   const appointmentDoc = documents.find((d) => d.document_type === 'APPOINTMENT_LETTER')
   const salarySlips = documents.filter((d) => d.document_type === 'SALARY_SLIP')
   const bankStatements = documents.filter((d) => d.document_type === 'BANK_STATEMENT')
@@ -852,8 +1387,908 @@ export default function L1Home() {
          -------------------------------------------------------------------- */}
       {sel.cand && (
         <>
-          {/* Document Completion Progress Card */}
-          <section className="l1-overview-card">
+          {/* Navigation Tabs: Audit Statement vs Document Upload Workspaces */}
+          <div className="l1-workflow-nav-tabs l1-no-print">
+            <button
+              type="button"
+              className={`l1-workflow-tab ${activeWorkflowTab === 'audit' ? 'active' : ''}`}
+              onClick={() => setActiveWorkflowTab('audit')}
+            >
+              <div className="l1-tab-icon">📋</div>
+              <div className="l1-tab-text">
+                <strong>Placement Audit &amp; Sign-off Statement</strong>
+                <small>
+                  {auditRecord
+                    ? `Status: ${auditRecord.audit_status} (${auditRecord.audit_status === 'SUBMITTED' ? 'Locked' : 'Draft'})`
+                    : 'Employer, salary, document audit & sign-offs'}
+                </small>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              className={`l1-workflow-tab ${activeWorkflowTab === 'docs' ? 'active' : ''}`}
+              onClick={() => setActiveWorkflowTab('docs')}
+            >
+              <div className="l1-tab-icon">📁</div>
+              <div className="l1-tab-text">
+                <strong>Document Upload Workspaces</strong>
+                <small>
+                  {totalStagedFiles > 0
+                    ? `${totalStagedFiles} staged ${totalStagedFiles === 1 ? 'file' : 'files'} pending upload`
+                    : allRequirementsSatisfied ? 'All mandatory files verified' : 'Upload appointment letter, salary slips, bank statements'}
+                </small>
+              </div>
+            </button>
+          </div>
+
+          {/* ================================================================
+             WORKFLOW TAB 1: PLACEMENT AUDIT & SIGN-OFF STATEMENT
+             ================================================================ */}
+          {activeWorkflowTab === 'audit' && (
+            <ErrorBoundary title="Placement Audit Statement Workflow">
+              <div className="l1-audit-workflow-container" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                {/* Audit Header Actions Bar */}
+                <div className="l1-audit-actions-bar">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                    <span className={`l1-audit-status-badge ${isAuditSubmitted ? 'submitted' : 'draft'}`}>
+                      <span style={{ fontSize: '10px' }}>●</span>
+                      {isAuditSubmitted ? 'SUBMITTED & FINALIZED' : 'AUDIT DRAFT IN PROGRESS'}
+                    </span>
+                    {auditRecord?.updated_at && (
+                      <span style={{ fontSize: '13px', color: 'var(--mut)' }}>
+                        Last saved: {new Date(auditRecord.updated_at).toLocaleString('en-IN')}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="l1-audit-btn-group">
+                    {auditRecord && (
+                      <button
+                        type="button"
+                        className="l1-btn-secondary"
+                        onClick={handleOpenStatementModal}
+                        disabled={loadingStatement}
+                        style={{ padding: '8px 16px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <span>📄</span> {loadingStatement ? 'Loading...' : 'View Statement'}
+                      </button>
+                    )}
+                    {!isAuditSubmitted && (
+                      <>
+                        <button
+                          type="button"
+                          className="l1-btn-secondary"
+                          onClick={handleSaveDraft}
+                          disabled={auditSavingDraft || auditSubmitting || !candDetail || Boolean(auditLoadError)}
+                          style={{ padding: '8px 16px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                        >
+                          <span>💾</span> {auditSavingDraft ? 'Saving Draft...' : 'Save Draft'}
+                        </button>
+                        <button
+                          type="button"
+                          className="l1-btn-primary-action"
+                          onClick={handleSubmitAuditStatement}
+                          disabled={auditSubmitting || auditSavingDraft || !candDetail || candDetail?.has_active_hold || Boolean(auditLoadError)}
+                          style={{ padding: '8px 18px', fontSize: '13px' }}
+                        >
+                          {auditSubmitting ? 'Submitting...' : 'Submit Statement →'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Audit Load Error Notice Banner */}
+                {auditLoadError && (
+                  <div style={{ background: '#FFF7ED', border: '1px solid #FED7AA', borderRadius: '14px', padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '20px' }}>⚠️</span>
+                      <div style={{ fontSize: '13.5px', color: '#9A3412' }}>
+                        <strong>Audit Record Notice:</strong> {auditLoadError} Showing editable draft form.
+                      </div>
+                    </div>
+                    {candDetail && (
+                      <button
+                        type="button"
+                        className="l1-btn-secondary"
+                        onClick={() => loadAudit(sel.cand, candDetail)}
+                        disabled={loadingAudit}
+                        style={{ padding: '6px 14px', fontSize: '12.5px' }}
+                      >
+                        {loadingAudit ? 'Retrying...' : '↻ Retry Loading'}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {loadingDetail ? (
+                  <div className="l1-audit-card" style={{ textAlign: 'center', padding: '48px 24px' }}>
+                    <div style={{ fontSize: '28px', marginBottom: '12px' }}>⏳</div>
+                    <h3 style={{ margin: 0, fontSize: '16px', color: 'var(--txt)' }}>Loading Candidate Dossier…</h3>
+                    <p className="muted" style={{ margin: '6px 0 0', fontSize: '13.5px' }}>
+                      Retrieving candidate placement records and verification history from master database.
+                    </p>
+                  </div>
+                ) : !candDetail ? (
+                  <div className="l1-audit-card" style={{ textAlign: 'center', padding: '48px 24px' }}>
+                    <div style={{ fontSize: '28px', marginBottom: '12px' }}>⚠️</div>
+                    <h3 style={{ margin: 0, fontSize: '16px', color: 'var(--txt)' }}>Candidate Profile Not Loaded</h3>
+                    <p className="muted" style={{ margin: '6px 0 16px', fontSize: '13.5px' }}>
+                      Unable to load candidate details. Please verify your connection and retry.
+                    </p>
+                    <button
+                      type="button"
+                      className="l1-btn-secondary"
+                      onClick={() => {
+                        if (sel.cand) {
+                          setLoadingDetail(true)
+                          api(`/lookups/candidates/${sel.cand}`)
+                            .then((detail) => {
+                              setCandDetail(detail)
+                              refreshDocuments(sel.cand)
+                              loadAudit(sel.cand, detail)
+                            })
+                            .catch((e) => setError(e.message))
+                            .finally(() => setLoadingDetail(false))
+                        }
+                      }}
+                      style={{ padding: '8px 16px', fontSize: '13px' }}
+                    >
+                      ↻ Retry Loading Candidate
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* Status Notice if Submitted */}
+                    {isAuditSubmitted && (
+                      <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '16px', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <span style={{ fontSize: '24px' }}>🔒</span>
+                          <div>
+                            <strong style={{ color: '#166534', fontSize: '14.5px' }}>Placement Audit Statement Finalized</strong>
+                            <div style={{ fontSize: '13px', color: '#15803D', marginTop: '2px' }}>
+                              This audit was submitted on {new Date(auditRecord?.finalized_at || auditRecord?.updated_at).toLocaleString('en-IN')}. It is permanently recorded and locked for coordinator review.
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="l1-btn-primary-action"
+                          onClick={handleOpenStatementModal}
+                          style={{ padding: '8px 16px', fontSize: '13px' }}
+                        >
+                          📄 View &amp; Print Official Statement
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Hold Warning if Active */}
+                    {candDetail?.has_active_hold && (
+                      <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: '14px', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ fontSize: '20px' }}>⚠️</span>
+                        <div style={{ fontSize: '13.5px', color: '#9F1239' }}>
+                          <strong>Administrative Hold Active:</strong> {candDetail.active_holds?.[0]?.hold_reason || 'Hold placed by manager'}. You can save drafts, but final statement submission is blocked.
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Section 1: Candidate Dossier Summary Card */}
+                    <div className="l1-audit-card">
+                      <div className="l1-audit-card-header">
+                        <div className="l1-audit-card-title">
+                          <span style={{ fontSize: '20px' }}>👤</span>
+                          <div>
+                            <h3>1. Candidate Placement Dossier</h3>
+                            <p>Verified candidate registration and batch allocation records from DDU-GKY Master</p>
+                          </div>
+                        </div>
+                        <span className="l1-status-pill info">Read-only Master Data</span>
+                      </div>
+
+                      <div className="cpass-dossier-grid">
+                        <div className="cpass-dossier-item">
+                          <span className="k">Candidate Name</span>
+                          <span className="v">{name(candDetail)}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Candidate ID</span>
+                          <span className="v">{candDetail?.candidate_id || sel.cand}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Aadhaar (Last 4)</span>
+                          <span className="v">
+                            {candDetail?.aadhaar_number ? `XXXX-XXXX-${String(candDetail.aadhaar_number).slice(-4)}` : 'N/A'}
+                          </span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Father's Name</span>
+                          <span className="v">{candDetail?.father_name || 'N/A'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Training Centre</span>
+                          <span className="v">{lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc || 'N/A'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Sanction Order</span>
+                          <span className="v">{sel.order || 'N/A'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Batch Code</span>
+                          <span className="v">{lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch || 'N/A'}</span>
+                        </div>
+                        <div className="cpass-dossier-item">
+                          <span className="k">Mobile Number</span>
+                          <span className="v">{candDetail?.mobile || 'N/A'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+              {/* Section 2: Employer Details Card */}
+              <div className="l1-audit-card">
+                <div className="l1-audit-card-header">
+                  <div className="l1-audit-card-title">
+                    <span style={{ fontSize: '20px' }}>🏢</span>
+                    <div>
+                      <h3>2. Placement &amp; Employer Information</h3>
+                      <p>Details of employing organization, job role, appointment date, CTC, and minimum wages</p>
+                    </div>
+                  </div>
+                  {!isAuditSubmitted && employerList.length < 5 && (
+                    <button
+                      type="button"
+                      className="l1-btn-add-slot"
+                      onClick={handleAddEmployerRow}
+                      style={{ width: 'auto', padding: '6px 14px', fontSize: '13px' }}
+                    >
+                      + Add Another Employer
+                    </button>
+                  )}
+                </div>
+
+                <div className="l1-table-responsive">
+                  <table className="l1-audit-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '40px' }}>#</th>
+                        <th>Employer Name *</th>
+                        <th style={{ width: '130px' }}>Months Worked</th>
+                        <th style={{ width: '150px' }}>Appointment Date</th>
+                        <th>Designation</th>
+                        <th>Place of Work</th>
+                        <th style={{ width: '130px' }}>Monthly CTC (₹)</th>
+                        <th style={{ width: '130px' }}>Minimum Wages (₹)</th>
+                        {!isAuditSubmitted && employerList.length > 1 && <th style={{ width: '60px' }}>Action</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {employerList.map((emp, idx) => (
+                        <tr key={emp.id || idx}>
+                          <td>{idx + 1}</td>
+                          <td>
+                            <input
+                              type="text"
+                              placeholder="e.g. Acme Tech Solutions"
+                              value={emp.employer_name || ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'employer_name', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              step="0.5"
+                              min="0"
+                              placeholder="e.g. 6"
+                              value={emp.months_worked ?? ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'months_worked', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="date"
+                              value={emp.appointment_date || ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'appointment_date', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              placeholder="e.g. Junior Technician"
+                              value={emp.designation || ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'designation', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              placeholder="e.g. Hyderabad, Telangana"
+                              value={emp.place_of_work || ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'place_of_work', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              value={emp.monthly_ctc ?? ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'monthly_ctc', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              value={emp.minimum_wages ?? ''}
+                              onChange={(e) => handleUpdateEmployerField(emp.id, 'minimum_wages', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          {!isAuditSubmitted && employerList.length > 1 && (
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveEmployerRow(emp.id)}
+                                title="Remove Employer"
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626', fontSize: '15px' }}
+                              >
+                                🗑️
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Section 3: Monthly Salary Disbursement Record */}
+              <div className="l1-audit-card">
+                <div className="l1-audit-card-header">
+                  <div className="l1-audit-card-title">
+                    <span style={{ fontSize: '20px' }}>💰</span>
+                    <div>
+                      <h3>3. Monthly Salary Disbursement Record</h3>
+                      <p>Monthly payroll details (at least 3 distinct months required to submit audit statement)</p>
+                    </div>
+                  </div>
+                  {!isAuditSubmitted && salaryDetailList.length < 12 && (
+                    <button
+                      type="button"
+                      className="l1-btn-add-slot"
+                      onClick={handleAddSalaryRow}
+                      style={{ width: 'auto', padding: '6px 14px', fontSize: '13px' }}
+                    >
+                      + Add Salary Month
+                    </button>
+                  )}
+                </div>
+
+                <div className="l1-table-responsive">
+                  <table className="l1-audit-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '110px' }}>Month</th>
+                        <th style={{ width: '90px' }}>Year</th>
+                        <th style={{ width: '80px' }}>Work Days</th>
+                        <th style={{ width: '80px' }}>Pay Days</th>
+                        <th style={{ width: '80px' }}>Leave Days</th>
+                        <th style={{ width: '130px' }}>Credit Date</th>
+                        <th style={{ width: '110px' }}>Gross (₹)</th>
+                        <th style={{ width: '100px' }}>Deductions (₹)</th>
+                        <th style={{ width: '110px' }}>Net (₹)</th>
+                        <th style={{ width: '110px' }}>Credited (₹)</th>
+                        <th>Bank Name</th>
+                        {!isAuditSubmitted && salaryDetailList.length > 3 && <th style={{ width: '50px' }}>Action</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {salaryDetailList.map((sal, idx) => (
+                        <tr key={sal.id || idx}>
+                          <td>
+                            <select
+                              value={sal.month || 1}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'month', parseInt(e.target.value, 10))}
+                              disabled={isAuditSubmitted}
+                            >
+                              <option value={1}>01 - Jan</option>
+                              <option value={2}>02 - Feb</option>
+                              <option value={3}>03 - Mar</option>
+                              <option value={4}>04 - Apr</option>
+                              <option value={5}>05 - May</option>
+                              <option value={6}>06 - Jun</option>
+                              <option value={7}>07 - Jul</option>
+                              <option value={8}>08 - Aug</option>
+                              <option value={9}>09 - Sep</option>
+                              <option value={10}>10 - Oct</option>
+                              <option value={11}>11 - Nov</option>
+                              <option value={12}>12 - Dec</option>
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="2020"
+                              max="2030"
+                              value={sal.year || 2024}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'year', parseInt(e.target.value, 10))}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="26"
+                              min="0"
+                              max="31"
+                              value={sal.working_days ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'working_days', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="26"
+                              min="0"
+                              max="31"
+                              value={sal.pay_days ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'pay_days', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              max="31"
+                              value={sal.leave_days ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'leave_days', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="date"
+                              value={sal.credit_date || ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'credit_date', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              value={sal.gross_salary ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'gross_salary', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              value={sal.deductions ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'deductions', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              value={sal.net_salary ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'net_salary', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              min="0"
+                              value={sal.amount_credited ?? ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'amount_credited', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              placeholder="e.g. SBI, HDFC"
+                              value={sal.bank_name || ''}
+                              onChange={(e) => handleUpdateSalaryField(sal.id, 'bank_name', e.target.value)}
+                              disabled={isAuditSubmitted}
+                            />
+                          </td>
+                          {!isAuditSubmitted && salaryDetailList.length > 3 && (
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveSalaryRow(sal.id)}
+                                title="Remove Month"
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626', fontSize: '15px' }}
+                              >
+                                🗑️
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Salary Summary Bar */}
+                <div className="l1-salary-summary-bar">
+                  <div className="l1-salary-stat">
+                    <span className="label">Total Gross</span>
+                    <span className="val highlight">₹{computedSalaryTotals.gross.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="l1-salary-stat">
+                    <span className="label">Total Deductions</span>
+                    <span className="val">₹{computedSalaryTotals.deductions.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="l1-salary-stat">
+                    <span className="label">Total Net</span>
+                    <span className="val">₹{computedSalaryTotals.net.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="l1-salary-stat">
+                    <span className="label">Total Credited</span>
+                    <span className="val highlight">₹{computedSalaryTotals.credited.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="l1-salary-stat">
+                    <span className="label">Avg Gross / Mo</span>
+                    <span className="val">₹{computedAvgGross.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 4: Document Verification & Criteria Compliance Audit */}
+              <div className="l1-audit-card">
+                <div className="l1-audit-card-header">
+                  <div className="l1-audit-card-title">
+                    <span style={{ fontSize: '20px' }}>📑</span>
+                    <div>
+                      <h3>4. Document Evidence &amp; Compliance Audit</h3>
+                      <p>Verification of candidate placement evidence (AL/OL, PS1-PS3, BS1-BS3) against audit criteria</p>
+                    </div>
+                  </div>
+                  <span className="l1-status-pill info">Evidence Cross-Verification</span>
+                </div>
+
+                <div className="l1-table-responsive">
+                  <table className="l1-audit-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '80px' }}>Code</th>
+                        <th>Document Evidence</th>
+                        <th style={{ width: '130px' }}>Availability</th>
+                        <th style={{ width: '170px' }}>Criteria Compliance</th>
+                        <th style={{ width: '170px' }}>Repository Link</th>
+                        <th>Coordinator Remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        { code: 'AL / OL', label: 'Appointment / Offer Letter', key: 'appointment_letter', fileDoc: appointmentDoc, staged: stagedAppointment?.file },
+                        { code: 'PS 1', label: 'Salary Pay Slip — Month 1', key: 'salary_slip_1', fileDoc: salarySlips[0], staged: salaryRows[0]?.file },
+                        { code: 'PS 2', label: 'Salary Pay Slip — Month 2', key: 'salary_slip_2', fileDoc: salarySlips[1], staged: salaryRows[1]?.file },
+                        { code: 'PS 3', label: 'Salary Pay Slip — Month 3', key: 'salary_slip_3', fileDoc: salarySlips[2], staged: salaryRows[2]?.file },
+                        { code: 'BS 1', label: 'Bank Statement / Passbook — Month 1', key: 'bank_statement_1', fileDoc: bankStatements[0], staged: bankRows[0]?.file },
+                        { code: 'BS 2', label: 'Bank Statement / Passbook — Month 2', key: 'bank_statement_2', fileDoc: bankStatements[1], staged: bankRows[1]?.file },
+                        { code: 'BS 3', label: 'Bank Statement / Passbook — Month 3', key: 'bank_statement_3', fileDoc: bankStatements[2], staged: bankRows[2]?.file },
+                      ].map((item, idx) => {
+                        const entry = documentAudit[item.key] || { available: 'Yes', compliance: 'Compliant', remarks: '' }
+                        const hasDriveDoc = !!item.fileDoc
+                        const hasStaged = !!item.staged
+                        return (
+                          <tr key={idx}>
+                            <td><strong>{item.code}</strong></td>
+                            <td>{item.label}</td>
+                            <td>
+                              <select
+                                value={entry.available || 'Yes'}
+                                onChange={(e) => handleUpdateDocAudit(item.key, 'available', e.target.value)}
+                                disabled={isAuditSubmitted}
+                              >
+                                <option value="Yes">Yes</option>
+                                <option value="No">No</option>
+                                <option value="Pending">Pending</option>
+                              </select>
+                            </td>
+                            <td>
+                              <select
+                                value={entry.compliance || 'Compliant'}
+                                onChange={(e) => handleUpdateDocAudit(item.key, 'compliance', e.target.value)}
+                                disabled={isAuditSubmitted}
+                              >
+                                <option value="Compliant">Compliant</option>
+                                <option value="Non-Compliant">Non-Compliant</option>
+                                <option value="Under Verification">Under Verification</option>
+                              </select>
+                            </td>
+                            <td>
+                              {hasDriveDoc ? (
+                                <span className="l1-status-pill success" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  ✓ Verified in Drive
+                                </span>
+                              ) : hasStaged ? (
+                                <span className="l1-status-pill info" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  Staged in Browser
+                                </span>
+                              ) : (
+                                <span className="l1-status-pill danger" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  Missing in Drive
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                placeholder="Observations..."
+                                value={entry.remarks || ''}
+                                onChange={(e) => handleUpdateDocAudit(item.key, 'remarks', e.target.value)}
+                                disabled={isAuditSubmitted}
+                              />
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Section 5: Authorizations & Sign-off Details */}
+              <div className="l1-audit-card">
+                <div className="l1-audit-card-header">
+                  <div className="l1-audit-card-title">
+                    <span style={{ fontSize: '20px' }}>✍️</span>
+                    <div>
+                      <h3>5. Authorizations &amp; Sign-off Endorsements</h3>
+                      <p>Sign-offs and recommendation statements from Centre Head, COPS Team, and Business Leader</p>
+                    </div>
+                  </div>
+                  <span className="l1-status-pill info">Corporate Endorsements</span>
+                </div>
+
+                <div className="l1-signoff-grid">
+                  {/* Centre Head */}
+                  <div className="l1-signoff-card">
+                    <div className="l1-signoff-header">
+                      <span className="l1-signoff-role">Centre Head</span>
+                      <label className="l1-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={!!signoffDetails.centre_head?.recommended}
+                          onChange={(e) => handleUpdateSignoff('centre_head', 'recommended', e.target.checked)}
+                          disabled={isAuditSubmitted}
+                        />
+                        Recommended
+                      </label>
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Officer Name</label>
+                      <input
+                        type="text"
+                        placeholder="Name of Centre Head"
+                        value={signoffDetails.centre_head?.name || ''}
+                        onChange={(e) => handleUpdateSignoff('centre_head', 'name', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Verification Date</label>
+                      <input
+                        type="date"
+                        value={signoffDetails.centre_head?.date || ''}
+                        onChange={(e) => handleUpdateSignoff('centre_head', 'date', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Remarks</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Dossier physically verified"
+                        value={signoffDetails.centre_head?.remarks || ''}
+                        onChange={(e) => handleUpdateSignoff('centre_head', 'remarks', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                  </div>
+
+                  {/* COPS Team */}
+                  <div className="l1-signoff-card">
+                    <div className="l1-signoff-header">
+                      <span className="l1-signoff-role">COPS Audit Team</span>
+                      <label className="l1-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={!!signoffDetails.cops_team?.verified}
+                          onChange={(e) => handleUpdateSignoff('cops_team', 'verified', e.target.checked)}
+                          disabled={isAuditSubmitted}
+                        />
+                        Verified
+                      </label>
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Auditor Name</label>
+                      <input
+                        type="text"
+                        placeholder="Name of COPS Auditor"
+                        value={signoffDetails.cops_team?.name || ''}
+                        onChange={(e) => handleUpdateSignoff('cops_team', 'name', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Audit Date</label>
+                      <input
+                        type="date"
+                        value={signoffDetails.cops_team?.date || ''}
+                        onChange={(e) => handleUpdateSignoff('cops_team', 'date', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Remarks</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Salary credits verified"
+                        value={signoffDetails.cops_team?.remarks || ''}
+                        onChange={(e) => handleUpdateSignoff('cops_team', 'remarks', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Business Leader */}
+                  <div className="l1-signoff-card">
+                    <div className="l1-signoff-header">
+                      <span className="l1-signoff-role">Business Leader</span>
+                      <label className="l1-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={!!signoffDetails.business_leader?.approved}
+                          onChange={(e) => handleUpdateSignoff('business_leader', 'approved', e.target.checked)}
+                          disabled={isAuditSubmitted}
+                        />
+                        Approved
+                      </label>
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Leader Name</label>
+                      <input
+                        type="text"
+                        placeholder="Name of Business Leader"
+                        value={signoffDetails.business_leader?.name || ''}
+                        onChange={(e) => handleUpdateSignoff('business_leader', 'name', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Approval Date</label>
+                      <input
+                        type="date"
+                        value={signoffDetails.business_leader?.date || ''}
+                        onChange={(e) => handleUpdateSignoff('business_leader', 'date', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                    <div className="l1-field-group">
+                      <label>Remarks</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Placement compliance approved"
+                        value={signoffDetails.business_leader?.remarks || ''}
+                        onChange={(e) => handleUpdateSignoff('business_leader', 'remarks', e.target.value)}
+                        disabled={isAuditSubmitted}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 6: Overall Remarks Card */}
+              <div className="l1-audit-card">
+                <div className="l1-audit-card-header">
+                  <div className="l1-audit-card-title">
+                    <span style={{ fontSize: '20px' }}>📝</span>
+                    <div>
+                      <h3>6. Overall Audit Remarks &amp; Observations</h3>
+                      <p>Optional compliance notes or exceptional observations for this candidate's placement audit</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="l1-field-group">
+                  <textarea
+                    rows={3}
+                    placeholder="Enter any additional audit remarks or observations..."
+                    value={auditRemarks}
+                    onChange={(e) => setAuditRemarks(e.target.value)}
+                    disabled={isAuditSubmitted}
+                  />
+                </div>
+              </div>
+                  </>
+                )}
+
+              {/* Sticky Bottom Action Dock for Audit */}
+              <div className="l1-submit-dock l1-no-print">
+                <div className="l1-dock-info">
+                  <span className="l1-dock-title">
+                    {isAuditSubmitted ? 'Placement Statement Finalized' : 'Placement Audit Statement Workflow'}
+                    <span className={`l1-status-pill ${isAuditSubmitted ? 'success' : 'warning'}`} style={{ fontSize: '12px', padding: '3px 10px' }}>
+                      {isAuditSubmitted ? 'SUBMITTED' : 'DRAFT'}
+                    </span>
+                  </span>
+                  <p className="l1-dock-desc">
+                    {isAuditSubmitted
+                      ? 'This audit statement has been submitted and locked for official record keeping.'
+                      : 'Save draft at any time. Submit statement once at least 1 employer and 3 monthly salary records are complete.'}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  {auditRecord && (
+                    <button
+                      type="button"
+                      className="l1-btn-secondary"
+                      onClick={handleOpenStatementModal}
+                      disabled={loadingStatement}
+                      style={{ padding: '10px 18px', fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <span>📄</span> Preview Statement
+                    </button>
+                  )}
+                  {!isAuditSubmitted && (
+                    <>
+                      <button
+                        type="button"
+                        className="l1-btn-secondary"
+                        onClick={handleSaveDraft}
+                        disabled={auditSavingDraft || auditSubmitting || !candDetail || Boolean(auditLoadError)}
+                        style={{ padding: '10px 18px', fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <span>💾</span> {auditSavingDraft ? 'Saving Draft...' : 'Save Draft'}
+                      </button>
+                      <button
+                        type="button"
+                        className="l1-btn-primary-action"
+                        onClick={handleSubmitAuditStatement}
+                        disabled={auditSubmitting || auditSavingDraft || !candDetail || candDetail?.has_active_hold || Boolean(auditLoadError)}
+                        style={{ padding: '10px 20px', fontSize: '13.5px' }}
+                      >
+                        {auditSubmitting ? 'Submitting...' : 'Submit Placement Statement →'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </ErrorBoundary>
+          )}
+
+          {/* ================================================================
+             WORKFLOW TAB 2: DOCUMENT UPLOADS & STAGING WORKSPACES
+             ================================================================ */}
+          {activeWorkflowTab === 'docs' && (
+            <>
+              {/* Document Completion Progress Card */}
+              <section className="l1-overview-card">
             <div className="l1-overview-header">
               <h3>Document Verification Progress</h3>
               <span className={`l1-status-pill ${allRequirementsSatisfied ? 'success' : 'warning'}`}>
@@ -1323,6 +2758,8 @@ export default function L1Home() {
               Review & Final Submit →
             </button>
           </div>
+            </>
+          )}
         </>
       )}
 
@@ -1526,6 +2963,25 @@ export default function L1Home() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+         C-PASS CANDIDATE PLACEMENT AUDIT & SIGN-OFF STATEMENT MODAL
+         ==================================================================== */}
+      {statementModalOpen && statementData && (
+        <PlacementAuditStatement
+          statementData={statementData}
+          showModalWrapper={true}
+          onClose={() => setStatementModalOpen(false)}
+        />
+      )}
+
+      {/* Floating Audit Toast Notification */}
+      {auditToast && (
+        <div className={`l1-audit-toast ${auditToast.type || ''}`} role="status">
+          <span>{auditToast.type === 'success' ? '✓' : auditToast.type === 'error' ? '⚠️' : 'ℹ️'}</span>
+          <span>{auditToast.message}</span>
         </div>
       )}
     </div>

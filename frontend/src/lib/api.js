@@ -194,3 +194,35 @@ export async function downloadDocument(candidateId, documentId, fallbackFilename
   a.remove()
   window.URL.revokeObjectURL(url)
 }
+
+export async function fetchDocumentBlob(candidateId, documentId, _isRetry = false) {
+  const token = getToken()
+  const headers = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${BASE}/candidates/${candidateId}/documents/${documentId}/download`, {
+    headers,
+    credentials: 'include',
+  })
+
+  if (res.status === 401 && !_isRetry) {
+    try {
+      await refreshSession()
+      return fetchDocumentBlob(candidateId, documentId, true)
+    } catch {
+      clearTokens()
+      throw new Error('Session expired. Please log in again to preview documents.')
+    }
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const err = new Error(body.detail || `Failed to fetch document (${res.status})`)
+    err.status = res.status
+    throw err
+  }
+
+  return res.blob()
+}
+

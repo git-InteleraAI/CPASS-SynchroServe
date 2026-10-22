@@ -653,3 +653,75 @@ def test_batch_submit_cleanup_warning_surfaced_when_old_drive_delete_fails(mock_
         assert "drive-app-orig" in data["cleanup_warnings"][0]
 
 
+def test_l2_manager_can_list_and_download_documents(mock_supabase):
+    """L2 Center Manager can view document list, summary, and stream files for review."""
+    l2_user = CurrentUser(
+        id="l2-manager-uuid",
+        email="l2@cpass.org",
+        full_name="Suresh Kumar",
+        role="L2_MANAGER",
+    )
+    app.dependency_overrides[get_current_user] = lambda: l2_user
+    try:
+        mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            CANDIDATE_DATA
+        ]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.neq.return_value.order.return_value.execute.return_value.data = [
+            {
+                "id": "doc-1",
+                "candidate_id": 99901,
+                "document_type": "APPOINTMENT_LETTER",
+                "file_name": "appointment.pdf",
+                "upload_status": "SUCCESS",
+            }
+        ]
+
+        res = client.get("/candidates/99901/documents")
+        assert res.status_code == 200
+        docs = res.json()
+        assert len(docs) == 1
+        assert docs[0]["document_type"] == "APPOINTMENT_LETTER"
+
+        # Test download
+        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                "id": "doc-1",
+                "candidate_id": 99901,
+                "drive_file_id": "drive-file-abc",
+                "file_name": "appointment.pdf",
+                "mime_type": "application/pdf",
+            }
+        ]
+        with patch(
+            "app.routers.documents.google_drive_service.download_file",
+            return_value=(b"%PDF-1.4 file content", "appointment.pdf", "application/pdf"),
+        ):
+            res_dl = client.get("/candidates/99901/documents/doc-1/download")
+            assert res_dl.status_code == 200
+            assert res_dl.content == b"%PDF-1.4 file content"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_l2_manager_denied_batch_submit_and_delete(mock_supabase):
+    """L2 Center Manager cannot submit staged document batches or delete documents (L1 operations)."""
+    l2_user = CurrentUser(
+        id="l2-manager-uuid",
+        email="l2@cpass.org",
+        full_name="Suresh Kumar",
+        role="L2_MANAGER",
+    )
+    app.dependency_overrides[get_current_user] = lambda: l2_user
+    try:
+        res1 = client.post("/candidates/99901/documents/submit")
+        assert res1.status_code == 403
+        assert "Your role cannot do this." in res1.json()["detail"]
+
+        res2 = client.delete("/candidates/99901/documents/doc-1")
+        assert res2.status_code == 403
+        assert "Your role cannot do this." in res2.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+

@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..auth import CurrentUser, get_current_user, require_roles
+from ..auth import CurrentUser, allowed_tc_ids, get_current_user, require_roles
 from ..db import supabase
 from ..services.google_drive import (
     ALLOWED_MIME_TYPES,
@@ -37,11 +37,11 @@ router = APIRouter(prefix="/candidates/{candidate_id}/documents", tags=["documen
 VALID_DOCUMENT_TYPES = {"APPOINTMENT_LETTER", "SALARY_SLIP", "BANK_STATEMENT"}
 
 
-def _get_candidate_context(candidate_id: int) -> dict[str, Any]:
-    """Retrieve candidate context from ddugky_candidates for folder organization."""
+def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -> dict[str, Any]:
+    """Retrieve candidate context from ddugky_candidates for folder organization and verify centre access."""
     res = (
         supabase.table("ddugky_candidates")
-        .select("candidate_id,candidate_first_name,candidate_last_name,tc_state_name,state_name,tc_name,batch_code")
+        .select("candidate_id,candidate_first_name,candidate_last_name,tc_state_name,state_name,tc_name,batch_code,tc_id")
         .eq("candidate_id", candidate_id)
         .limit(1)
         .execute()
@@ -49,12 +49,17 @@ def _get_candidate_context(candidate_id: int) -> dict[str, Any]:
     if not res.data:
         raise HTTPException(404, f"Candidate {candidate_id} not found.")
     c = res.data[0]
+    if user is not None and c.get("tc_id") is not None:
+        allowed = allowed_tc_ids(user)
+        if allowed is not None and c["tc_id"] not in allowed:
+            raise HTTPException(403, "You are not assigned to this candidate's training centre.")
     return {
         "candidate_id": c["candidate_id"],
         "candidate_name": f"{c.get('candidate_first_name') or ''} {c.get('candidate_last_name') or ''}".strip() or f"Candidate {candidate_id}",
         "state": c.get("tc_state_name") or c.get("state_name") or "State",
         "tc_name": c.get("tc_name") or "Centre",
         "batch_code": c.get("batch_code") or "Batch",
+        "tc_id": c.get("tc_id"),
     }
 
 
@@ -81,10 +86,10 @@ def _validate_file_upload(file_name: str, content: bytes, mime_type: str | None)
 @router.get("")
 def list_documents(
     candidate_id: int,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER")),
 ):
     """List all documents uploaded for this candidate."""
-    _get_candidate_context(candidate_id)
+    _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
         .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,created_at,updated_at")
@@ -99,9 +104,9 @@ def list_documents(
 @router.get("/summary")
 def get_documents_summary(
     candidate_id: int,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER")),
 ):
-    """Get the L1 checklist summary for a candidate.
+    """Get the checklist summary for a candidate.
 
     Computes:
     - Appointment letter status
@@ -109,7 +114,7 @@ def get_documents_summary(
     - Bank statements count (min 3, max 12)
     - Whether all minimum placement requirements are satisfied.
     """
-    _get_candidate_context(candidate_id)
+    _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
         .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,created_at")
@@ -633,9 +638,10 @@ async def batch_submit_documents(
 def download_document(
     candidate_id: int,
     document_id: str,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER")),
 ):
     """Download/stream a document file securely from Google Drive."""
+    _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
         .select("id,candidate_id,drive_file_id,file_name,mime_type")

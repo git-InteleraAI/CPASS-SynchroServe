@@ -229,6 +229,9 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
                 "tc_state_name": r.get("tc_state_name"),
                 "sanction_order_number": r.get("sanction_order_number"),
                 "monthly_ctc": r.get("monthly_ctc"),
+                "trade_name": r.get("trade_name"),
+                "aadhar": r.get("aadhar"),
+                "aadhaar_number": r.get("aadhar"),
             }
 
             # Check duplicate warnings & holds if tables exist

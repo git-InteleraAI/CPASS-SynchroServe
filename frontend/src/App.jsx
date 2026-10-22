@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
 import L1Home from './pages/L1Home'
 import AdminHome from './pages/AdminHome'
+import L2Home from './pages/L2Home'
 
 import logoSrc from '../assets/SynchroServeLogo.png'
 
@@ -18,6 +19,7 @@ function Shell() {
   if (!profile) return <Navigate to="/login" replace />
 
   const isL1 = profile.role === 'L1_COORDINATOR'
+  const isL2 = profile.role === 'L2_MANAGER'
   const isAdmin = profile.role === 'ADMIN'
 
   const initials = profile.full_name
@@ -55,6 +57,8 @@ function Shell() {
       <main className="content-container">
         {isL1 ? (
           <L1Home />
+        ) : isL2 ? (
+          <L2Home />
         ) : isAdmin ? (
           <AdminHome />
         ) : (
