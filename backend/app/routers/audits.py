@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..auth import CurrentUser, allowed_tc_ids, get_current_user, require_roles
+from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles
 from ..db import supabase
 
 logger = logging.getLogger("cpass.audits")
@@ -133,7 +133,7 @@ class L2ApproveRequest(BaseModel):
 # -----------------------------------------------------------------------------
 
 def _check_candidate_centre(user: CurrentUser, candidate_id: int) -> dict[str, Any]:
-    """Retrieve candidate and verify user centre scoping."""
+    """Retrieve candidate and verify user state and centre authorization."""
     res = (
         supabase.table("ddugky_candidates")
         .select("*")
@@ -153,7 +153,8 @@ def _check_candidate_centre(user: CurrentUser, candidate_id: int) -> dict[str, A
             )
             if cand_fallback.data:
                 c = cand_fallback.data[0]
-                tc_id = c["batches"]["tc_id"]
+                if "batches" in c and isinstance(c["batches"], dict):
+                    c["tc_id"] = c["batches"].get("tc_id")
             else:
                 raise HTTPException(404, f"Candidate {candidate_id} not found.")
         except HTTPException:
@@ -162,13 +163,8 @@ def _check_candidate_centre(user: CurrentUser, candidate_id: int) -> dict[str, A
             raise HTTPException(404, f"Candidate {candidate_id} not found.")
     else:
         c = res.data[0]
-        tc_id = c.get("tc_id")
 
-    if tc_id is not None:
-        allowed = allowed_tc_ids(user)
-        if allowed is not None and tc_id not in allowed:
-            raise HTTPException(403, "You are not assigned to this candidate's training centre.")
-
+    check_candidate_access(user, c)
     return c
 
 

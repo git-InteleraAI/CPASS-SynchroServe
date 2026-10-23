@@ -23,6 +23,7 @@ L1_USER = CurrentUser(
     email="ananya.sharma@synchroserve.com",
     full_name="Ananya Sharma",
     role="L1_COORDINATOR",
+    assigned_state="MIZORAM",
 )
 
 L2_USER = CurrentUser(
@@ -30,6 +31,14 @@ L2_USER = CurrentUser(
     email="ramesh.manager@synchroserve.com",
     full_name="Ramesh Patel",
     role="L2_MANAGER",
+    assigned_state="MIZORAM",
+)
+
+ADMIN_USER = CurrentUser(
+    id="admin-user-uuid-789",
+    email="admin@cpass.org",
+    full_name="Admin User",
+    role="ADMIN",
 )
 
 SAMPLE_CANDIDATE = {
@@ -75,26 +84,31 @@ def auth_l2():
     app.dependency_overrides.clear()
 
 
-def test_states_lookup_includes_mizoram(auth_l1):
-    """RPC returns training centre states, and candidate state_name is dynamically merged."""
-    with patch("app.routers.lookups.supabase") as mock_sb:
-        # Mock RPC get_cpass_states returning standard TC states
-        mock_sb.rpc.return_value.execute.return_value = MagicMock(
-            data=[{"state": "ANDHRA PRADESH"}, {"state": "TELANGANA"}, {"state": "ODISHA"}]
-        )
-        # Mock missing candidate state query returning MIZORAM
-        mock_tbl = MagicMock()
-        mock_tbl.select.return_value.not_.in_.return_value.execute.return_value = MagicMock(
-            data=[{"state_name": "MIZORAM"}]
-        )
-        mock_sb.table.return_value = mock_tbl
+def test_states_lookup_includes_mizoram():
+    """RPC returns training centre states, and candidate state_name is dynamically merged for global roles."""
+    app.dependency_overrides[get_current_user] = lambda: ADMIN_USER
+    try:
+        with patch("app.routers.lookups.supabase") as mock_sb:
+            # Mock RPC get_cpass_states returning standard TC states
+            mock_sb.rpc.return_value.execute.return_value = MagicMock(
+                data=[{"state": "ANDHRA PRADESH"}, {"state": "TELANGANA"}, {"state": "ODISHA"}]
+            )
+            # Mock missing candidate state query returning MIZORAM
+            mock_tbl = MagicMock()
+            mock_tbl.select.return_value.not_.in_.return_value.execute.return_value = MagicMock(
+                data=[{"state_name": "MIZORAM"}]
+            )
+            mock_sb.table.return_value = mock_tbl
 
-        res = client.get("/lookups/states")
-        assert res.status_code == 200
-        states = res.json()
-        assert "MIZORAM" in states
-        assert "ANDHRA PRADESH" in states
-        assert "TELANGANA" in states
+            res = client.get("/lookups/states")
+            assert res.status_code == 200
+            states = res.json()
+            assert "MIZORAM" in states
+            assert "ANDHRA PRADESH" in states
+            assert "TELANGANA" in states
+    finally:
+        app.dependency_overrides.clear()
+
 
 
 def test_centres_lookup_fallback_by_state_name(auth_l1):

@@ -612,7 +612,7 @@
   color: var(--ink);
   cursor: pointer;
   white-space: nowrap;
-  pointer-events: none;
+  pointer-events: auto;
   transition: all 0.2s ease;
 }
 
@@ -1156,6 +1156,185 @@
   text-align: right;
   font-family: monospace;
   font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------
+   Section 3: Monthly Salary Disbursement Record (Six-Column Desktop Layout)
+   -------------------------------------------------------------------------- */
+.l1-salary-records-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.l1-salary-month-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 20px;
+  box-shadow: 0 2px 8px -2px rgba(10, 42, 122, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.l1-salary-month-card:hover {
+  border-color: #CBD5E1;
+  box-shadow: 0 4px 14px -2px rgba(10, 42, 122, 0.08);
+}
+
+.l1-salary-month-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #F1F5F9;
+}
+
+.l1-salary-month-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.l1-salary-month-badge {
+  font-size: 12px;
+  font-weight: 700;
+  background: #EFF6FF;
+  color: var(--blue);
+  padding: 4px 12px;
+  border-radius: 99px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.l1-salary-month-period {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.l1-btn-remove-salary-month {
+  background: #FEF2F2;
+  border: 1px solid #FCA5A5;
+  color: #DC2626;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.l1-btn-remove-salary-month:hover {
+  background: #FEE2E2;
+  border-color: #F87171;
+}
+
+.l1-salary-six-col-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px 14px;
+  width: 100%;
+}
+
+.l1-salary-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.l1-salary-col-span-2 {
+  grid-column: span 2;
+}
+
+.l1-salary-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mut);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.l1-salary-control {
+  width: 100%;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  font-size: 13.5px;
+  background: #ffffff;
+  color: var(--ink);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-sizing: border-box;
+}
+
+.l1-salary-control:focus {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(11, 79, 184, 0.1);
+}
+
+.l1-salary-control:disabled {
+  background: #F8FAFC;
+  color: #94A3B8;
+  cursor: not-allowed;
+}
+
+.l1-salary-control.text-right {
+  text-align: right;
+  font-family: monospace;
+}
+
+/* Responsive adjustments for Section 3 Six-Column Layout */
+@media (max-width: 1120px) {
+  .l1-salary-six-col-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .l1-salary-col-span-2 {
+    grid-column: span 1;
+  }
+}
+
+@media (max-width: 640px) {
+  .l1-salary-six-col-grid {
+    grid-template-columns: 1fr;
+  }
+  .l1-salary-col-span-2 {
+    grid-column: span 1;
+  }
+}
+
+/* Synchronized Period Indicator in Document Workspaces */
+.l1-sync-period-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #F0FDF4;
+  border: 1px solid #BBF7D0;
+  color: #166534;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.l1-sync-tag {
+  font-size: 10.5px;
+  background: #DCFCE7;
+  color: #15803D;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* --------------------------------------------------------------------------
@@ -1710,4 +1889,712 @@
   }
 }
 
+/* ==========================================================================
+   CPASS L1 Coordinator Compact Dashboard Summary Cards (Top of Dashboard)
+   ========================================================================== */
 
+.l1-compact-summary-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+  width: 100%;
+}
+
+@media (max-width: 1080px) {
+  .l1-compact-summary-row {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .l1-compact-summary-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+}
+
+@media (max-width: 380px) {
+  .l1-compact-summary-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.l1-compact-card {
+  background: #ffffff;
+  border: 1.5px solid var(--line, #E2E8F0);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  user-select: none;
+  min-height: 74px;
+  position: relative;
+  overflow: hidden;
+}
+
+.l1-compact-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.l1-compact-card.total::before { background: #0B4FB8; }
+.l1-compact-card.approved::before { background: #16A34A; }
+.l1-compact-card.rejected::before { background: #DC2626; }
+.l1-compact-card.uploaded::before { background: #6366F1; }
+.l1-compact-card.pending::before { background: #D97706; }
+
+.l1-compact-card:hover {
+  transform: translateY(-2px);
+  border-color: #0B4FB8;
+  box-shadow: 0 6px 18px -4px rgba(11, 79, 184, 0.18);
+}
+
+.l1-compact-card:focus-visible {
+  outline: 2px solid #0B4FB8;
+  outline-offset: 2px;
+}
+
+.l1-compact-card.active {
+  border-color: #0B4FB8;
+  background: #F8FAFC;
+  box-shadow: 0 4px 14px -2px rgba(11, 79, 184, 0.22);
+}
+
+.l1-compact-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.l1-compact-card-icon {
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.l1-compact-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--mut, #475569);
+  letter-spacing: -0.01em;
+}
+
+.l1-compact-card-count {
+  font-family: 'Inter Tight', 'Inter', -apple-system, sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ink, #0E1424);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.l1-compact-card.approved .l1-compact-card-count { color: #15803D; }
+.l1-compact-card.rejected .l1-compact-card-count { color: #DC2626; }
+.l1-compact-card.uploaded .l1-compact-card-count { color: #4338CA; }
+.l1-compact-card.pending .l1-compact-card-count { color: #D97706; }
+
+/* ==========================================================================
+   Candidate List Modal / Popup Dialog
+   ========================================================================== */
+
+.l1-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(14, 20, 36, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: l1ModalFadeIn 0.15s ease-out;
+}
+
+@keyframes l1ModalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.l1-cand-popup-dialog {
+  background: #ffffff;
+  border-radius: 18px;
+  width: min(960px, 96vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 55px -12px rgba(10, 42, 122, 0.35);
+  border: 1px solid var(--line, #E2E8F0);
+  overflow: hidden;
+  animation: l1PopupScaleUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes l1PopupScaleUp {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.l1-cand-popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid var(--line, #E2E8F0);
+  background: #F8FAFC;
+  gap: 16px;
+}
+
+.l1-cand-popup-title-group h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--ink, #0E1424);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: -0.01em;
+}
+
+.l1-cand-popup-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.l1-cand-popup-count-badge {
+  background: #0B4FB8;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 99px;
+  letter-spacing: 0;
+}
+
+.l1-cand-popup-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--mut, #64748B);
+}
+
+.l1-popup-close-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #64748B;
+  font-size: 18px;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.l1-popup-close-btn:hover {
+  background: #E2E8F0;
+  color: #0E1424;
+}
+
+.l1-cand-popup-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #F1F5F9;
+}
+
+.l1-cand-popup-search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #F8FAFC;
+  border: 1px solid #CBD5E1;
+  border-radius: 10px;
+  padding: 0 12px;
+  flex: 1;
+  transition: border-color 0.15s ease;
+}
+
+.l1-cand-popup-search-box:focus-within {
+  border-color: #0B4FB8;
+  box-shadow: 0 0 0 3px rgba(11, 79, 184, 0.1);
+}
+
+.l1-search-icon {
+  font-size: 13px;
+  color: #94A3B8;
+}
+
+.l1-cand-popup-search-input {
+  border: none;
+  background: transparent;
+  padding: 9px 0;
+  font-size: 13.5px;
+  color: #0E1424;
+  width: 100%;
+}
+
+.l1-cand-popup-search-input:focus {
+  outline: none;
+}
+
+.l1-search-clear-btn {
+  background: none;
+  border: none;
+  color: #94A3B8;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.l1-search-clear-btn:hover {
+  color: #0E1424;
+}
+
+.l1-cand-popup-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 220px;
+  background: #ffffff;
+}
+
+.l1-popup-table-scroll {
+  overflow-x: auto;
+}
+
+.l1-cand-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.l1-cand-table th {
+  position: sticky;
+  top: 0;
+  background: #F8FAFC;
+  color: #475569;
+  font-weight: 700;
+  text-align: left;
+  padding: 11px 14px;
+  border-bottom: 1.5px solid #E2E8F0;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  z-index: 2;
+  box-shadow: 0 1px 0 #E2E8F0;
+}
+
+.l1-cand-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #EDF2F7;
+  color: #1E293B;
+  vertical-align: middle;
+}
+
+.l1-cand-table tbody tr:hover td {
+  background: #F8FAFC;
+}
+
+.l1-cand-table tbody tr.active-row td {
+  background: #EFF6FF;
+  border-bottom-color: #BFDBFE;
+}
+
+.l1-cand-id-small {
+  font-size: 11px;
+  color: #64748B;
+  font-family: monospace;
+}
+
+.l1-btn-open-dossier {
+  background: #0B4FB8;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.l1-btn-open-dossier:hover {
+  background: #0A2A7A;
+  box-shadow: 0 2px 8px rgba(11, 79, 184, 0.25);
+}
+
+.l1-cand-popup-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 24px;
+  border-top: 1px solid #E2E8F0;
+  background: #F8FAFC;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.l1-cand-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.l1-page-btn {
+  background: #ffffff;
+  border: 1px solid #CBD5E1;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1E293B;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.l1-page-btn:hover:not(:disabled) {
+  border-color: #0B4FB8;
+  color: #0B4FB8;
+  background: #F8FAFC;
+}
+
+.l1-page-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.l1-page-info {
+  font-size: 12.5px;
+  color: #64748B;
+}
+
+/* ==========================================================================
+   Upload Actions (Right-aligned inside upload zone)
+   ========================================================================== */
+.l1-upload-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.l1-btn-not-available {
+  background: #FFFFFF;
+  border: 1.5px solid #CBD5E1;
+  border-radius: 99px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.l1-btn-not-available:hover:not(:disabled) {
+  border-color: #EF4444;
+  color: #DC2626;
+  background: #FEF2F2;
+}
+
+.l1-btn-not-available:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Unavailable Upload Zone State */
+.l1-upload-zone.unavailable {
+  border: 1.5px dashed #FCD34D;
+  background: #FFFBEB;
+  cursor: default;
+}
+
+.l1-upload-zone.unavailable:hover {
+  border-color: #F59E0B;
+  background: #FEF3C7;
+}
+
+.l1-upload-icon.na-icon {
+  background: #FEF3C7;
+  color: #D97706;
+}
+
+.l1-na-status-badge {
+  background: #FEF3C7;
+  border: 1px solid #FCD34D;
+  color: #92400E;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 11px;
+  border-radius: 99px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.l1-btn-change-upload {
+  background: #FFFFFF;
+  border: 1.5px solid #0B4FB8;
+  color: #0B4FB8;
+  border-radius: 99px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.18s ease;
+}
+
+.l1-btn-change-upload:hover:not(:disabled) {
+  background: #0B4FB8;
+  color: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(11, 79, 184, 0.2);
+}
+
+.l1-btn-change-upload:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   Section 3 Six-Column Layout & Month-Year Synchronization Styles
+   ========================================================================== */
+
+.l1-salary-records-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.l1-salary-month-card {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.l1-salary-month-card:hover {
+  border-color: #CBD5E1;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.07);
+}
+
+.l1-salary-month-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: #F8FAFC;
+  border-bottom: 1px solid #E2E8F0;
+}
+
+.l1-salary-month-badge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.l1-salary-month-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0B4FB8;
+  color: #FFFFFF;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  letter-spacing: 0.02em;
+}
+
+.l1-salary-month-period-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #1E293B;
+}
+
+.l1-salary-month-sync-hint {
+  font-size: 11px;
+  color: #0B4FB8;
+  background: #EFF6FF;
+  border: 1px solid #BFDBFE;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.l1-btn-remove-month {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  color: #DC2626;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.l1-btn-remove-month:hover {
+  background: #FEE2E2;
+  border-color: #F87171;
+  color: #B91C1C;
+}
+
+.l1-salary-six-col-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px 14px;
+  padding: 14px 16px 16px;
+}
+
+.l1-salary-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.l1-salary-col-span-2 {
+  grid-column: span 2;
+}
+
+.l1-salary-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.l1-salary-control {
+  width: 100%;
+  box-sizing: border-box;
+  height: 36px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #1E293B;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.l1-salary-control:focus {
+  border-color: #0B4FB8;
+  box-shadow: 0 0 0 2px rgba(11, 79, 184, 0.15);
+}
+
+.l1-salary-control:disabled {
+  background: #F1F5F9;
+  color: #64748B;
+  cursor: not-allowed;
+}
+
+.l1-salary-control.calculated-field {
+  background: #F8FAFC;
+  font-weight: 600;
+  color: #0F172A;
+}
+
+/* Tablet: 3 columns */
+@media (max-width: 1120px) {
+  .l1-salary-six-col-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .l1-salary-col-span-2 {
+    grid-column: span 2;
+  }
+}
+
+/* Mobile: 1 column */
+@media (max-width: 640px) {
+  .l1-salary-six-col-grid {
+    grid-template-columns: 1fr;
+  }
+  .l1-salary-col-span-2 {
+    grid-column: span 1;
+  }
+  .l1-salary-month-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
+
+/* Synchronized Period Pill for Salary Slips & Bank Statements */
+.l1-period-synchronized {
+  display: flex;
+  align-items: center;
+}
+
+.l1-sync-period-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #EFF6FF;
+  border: 1.5px solid #93C5FD;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #1E3A8A;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.l1-sync-period-icon {
+  font-size: 14px;
+}
+
+.l1-sync-period-text {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.l1-sync-period-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #2563EB;
+  color: #FFFFFF;
+  padding: 2px 6px;
+  border-radius: 4px;
+}

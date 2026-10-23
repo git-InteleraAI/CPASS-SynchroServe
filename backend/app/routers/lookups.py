@@ -8,7 +8,16 @@ from __future__ import annotations
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..auth import CurrentUser, allowed_tc_ids, get_current_user
+from ..auth import (
+    ALL_12_STATES,
+    CurrentUser,
+    allowed_states,
+    allowed_tc_ids,
+    check_candidate_access,
+    get_candidate_state,
+    get_current_user,
+    resolve_state,
+)
 from ..config import settings
 from ..db import supabase
 
@@ -16,6 +25,47 @@ router = APIRouter(prefix="/lookups", tags=["lookups"])
 
 
 def _check_centre(user: CurrentUser, tc_id: int) -> None:
+    permitted_st = allowed_states(user)
+    if permitted_st is not None:
+        if not permitted_st:
+            raise HTTPException(403, "You do not have access to any states.")
+        # Verify training centre belongs to user's permitted state(s)
+        try:
+            res = (
+                supabase.table("ddugky_candidates")
+                .select("candidate_id,state_name,tc_state_name")
+                .eq("tc_id", tc_id)
+                .limit(20)
+                .execute()
+            )
+            rows = res.data or []
+            if rows:
+                has_permitted = any(
+                    (resolve_state(r.get("state_name")) in permitted_st)
+                    or (resolve_state(r.get("tc_state_name")) in permitted_st)
+                    for r in rows
+                )
+                if not has_permitted:
+                    raise HTTPException(403, "You do not have access to this training centre.")
+            else:
+                # Check training_centres table
+                tc_row = (
+                    supabase.table("training_centres")
+                    .select("state_name")
+                    .eq("tc_id", tc_id)
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+                if tc_row:
+                    tc_state = resolve_state(tc_row[0].get("state_name"))
+                    if tc_state not in permitted_st:
+                        raise HTTPException(403, "You do not have access to this training centre.")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(403, "Authorization check failed for this training centre.")
+
     allowed = allowed_tc_ids(user)
     if allowed is not None and tc_id not in allowed:
         raise HTTPException(403, "You are not assigned to this training centre.")
@@ -36,7 +86,15 @@ def _mask_bank_account(raw: Any) -> str:
 
 @router.get("/states")
 def states(user: CurrentUser = Depends(get_current_user)):
-    """Return all distinct states from ddugky_candidates, including Mizoram."""
+    """Return distinct states permitted for this user.
+    L1 coordinators receive only their assigned state.
+    Unassigned L1 receives an empty list (fail-closed).
+    Admins and executive roles receive all states.
+    """
+    permitted = allowed_states(user)
+    if permitted is not None:
+        return sorted(permitted)
+
     try:
         res = supabase.rpc("get_cpass_states", {}).execute()
         rpc_states = {
@@ -61,44 +119,38 @@ def states(user: CurrentUser = Depends(get_current_user)):
             except Exception:
                 pass
 
-        return sorted(rpc_states)
+        all_states = set(ALL_12_STATES)
+        all_states.update(rpc_states)
+        return sorted(all_states)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).exception("Failed to retrieve CPASS states")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve states. Check backend logs."
-        ) from exc
+        if permitted is not None:
+            return sorted(permitted)
+        return sorted(ALL_12_STATES)
 
 
 @router.get("/centres")
 def centres(state: str, user: CurrentUser = Depends(get_current_user)):
-    """Return distinct training centres for the given state, respecting user centre scoping."""
+    """Return distinct training centres for the given state, respecting user state and centre scoping."""
+    resolved_state = resolve_state(state) or state
+    permitted_st = allowed_states(user)
+    if permitted_st is not None:
+        if not permitted_st or (resolved_state not in permitted_st and state not in permitted_st):
+            raise HTTPException(403, f"Access to state '{state}' is forbidden.")
+
     allowed = allowed_tc_ids(user)
     try:
-        res = (
-            supabase.table("ddugky_candidates")
-            .select("tc_id,tc_name")
-            .eq("tc_state_name", state)
-            .execute()
-        )
         tc_dict = {}
-        for r in (res.data or []):
-            tcid = r.get("tc_id")
-            name = r.get("tc_name")
-            if tcid and name:
-                if allowed is None or tcid in allowed:
-                    tc_dict[tcid] = name
-
-        # Fallback to candidate state_name for candidates recruited from other states (e.g. MIZORAM)
-        if not tc_dict:
-            res_cand_state = (
+        # Check both tc_state_name and state_name so cross-state candidates (e.g. TN or Mizoram) are included
+        for col in ("tc_state_name", "state_name"):
+            res = (
                 supabase.table("ddugky_candidates")
                 .select("tc_id,tc_name")
-                .eq("state_name", state)
+                .eq(col, state)
                 .execute()
             )
-            for r in (res_cand_state.data or []):
+            for r in (res.data or []):
                 tcid = r.get("tc_id")
                 name = r.get("tc_name")
                 if tcid and name:
@@ -124,6 +176,7 @@ def centres(state: str, user: CurrentUser = Depends(get_current_user)):
         return sorted(rows, key=lambda c: c["name"])
     except Exception:
         return []
+
 
 
 @router.get("/sanction-orders")
@@ -195,11 +248,15 @@ def batches(tc_id: int, sanction_order: str, user: CurrentUser = Depends(get_cur
 
 @router.get("/candidates")
 def candidates(kb_batch_id: int, user: CurrentUser = Depends(get_current_user)):
-    """Return candidates in a specific batch."""
+    """Return candidates in a specific batch, filtered by user authorization."""
+    permitted_st = allowed_states(user)
+    if permitted_st is not None and not permitted_st:
+        raise HTTPException(403, "You do not have access to any candidates.")
+
     try:
         res = (
             supabase.table("ddugky_candidates")
-            .select("candidate_id,candidate_first_name,candidate_last_name,candidate_father_name,appointed,tc_id")
+            .select("candidate_id,candidate_first_name,candidate_last_name,candidate_father_name,appointed,tc_id,state_name,tc_state_name")
             .eq("kb_batch_id", kb_batch_id)
             .execute()
         )
@@ -210,6 +267,10 @@ def candidates(kb_batch_id: int, user: CurrentUser = Depends(get_current_user)):
             for r in rows:
                 if settings.appointed_only and not r.get("appointed"):
                     continue
+                if permitted_st is not None:
+                    cand_st = get_candidate_state(r)
+                    if not cand_st or cand_st not in permitted_st:
+                        continue
                 cands.append({
                     "candidate_id": r["candidate_id"],
                     "first_name": r.get("candidate_first_name"),
@@ -229,13 +290,20 @@ def candidates(kb_batch_id: int, user: CurrentUser = Depends(get_current_user)):
         raise HTTPException(404, "Batch not found.")
     _check_centre(user, batch[0]["tc_id"])
 
-    q = supabase.table("candidates").select("candidate_id,first_name,last_name,father_name,appointed").eq(
+    q = supabase.table("candidates").select("candidate_id,first_name,last_name,father_name,appointed,state_name").eq(
         "kb_batch_id", kb_batch_id
     )
     if settings.appointed_only:
         q = q.eq("appointed", True)
     rows = q.execute().data or []
-    return sorted(rows, key=lambda c: (c["first_name"] or "").lower())
+    cands = []
+    for r in rows:
+        if permitted_st is not None:
+            cand_st = get_candidate_state(r)
+            if not cand_st or cand_st not in permitted_st:
+                continue
+        cands.append(r)
+    return sorted(cands, key=lambda c: (c["first_name"] or "").lower())
 
 
 @router.get("/candidates/{candidate_id}")
@@ -252,8 +320,8 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
         )
         if cand_res.data:
             r = cand_res.data[0]
-            if r.get("tc_id"):
-                _check_centre(user, r["tc_id"])
+            # State and centre authorization check
+            check_candidate_access(user, r)
 
             # Clean and mask sensitive data
             raw_bank = r.get("bank_account")
@@ -261,6 +329,7 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
             addr = r.get("permanent_address") or r.get("permanent_address_village") or "Not Available"
             if addr and str(addr).strip() == "0":
                 addr = "Not Available"
+
 
             cand = {
                 "candidate_id": r["candidate_id"],
@@ -346,7 +415,7 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
     # Fallback to candidates table
     cand_res = (
         supabase.table("candidates")
-        .select("candidate_id,first_name,last_name,father_name,gender,dob,mobile,appointed,employer_name,kb_batch_id,batches!inner(tc_id,batch_code,sanction_order)")
+        .select("candidate_id,first_name,last_name,father_name,gender,dob,mobile,appointed,employer_name,kb_batch_id,state_name,batches!inner(tc_id,batch_code,sanction_order)")
         .eq("candidate_id", candidate_id)
         .limit(1)
         .execute()
@@ -355,7 +424,8 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
         raise HTTPException(404, "Candidate not found.")
     cand = cand_res.data[0]
     tc_id = cand["batches"]["tc_id"]
-    _check_centre(user, tc_id)
+    cand["tc_id"] = tc_id
+    check_candidate_access(user, cand)
 
     return {
         **cand,

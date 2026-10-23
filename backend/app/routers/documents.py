@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..auth import CurrentUser, allowed_tc_ids, get_current_user, require_roles
+from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles
 from ..db import supabase
 from ..services.google_drive import (
     ALLOWED_MIME_TYPES,
@@ -39,7 +39,7 @@ VALID_DOCUMENT_TYPES = {"APPOINTMENT_LETTER", "SALARY_SLIP", "BANK_STATEMENT", "
 
 
 def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -> dict[str, Any]:
-    """Retrieve candidate context from ddugky_candidates for folder organization and verify centre access."""
+    """Retrieve candidate context from ddugky_candidates for folder organization and verify state and centre access."""
     res = (
         supabase.table("ddugky_candidates")
         .select("candidate_id,candidate_first_name,candidate_last_name,tc_state_name,state_name,tc_name,batch_code,tc_id")
@@ -50,10 +50,8 @@ def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -
     if not res.data:
         raise HTTPException(404, f"Candidate {candidate_id} not found.")
     c = res.data[0]
-    if user is not None and c.get("tc_id") is not None:
-        allowed = allowed_tc_ids(user)
-        if allowed is not None and c["tc_id"] not in allowed:
-            raise HTTPException(403, "You are not assigned to this candidate's training centre.")
+    if user is not None:
+        check_candidate_access(user, c)
     return {
         "candidate_id": c["candidate_id"],
         "candidate_name": f"{c.get('candidate_first_name') or ''} {c.get('candidate_last_name') or ''}".strip() or f"Candidate {candidate_id}",
@@ -208,6 +206,8 @@ async def upload_document(
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
 ):
     """Upload a candidate document to Google Drive and persist metadata in candidate_documents."""
+    cand_ctx = _get_candidate_context(candidate_id, user)
+
     doc_type = document_type.strip().upper()
     if doc_type not in VALID_DOCUMENT_TYPES:
         raise HTTPException(
@@ -217,7 +217,6 @@ async def upload_document(
 
     content = await file.read()
     mime_type = _validate_file_upload(file.filename or "document.pdf", content, file.content_type)
-    cand_ctx = _get_candidate_context(candidate_id)
 
     # Document-specific business rules
     if doc_type == "OTHER_DOCUMENT":
@@ -382,7 +381,7 @@ async def batch_submit_documents(
     Supports partial uploads when allow_partial is set or when updating a submitted audit.
     Includes Google Drive upload rollback if database persistence fails.
     """
-    cand_ctx = _get_candidate_context(candidate_id)
+    cand_ctx = _get_candidate_context(candidate_id, user)
 
     # 1. Parse metadata
     try:
@@ -758,6 +757,7 @@ def delete_document(
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
 ):
     """Delete an uploaded document record and remove its file from Google Drive."""
+    _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
         .select("id,drive_file_id")

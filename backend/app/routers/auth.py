@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from ..auth import CurrentUser, extract_token, get_current_user
+from ..auth import CurrentUser, extract_token, get_current_user, resolve_state
 from ..config import settings
 from ..db import get_auth_client, supabase
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(..., description="User email address")
+    email: str = Field(..., description="User email address or username (e.g. tn.cpass)")
     password: str = Field(..., description="User password")
     expected_role: str | None = Field(None, description="Role selected on the client for validation")
 
@@ -32,6 +32,7 @@ class UserProfileResponse(BaseModel):
     email: str | None
     full_name: str
     role: str
+    assigned_state: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -83,9 +84,14 @@ def login(payload: LoginRequest, response: Response):
     """
     auth_client = get_auth_client()
 
+    raw_ident = payload.email.strip()
+    login_email = raw_ident
+    if "@" not in login_email:
+        login_email = f"{login_email}@synchroserve.in"
+
     try:
         auth_res = auth_client.auth.sign_in_with_password({
-            "email": payload.email.strip(),
+            "email": login_email,
             "password": payload.password,
         })
     except Exception:
@@ -117,6 +123,16 @@ def login(payload: LoginRequest, response: Response):
     if payload.expected_role and profile["role"] != payload.expected_role:
         raise HTTPException(403, "This account does not have the selected role.")
 
+    meta = auth_user.user_metadata or {}
+    assigned_state = (
+        resolve_state(profile.get("assigned_state"))
+        or resolve_state(profile.get("state"))
+        or resolve_state(meta.get("assigned_state"))
+        or resolve_state(meta.get("state"))
+        or resolve_state(profile.get("email"))
+        or resolve_state(auth_user.email)
+    )
+
     _set_auth_cookies(
         response=response,
         access_token=session.access_token,
@@ -135,6 +151,7 @@ def login(payload: LoginRequest, response: Response):
             email=profile.get("email"),
             full_name=profile["full_name"],
             role=profile["role"],
+            assigned_state=assigned_state,
         ),
     )
 
@@ -147,7 +164,9 @@ def me(user: CurrentUser = Depends(get_current_user)):
         email=user.email,
         full_name=user.full_name,
         role=user.role,
+        assigned_state=user.assigned_state,
     )
+
 
 
 @router.post("/refresh", response_model=LoginResponse)
@@ -190,6 +209,16 @@ def refresh(request: Request, response: Response, payload: RefreshRequest | None
         expires_in=session.expires_in,
     )
 
+    meta = auth_user.user_metadata or {}
+    assigned_state = (
+        resolve_state(profile.get("assigned_state"))
+        or resolve_state(profile.get("state"))
+        or resolve_state(meta.get("assigned_state"))
+        or resolve_state(meta.get("state"))
+        or resolve_state(profile.get("email"))
+        or resolve_state(auth_user.email)
+    )
+
     return LoginResponse(
         access_token=session.access_token,
         refresh_token=session.refresh_token,
@@ -201,6 +230,7 @@ def refresh(request: Request, response: Response, payload: RefreshRequest | None
             email=profile.get("email"),
             full_name=profile["full_name"],
             role=profile["role"],
+            assigned_state=assigned_state,
         ),
     )
 

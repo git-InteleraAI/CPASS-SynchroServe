@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { api, downloadDocument } from '../lib/api'
 import synchroLogo from '../../assets/SynchroServeLogo.png'
 import './L1Home.css'
@@ -54,13 +54,18 @@ function FileUploadControl({
   helperText = 'PDF, PNG, JPG (up to 10MB)',
   stagedLabel = 'Staged locally',
   disabled = false,
+  isUnavailable = false,
+  onMarkNotAvailable,
+  onResetAvailability,
+  disableNotAvailable = false,
+  notAvailableTitle,
 }) {
   const [isDragOver, setIsDragOver] = useState(false)
   const inputRef = useRef(null)
 
   const handleDragOver = (e) => {
     e.preventDefault()
-    if (!disabled) setIsDragOver(true)
+    if (!disabled && !isUnavailable) setIsDragOver(true)
   }
 
   const handleDragLeave = (e) => {
@@ -71,7 +76,7 @@ function FileUploadControl({
   const handleDrop = (e) => {
     e.preventDefault()
     setIsDragOver(false)
-    if (disabled) return
+    if (disabled || isUnavailable) return
     const droppedFile = e.dataTransfer?.files?.[0]
     if (droppedFile) onSelect(droppedFile)
   }
@@ -95,6 +100,42 @@ function FileUploadControl({
           >
             ✕ Remove
           </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (isUnavailable) {
+    return (
+      <div>
+        <div
+          className="l1-upload-zone unavailable"
+          role="region"
+          aria-label={`${label}. Recorded as Not Available.`}
+        >
+          <div className="l1-upload-prompt">
+            <div className="l1-upload-icon na-icon">⚠️</div>
+            <div className="l1-upload-text">
+              <span className="main">{label}</span>
+              <span className="hint">Recorded as Not Available (Candidate status remains Pending)</span>
+            </div>
+          </div>
+          <div className="l1-upload-actions">
+            <span className="l1-na-status-badge">⚠️ Not Available</span>
+            {onResetAvailability && (
+              <button
+                type="button"
+                className="l1-btn-change-upload"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onResetAvailability()
+                }}
+                disabled={disabled}
+              >
+                Change to Upload
+              </button>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -125,9 +166,33 @@ function FileUploadControl({
             <span className="hint">{helperText}</span>
           </div>
         </div>
-        <button type="button" className="l1-btn-choose" tabIndex={-1}>
-          Browse File
-        </button>
+        <div className="l1-upload-actions">
+          {onMarkNotAvailable && (
+            <button
+              type="button"
+              className="l1-btn-not-available"
+              onClick={(e) => {
+                e.stopPropagation()
+                onMarkNotAvailable()
+              }}
+              disabled={disabled || disableNotAvailable}
+              title={notAvailableTitle || 'Record that payslip is unavailable'}
+            >
+              Not Available
+            </button>
+          )}
+          <button
+            type="button"
+            className="l1-btn-choose"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (!disabled) inputRef.current?.click()
+            }}
+          >
+            Browse File
+          </button>
+        </div>
         <input
           ref={inputRef}
           type="file"
@@ -344,12 +409,12 @@ export default function L1Home() {
   const [replacingOtherDoc, setReplacingOtherDoc] = useState(false)
   const [otherDocError, setOtherDocError] = useState('')
 
-  // Monthly document staging: Array of { id, month, year, file, fileName, fileSize, replaceId, error }
+  // Monthly document staging: Array of { id, month, year, file, fileName, fileSize, replaceId, error, notAvailable }
   // EXACTLY 3 rows by default
   const createDefaultRows = (defaultOffset = 0) => [
-    { id: `row_${Date.now()}_1`, month: 1 + defaultOffset, year: currentYear, file: null, fileName: '', fileSize: 0, replaceId: null, error: '' },
-    { id: `row_${Date.now()}_2`, month: 2 + defaultOffset, year: currentYear, file: null, fileName: '', fileSize: 0, replaceId: null, error: '' },
-    { id: `row_${Date.now()}_3`, month: 3 + defaultOffset, year: currentYear, file: null, fileName: '', fileSize: 0, replaceId: null, error: '' },
+    { id: `row_${Date.now()}_1`, month: 1 + defaultOffset, year: currentYear, file: null, fileName: '', fileSize: 0, replaceId: null, error: '', notAvailable: false },
+    { id: `row_${Date.now()}_2`, month: 2 + defaultOffset, year: currentYear, file: null, fileName: '', fileSize: 0, replaceId: null, error: '', notAvailable: false },
+    { id: `row_${Date.now()}_3`, month: 3 + defaultOffset, year: currentYear, file: null, fileName: '', fileSize: 0, replaceId: null, error: '', notAvailable: false },
   ]
 
   const [salaryRows, setSalaryRows] = useState(() => createDefaultRows(0))
@@ -368,12 +433,208 @@ export default function L1Home() {
   const [downloadingDocId, setDownloadingDocId] = useState(null)
   const [finalSubmitSuccessData, setFinalSubmitSuccessData] = useState(null)
 
+  // L1 Dashboard Summary Cards & Filtered Candidate List State
+  const [summaryData, setSummaryData] = useState(null)
+  const [loadingSummary, setLoadingSummary] = useState(false)
+  const [activeCardFilter, setActiveCardFilter] = useState(null)
+  const [cardCandidates, setCardCandidates] = useState([])
+  const [cardCandLoading, setCardCandLoading] = useState(false)
+  const [cardCandPage, setCardCandPage] = useState(1)
+  const [cardCandTotal, setCardCandTotal] = useState(0)
+  const [cardCandPages, setCardCandPages] = useState(1)
+  const [cardCandSearch, setCardCandSearch] = useState('')
+  const [cardCandError, setCardCandError] = useState('')
+
+  const fetchDashboardSummary = useCallback((targetState) => {
+    const s = targetState || sel.state
+    if (!s) {
+      setSummaryData(null)
+      return
+    }
+    setLoadingSummary(true)
+    api(`/dashboard/summary?state=${encodeURIComponent(s)}`)
+      .then((data) => {
+        setSummaryData(data)
+      })
+      .catch((err) => {
+        console.warn('Failed to load dashboard summary:', err)
+      })
+      .finally(() => {
+        setLoadingSummary(false)
+      })
+  }, [sel.state])
+
+  const fetchCardCandidates = useCallback((filterType, page = 1, search = '') => {
+    if (!filterType) return
+    const s = sel.state
+    setCardCandLoading(true)
+    setCardCandError('')
+    let url = `/dashboard/candidates?filter=${encodeURIComponent(filterType)}&filter_type=${encodeURIComponent(filterType)}&page=${page}&page_size=20`
+    if (s) {
+      url += `&state=${encodeURIComponent(s)}`
+    }
+    if (search && search.trim()) {
+      url += `&search=${encodeURIComponent(search.trim())}`
+    }
+    api(url)
+      .then((res) => {
+        setCardCandidates(res.candidates || [])
+        setCardCandTotal(res.total_count || 0)
+        setCardCandPages(res.total_pages || 1)
+        setCardCandPage(res.page || 1)
+      })
+      .catch((err) => {
+        console.warn('Failed to load card candidates:', err)
+        setCardCandError(err.message || 'Could not load candidates')
+        setCardCandidates([])
+      })
+      .finally(() => {
+        setCardCandLoading(false)
+      })
+  }, [sel.state])
+
+  // Close candidate list popup on Escape key press
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === 'Escape' && activeCardFilter) {
+        setActiveCardFilter(null)
+        setCardCandidates([])
+      }
+    }
+    if (activeCardFilter) {
+      window.addEventListener('keydown', handleKeyDown)
+      return () => window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [activeCardFilter])
+
+  function handleCardClick(filterKey) {
+    if (activeCardFilter === filterKey) {
+      setActiveCardFilter(null)
+      setCardCandidates([])
+    } else {
+      setActiveCardFilter(filterKey)
+      setCardCandPage(1)
+      setCardCandSearch('')
+      fetchCardCandidates(filterKey, 1, '')
+    }
+  }
+
+  function handleSelectCandidateFromList(cand) {
+    if (!cand?.candidate_id) return
+    setError('')
+    setActiveCardFilter(null)
+    setCardCandidates([])
+    setLoadingDetail(true)
+    setSel((prev) => ({
+      ...prev,
+      state: cand.state_name || prev.state,
+      cand: cand.candidate_id,
+    }))
+    api(`/lookups/candidates/${cand.candidate_id}`)
+      .then((detail) => {
+        setCandDetail(detail)
+        refreshDocuments(cand.candidate_id)
+        loadAudit(cand.candidate_id, detail)
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => {
+        setLoadingDetail(false)
+        setTimeout(() => {
+          const el = document.getElementById('candidate-dossier-anchor')
+          if (el) el.scrollIntoView({ behavior: 'smooth' })
+        }, 150)
+      })
+  }
+
+  async function handleMarkPayslipNotAvailable(monthNumber, rowId) {
+    if (!sel.cand) return
+    const row = salaryRows.find((r) => r.id === rowId)
+    updateRowField('SALARY', rowId, 'file', null)
+    try {
+      const payload = {
+        slot_key: `salary_slip_${monthNumber}`,
+        month_number: monthNumber,
+        available: 'No',
+        month: row?.month || null,
+        year: row?.year || null,
+        remarks: 'Payslip not available',
+      }
+      await api(`/dashboard/candidates/${sel.cand}/payslip-availability`, null, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      setSalaryRows((prev) =>
+        prev.map((r) => (r.id === rowId ? { ...r, notAvailable: true, file: null, fileName: '', fileSize: 0 } : r))
+      )
+      setDocumentAudit((prev) => ({
+        ...prev,
+        [`salary_slip_${monthNumber}`]: {
+          ...(prev[`salary_slip_${monthNumber}`] || {}),
+          available: 'No',
+          month: row?.month || null,
+          year: row?.year || null,
+        },
+      }))
+      setAuditToast({ message: `Month ${monthNumber} PaySlip recorded as Not Available.`, type: 'info' })
+      fetchDashboardSummary(sel.state)
+    } catch (err) {
+      const errMsg = err?.message && err.message !== '[object Object]' ? err.message : 'Failed to update payslip availability.'
+      setAuditToast({ message: errMsg, type: 'error' })
+    }
+  }
+
+  async function handleResetPayslipAvailability(monthNumber, rowId) {
+    if (!sel.cand) return
+    const row = salaryRows.find((r) => r.id === rowId)
+    try {
+      const payload = {
+        slot_key: `salary_slip_${monthNumber}`,
+        month_number: monthNumber,
+        available: 'Pending',
+        month: row?.month || null,
+        year: row?.year || null,
+      }
+      await api(`/dashboard/candidates/${sel.cand}/payslip-availability`, null, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      setSalaryRows((prev) =>
+        prev.map((r) => (r.id === rowId ? { ...r, notAvailable: false } : r))
+      )
+      setDocumentAudit((prev) => ({
+        ...prev,
+        [`salary_slip_${monthNumber}`]: {
+          ...(prev[`salary_slip_${monthNumber}`] || {}),
+          available: 'Pending',
+        },
+      }))
+      setAuditToast({ message: `Month ${monthNumber} PaySlip reset to Browse / Upload mode.`, type: 'info' })
+      fetchDashboardSummary(sel.state)
+    } catch (err) {
+      const errMsg = err?.message && err.message !== '[object Object]' ? err.message : 'Failed to reset payslip availability.'
+      setAuditToast({ message: errMsg, type: 'error' })
+    }
+  }
+
   const fill = (key, promise) =>
     promise.then((rows) => setLists((l) => ({ ...l, [key]: rows }))).catch((e) => setError(e.message))
 
   useEffect(() => {
-    fill('state', api('/lookups/states'))
-  }, [])
+    api('/lookups/states')
+      .then((rows) => {
+        const stateList = Array.isArray(rows) ? rows : []
+        setLists((l) => ({ ...l, state: stateList }))
+        if (stateList.length === 1) {
+          const singleState = stateList[0]
+          setSel((s) => ({ ...s, state: singleState }))
+          fill('tc', api('/lookups/centres', { state: singleState }))
+          fetchDashboardSummary(singleState)
+        }
+      })
+      .catch((e) => setError(e.message))
+  }, [fetchDashboardSummary])
 
   async function handleDownloadFile(docId, fileName) {
     if (!sel.cand || !docId) return
@@ -468,28 +729,70 @@ export default function L1Home() {
           }
 
           if (Array.isArray(a.salary_details) && a.salary_details.length > 0) {
-            setSalaryDetailList(
-              a.salary_details.map((s, idx) => ({
-                id: `sal_${idx + 1}`,
-                month: s.month,
-                year: s.year,
-                working_days: s.working_days ?? '',
-                pay_days: s.pay_days ?? '',
-                leave_days: s.leave_days ?? '',
-                credit_date: s.credit_date || '',
-                amount_credited: s.amount_credited ?? '',
-                gross_salary: s.gross_salary ?? '',
-                deductions: s.deductions ?? '',
-                net_salary: s.net_salary ?? '',
-                bank_name: s.bank_name || '',
-              }))
+            const loadedSalaryList = a.salary_details.map((s, idx) => ({
+              id: `sal_${idx + 1}`,
+              month: s.month,
+              year: s.year,
+              working_days: s.working_days ?? '',
+              pay_days: s.pay_days ?? '',
+              leave_days: s.leave_days ?? '',
+              credit_date: s.credit_date || '',
+              amount_credited: s.amount_credited ?? '',
+              gross_salary: s.gross_salary ?? '',
+              deductions: s.deductions ?? '',
+              net_salary: s.net_salary ?? '',
+              bank_name: s.bank_name || '',
+            }))
+            setSalaryDetailList(loadedSalaryList)
+
+            // Requirement 3: Automatically synchronize loaded salary periods into salaryRows and bankRows
+            setSalaryRows((prev) =>
+              loadedSalaryList.map((s, idx) => {
+                const existing = prev[idx]
+                return {
+                  id: existing?.id || `sal_slot_${idx + 1}`,
+                  month: s.month,
+                  year: s.year,
+                  file: existing?.file || null,
+                  fileName: existing?.fileName || '',
+                  fileSize: existing?.fileSize || 0,
+                  replaceId: existing?.replaceId || null,
+                  error: existing?.error || '',
+                  notAvailable: existing?.notAvailable || false,
+                }
+              })
+            )
+            setBankRows((prev) =>
+              loadedSalaryList.map((s, idx) => {
+                const existing = prev[idx]
+                return {
+                  id: existing?.id || `bank_slot_${idx + 1}`,
+                  month: s.month,
+                  year: s.year,
+                  file: existing?.file || null,
+                  fileName: existing?.fileName || '',
+                  fileSize: existing?.fileSize || 0,
+                  replaceId: existing?.replaceId || null,
+                  error: existing?.error || '',
+                  notAvailable: existing?.notAvailable || false,
+                }
+              })
             )
           } else {
             setSalaryDetailList(createDefaultSalaryList(currentYear))
+            setSalaryRows(createDefaultRows(0))
+            setBankRows(createDefaultRows(0))
           }
 
           if (a.document_audit) {
-            setDocumentAudit(normalizeDocAudit(a.document_audit))
+            const norm = normalizeDocAudit(a.document_audit)
+            setDocumentAudit(norm)
+            setSalaryRows((prev) =>
+              prev.map((r, idx) => ({
+                ...r,
+                notAvailable: norm[`salary_slip_${idx + 1}`]?.available === 'No',
+              }))
+            )
           }
           if (a.signoff_details) {
             setSignoffDetails({
@@ -502,6 +805,8 @@ export default function L1Home() {
           setAuditRecord(null)
           setEmployerList([createDefaultEmployer(detail)])
           setSalaryDetailList(createDefaultSalaryList(currentYear))
+          setSalaryRows(createDefaultRows(0))
+          setBankRows(createDefaultRows(0))
           setDocumentAudit(createDefaultDocAudit())
           setSignoffDetails(createDefaultSignoffs())
         }
@@ -512,6 +817,8 @@ export default function L1Home() {
         setAuditRecord(null)
         setEmployerList([createDefaultEmployer(detail)])
         setSalaryDetailList(createDefaultSalaryList(currentYear))
+        setSalaryRows(createDefaultRows(0))
+        setBankRows(createDefaultRows(0))
         setDocumentAudit(createDefaultDocAudit())
         setSignoffDetails(createDefaultSignoffs())
       })
@@ -530,8 +837,18 @@ export default function L1Home() {
     clearStagedFiles()
     resetAuditForm()
 
-    if (!value) return
-    if (level === 'state') fill('tc', api('/lookups/centres', { state: value }))
+    if (!value) {
+      if (level === 'state') {
+        setSummaryData(null)
+        setActiveCardFilter(null)
+        setCardCandidates([])
+      }
+      return
+    }
+    if (level === 'state') {
+      fill('tc', api('/lookups/centres', { state: value }))
+      fetchDashboardSummary(value)
+    }
     if (level === 'tc') fill('order', api('/lookups/sanction-orders', { tc_id: value }))
     if (level === 'order') fill('batch', api('/lookups/batches', { tc_id: sel.tc, sanction_order: value }))
     if (level === 'batch') fill('cand', api('/lookups/candidates', { kb_batch_id: value }))
@@ -584,9 +901,22 @@ export default function L1Home() {
       setAuditToast({ message: 'Maximum 12 monthly salary entries allowed.', type: 'info' })
       return
     }
-    const nextMonth = ((salaryDetailList.length) % 12) + 1
+    // Find next unused month in currentYear if possible to avoid duplicate month-year
+    const usedMonths = new Set(salaryDetailList.filter((s) => s.year === currentYear).map((s) => s.month))
+    let nextMonth = 1
+    for (let m = 1; m <= 12; m++) {
+      if (!usedMonths.has(m)) {
+        nextMonth = m
+        break
+      }
+    }
+    if (usedMonths.size >= 12) {
+      nextMonth = ((salaryDetailList.length) % 12) + 1
+    }
+
+    const newId = `sal_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`
     const newRow = {
-      id: `sal_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: newId,
       month: nextMonth,
       year: currentYear,
       working_days: 26,
@@ -600,6 +930,37 @@ export default function L1Home() {
       bank_name: '',
     }
     setSalaryDetailList((prev) => [...prev, newRow])
+
+    // Requirement 3: Automatically synchronize newly added salary records to Salary Slips & Bank Statements
+    const slotId = `slot_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`
+    setSalaryRows((prev) => [
+      ...prev,
+      {
+        id: `sal_${slotId}`,
+        month: nextMonth,
+        year: currentYear,
+        file: null,
+        fileName: '',
+        fileSize: 0,
+        replaceId: null,
+        error: '',
+        notAvailable: false,
+      },
+    ])
+    setBankRows((prev) => [
+      ...prev,
+      {
+        id: `bank_${slotId}`,
+        month: nextMonth,
+        year: currentYear,
+        file: null,
+        fileName: '',
+        fileSize: 0,
+        replaceId: null,
+        error: '',
+        notAvailable: false,
+      },
+    ])
   }
 
   function handleRemoveSalaryRow(id) {
@@ -608,13 +969,30 @@ export default function L1Home() {
       setAuditToast({ message: 'At least 3 monthly salary entries are required.', type: 'info' })
       return
     }
+    const removeIdx = salaryDetailList.findIndex((s) => s.id === id)
+    if (removeIdx === -1) return
+
+    // Requirement 4: Protect existing verified documents in Drive
+    const targetSalaryDoc = salarySlips[removeIdx]
+    const targetBankDoc = bankStatements[removeIdx]
+    if (targetSalaryDoc || targetBankDoc) {
+      setAuditToast({
+        message: 'Cannot remove salary month: An active verified document is already uploaded in Drive for this slot.',
+        type: 'error',
+      })
+      return
+    }
+
     setSalaryDetailList((prev) => prev.filter((s) => s.id !== id))
+    setSalaryRows((prev) => prev.filter((_, idx) => idx !== removeIdx))
+    setBankRows((prev) => prev.filter((_, idx) => idx !== removeIdx))
   }
 
   function handleUpdateSalaryField(id, field, value) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
-    setSalaryDetailList((prev) =>
-      prev.map((s) => {
+    setSalaryDetailList((prev) => {
+      const sIndex = prev.findIndex((s) => s.id === id)
+      const updatedList = prev.map((s) => {
         if (s.id !== id) return s
         const updated = { ...s, [field]: value }
         if (field === 'gross_salary' || field === 'deductions') {
@@ -626,7 +1004,20 @@ export default function L1Home() {
         }
         return updated
       })
-    )
+
+      // Requirement 3: Automatically synchronize Month and Year to corresponding Salary Slips & Bank Statements slots
+      if ((field === 'month' || field === 'year') && sIndex !== -1) {
+        const numVal = parseInt(value, 10) || value
+        setSalaryRows((prevRows) =>
+          prevRows.map((r, rIdx) => (rIdx === sIndex ? { ...r, [field]: numVal } : r))
+        )
+        setBankRows((prevRows) =>
+          prevRows.map((r, rIdx) => (rIdx === sIndex ? { ...r, [field]: numVal } : r))
+        )
+      }
+
+      return updatedList
+    })
   }
 
   function handleUpdateDocAudit(docKey, field, value) {
@@ -864,6 +1255,7 @@ export default function L1Home() {
         submittedAt: res.submitted_at || new Date().toISOString(),
       })
       setAuditToast({ message: '✓ Placement Audit Statement submitted successfully!', type: 'success' })
+      fetchDashboardSummary(sel.state)
     } catch (err) {
       setError(err.message || 'Failed to submit placement audit statement.')
       setAuditToast({ message: err.message || 'Submission failed.', type: 'error' })
@@ -1006,38 +1398,17 @@ export default function L1Home() {
 
   function handleRemoveRow(type, rowId) {
     const rows = type === 'SALARY' ? salaryRows : bankRows
-    const setter = type === 'SALARY' ? setSalaryRows : setBankRows
-    if (rows.length > 3) {
-      setter((prev) => prev.filter((r) => r.id !== rowId))
+    const idx = rows.findIndex((r) => r.id === rowId)
+    if (idx === -1) return
+    if (rows.length > 3 && idx < salaryDetailList.length) {
+      handleRemoveSalaryRow(salaryDetailList[idx].id)
     } else {
       updateRowField(type, rowId, 'file', null)
     }
   }
 
   function handleAddRow(type) {
-    const rows = type === 'SALARY' ? salaryRows : bankRows
-    const existingCount = type === 'SALARY' ? salarySlips.length : bankStatements.length
-    const totalCount = rows.length + existingCount
-    if (totalCount >= 12) {
-      setError(`Maximum limit of 12 months reached for ${type === 'SALARY' ? 'Salary Slips' : 'Bank Statements'}.`)
-      return
-    }
-    const nextMonth = ((rows.length) % 12) + 1
-    const newRow = {
-      id: `row_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-      month: nextMonth,
-      year: currentYear,
-      file: null,
-      fileName: '',
-      fileSize: 0,
-      replaceId: null,
-      error: '',
-    }
-    if (type === 'SALARY') {
-      setSalaryRows((prev) => [...prev, newRow])
-    } else {
-      setBankRows((prev) => [...prev, newRow])
-    }
+    handleAddSalaryRow()
   }
 
   // --- Handlers for Replacing Persisted Documents ---
@@ -1246,6 +1617,7 @@ export default function L1Home() {
         message: `✓ Successfully synced ${res.submitted_count} file(s) to Google Drive. Candidate and form data preserved.`,
         type: 'success',
       })
+      fetchDashboardSummary(sel.state)
     } catch (err) {
       setShowReviewModal(false)
       setError(err.message || 'Submission failed. Any created Google Drive files were safely cleaned up.')
@@ -1277,14 +1649,109 @@ export default function L1Home() {
   return (
     <div className="l1-dashboard">
       {/* --------------------------------------------------------------------
-         Hero / Portal Banner matching Login Aesthetics
+         1. Compact Dashboard Summary Cards (Top of Dashboard)
+         -------------------------------------------------------------------- */}
+      <section className="l1-compact-summary-row" aria-label="Candidate Summary Statistics">
+        {/* 1. Total */}
+        <div
+          className={`l1-compact-card total ${activeCardFilter === 'total' ? 'active' : ''}`}
+          onClick={() => handleCardClick('total')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('total')}
+          aria-label={`Total candidates: ${summaryData?.total ?? 0}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">👥</span>
+            <span className="l1-compact-card-title">Total</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : (summaryData?.total ?? 0)}
+          </div>
+        </div>
+
+        {/* 2. Approved */}
+        <div
+          className={`l1-compact-card approved ${activeCardFilter === 'cpass_approved' ? 'active' : ''}`}
+          onClick={() => handleCardClick('cpass_approved')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_approved')}
+          aria-label={`Approved candidates: ${summaryData?.cpass_approved ?? 0}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">✓</span>
+            <span className="l1-compact-card-title">Approved</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : (summaryData?.cpass_approved ?? 0)}
+          </div>
+        </div>
+
+        {/* 3. Rejected */}
+        <div
+          className={`l1-compact-card rejected ${activeCardFilter === 'cpass_rejected' ? 'active' : ''}`}
+          onClick={() => handleCardClick('cpass_rejected')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_rejected')}
+          aria-label={`Rejected candidates: ${summaryData?.cpass_rejected ?? 0}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">✕</span>
+            <span className="l1-compact-card-title">Rejected</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : (summaryData?.cpass_rejected ?? 0)}
+          </div>
+        </div>
+
+        {/* 4. Uploaded */}
+        <div
+          className={`l1-compact-card uploaded ${activeCardFilter === 'cpass_uploaded' ? 'active' : ''}`}
+          onClick={() => handleCardClick('cpass_uploaded')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_uploaded')}
+          aria-label={`Uploaded candidates: ${summaryData?.cpass_uploaded ?? 0}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">⬆</span>
+            <span className="l1-compact-card-title">Uploaded</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : (summaryData?.cpass_uploaded ?? 0)}
+          </div>
+        </div>
+
+        {/* 5. Pending */}
+        <div
+          className={`l1-compact-card pending ${activeCardFilter === 'pending_remaining' ? 'active' : ''}`}
+          onClick={() => handleCardClick('pending_remaining')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('pending_remaining')}
+          aria-label={`Pending candidates: ${summaryData?.pending_remaining ?? 0}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">⏱</span>
+            <span className="l1-compact-card-title">Pending</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : (summaryData?.pending_remaining ?? 0)}
+          </div>
+        </div>
+      </section>
+
+      {/* --------------------------------------------------------------------
+         2. Hero / Portal Banner matching Login Aesthetics
          -------------------------------------------------------------------- */}
       <section className="l1-hero-banner">
         <div className="l1-hero-content">
           <span className="l1-portal-badge">
             ✦ L1 Placement Verification Portal
           </span>
-          <h1>Verify & Validate, Sync & Confirm.</h1>
+          <h1>Verify &amp; Validate, Sync &amp; Confirm.</h1>
           <p>
             Audit and stage required placement verification documents—including offer letters, salary slips, and bank statements—before syncing directly to Google Drive.
           </p>
@@ -1306,6 +1773,260 @@ export default function L1Home() {
         <div className="l1-banner-danger" role="alert">
           <strong style={{ minWidth: '70px' }}>Notice:</strong>
           <div>{error}</div>
+        </div>
+      )}
+
+      {/* --------------------------------------------------------------------
+         Candidate List Popup / Modal (Opened when a card is clicked)
+         -------------------------------------------------------------------- */}
+      {activeCardFilter && (
+        <div
+          className="l1-modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setActiveCardFilter(null)
+              setCardCandidates([])
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="l1-popup-title"
+        >
+          <div className="l1-cand-popup-dialog" onClick={(e) => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="l1-cand-popup-header">
+              <div className="l1-cand-popup-title-group">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="l1-cand-popup-icon">
+                    {activeCardFilter === 'total' && '👥'}
+                    {activeCardFilter === 'cpass_approved' && '✓'}
+                    {activeCardFilter === 'cpass_rejected' && '✕'}
+                    {activeCardFilter === 'cpass_uploaded' && '⬆'}
+                    {activeCardFilter === 'pending_remaining' && '⏱'}
+                  </span>
+                  <h3 id="l1-popup-title">
+                    {activeCardFilter === 'total' && 'Total Candidates'}
+                    {activeCardFilter === 'cpass_approved' && 'Approved Candidates'}
+                    {activeCardFilter === 'cpass_rejected' && 'Rejected Candidates'}
+                    {activeCardFilter === 'cpass_uploaded' && 'Uploaded Candidates'}
+                    {activeCardFilter === 'pending_remaining' && 'Pending Candidates'}
+                  </h3>
+                  <span className="l1-cand-popup-count-badge">
+                    {cardCandLoading ? '…' : cardCandTotal}
+                  </span>
+                </div>
+                <p className="l1-cand-popup-sub">
+                  {activeCardFilter === 'total' && 'All candidates registered in your assigned state'}
+                  {activeCardFilter === 'cpass_approved' && 'Candidates approved during CPASS placement verification'}
+                  {activeCardFilter === 'cpass_rejected' && 'Candidates rejected during CPASS placement verification'}
+                  {activeCardFilter === 'cpass_uploaded' && 'Candidates uploaded by Placement Coordinator'}
+                  {activeCardFilter === 'pending_remaining' && 'Candidates not yet uploaded by Placement Coordinator (Total − Uploaded)'}
+                  {sel.state ? ` (${sel.state})` : ''}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="l1-popup-close-btn"
+                onClick={() => {
+                  setActiveCardFilter(null)
+                  setCardCandidates([])
+                }}
+                aria-label="Close candidate list modal"
+                title="Close (Esc)"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Search Toolbar */}
+            <div className="l1-cand-popup-toolbar">
+              <div className="l1-cand-popup-search-box">
+                <span className="l1-search-icon">🔍</span>
+                <input
+                  type="text"
+                  className="l1-cand-popup-search-input"
+                  placeholder="Search by Candidate Name or Candidate ID…"
+                  value={cardCandSearch}
+                  onChange={(e) => setCardCandSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      fetchCardCandidates(activeCardFilter, 1, cardCandSearch)
+                    }
+                  }}
+                  autoFocus
+                />
+                {cardCandSearch && (
+                  <button
+                    type="button"
+                    className="l1-search-clear-btn"
+                    onClick={() => {
+                      setCardCandSearch('')
+                      fetchCardCandidates(activeCardFilter, 1, '')
+                    }}
+                    title="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                className="l1-btn-primary"
+                style={{ padding: '8px 18px', fontSize: '13px' }}
+                onClick={() => fetchCardCandidates(activeCardFilter, 1, cardCandSearch)}
+              >
+                Search
+              </button>
+            </div>
+
+            {/* Modal Table Content */}
+            <div className="l1-cand-popup-body">
+              {cardCandLoading ? (
+                <div className="l1-cand-loading" style={{ padding: '48px 20px', textAlign: 'center' }}>
+                  <p style={{ margin: 0, color: 'var(--mut)' }}>Loading candidates from database…</p>
+                </div>
+              ) : cardCandError ? (
+                <div className="l1-cand-empty" style={{ color: 'var(--danger)', padding: '40px 20px', textAlign: 'center' }}>
+                  <p>⚠️ {cardCandError}</p>
+                  <button
+                    type="button"
+                    className="l1-btn-secondary"
+                    style={{ marginTop: '8px' }}
+                    onClick={() => fetchCardCandidates(activeCardFilter, cardCandPage, cardCandSearch)}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : cardCandidates.length === 0 ? (
+                <div className="l1-cand-empty" style={{ padding: '48px 20px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>📂</div>
+                  <p style={{ margin: 0, fontWeight: 600, color: 'var(--ink)' }}>No candidates found</p>
+                  <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--mut)' }}>
+                    {cardCandSearch
+                      ? `No candidates match "${cardCandSearch}". Try a different keyword.`
+                      : 'No candidate records match this status category in your state.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="l1-popup-table-scroll">
+                  <table className="l1-cand-table">
+                    <thead>
+                      <tr>
+                        <th>Candidate Name &amp; ID</th>
+                        <th>Father / Guardian</th>
+                        <th>Training Centre</th>
+                        <th>Batch Code</th>
+                        <th>Status</th>
+                        <th style={{ textAlign: 'right' }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cardCandidates.map((cand) => (
+                        <tr
+                          key={cand.candidate_id}
+                          className={sel.cand === cand.candidate_id ? 'active-row' : ''}
+                        >
+                          <td>
+                            <strong>{cand.name}</strong>
+                            <div className="l1-cand-id-small">{cand.candidate_id}</div>
+                          </td>
+                          <td>{cand.father_name || '—'}</td>
+                          <td>{cand.tc_name || '—'}</td>
+                          <td>{cand.batch_code || '—'}</td>
+                          <td>
+                            <span
+                              className={`l1-status-pill ${
+                                cand.cpass_status === 'APPROVED'
+                                  ? 'success'
+                                  : cand.cpass_status === 'REJECTED'
+                                  ? 'danger'
+                                  : cand.is_uploaded
+                                  ? 'info'
+                                  : 'warning'
+                              }`}
+                              style={{ fontSize: '11px', padding: '2px 8px' }}
+                            >
+                              {cand.cpass_status === 'APPROVED'
+                                ? 'APPROVED'
+                                : cand.cpass_status === 'REJECTED'
+                                ? 'REJECTED'
+                                : cand.is_uploaded
+                                ? 'UPLOADED'
+                                : 'PENDING'}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <button
+                              type="button"
+                              className="l1-btn-open-dossier"
+                              onClick={() => handleSelectCandidateFromList(cand)}
+                            >
+                              Open Dossier →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer with Pagination and Close */}
+            <div className="l1-cand-popup-footer">
+              <div className="l1-cand-pagination">
+                {cardCandPages > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      className="l1-page-btn"
+                      disabled={cardCandPage <= 1 || cardCandLoading}
+                      onClick={() => {
+                        const newPage = cardCandPage - 1
+                        setCardCandPage(newPage)
+                        fetchCardCandidates(activeCardFilter, newPage, cardCandSearch)
+                      }}
+                    >
+                      ← Previous
+                    </button>
+                    <span className="l1-page-info">
+                      Page <strong>{cardCandPage}</strong> of <strong>{cardCandPages}</strong> ({cardCandTotal} items)
+                    </span>
+                    <button
+                      type="button"
+                      className="l1-page-btn"
+                      disabled={cardCandPage >= cardCandPages || cardCandLoading}
+                      onClick={() => {
+                        const newPage = cardCandPage + 1
+                        setCardCandPage(newPage)
+                        fetchCardCandidates(activeCardFilter, newPage, cardCandSearch)
+                      }}
+                    >
+                      Next →
+                    </button>
+                  </>
+                )}
+                {cardCandPages <= 1 && (
+                  <span className="l1-page-info" style={{ color: 'var(--mut)' }}>
+                    Showing <strong>{cardCandidates.length}</strong> of <strong>{cardCandTotal}</strong> candidates
+                  </span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                className="l1-btn-secondary"
+                style={{ padding: '7px 16px', fontSize: '13px' }}
+                onClick={() => {
+                  setActiveCardFilter(null)
+                  setCardCandidates([])
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1341,8 +2062,11 @@ export default function L1Home() {
                 id="sel-state"
                 value={sel.state}
                 onChange={(e) => pick('state', e.target.value)}
+                disabled={lists.state.length === 0}
               >
-                <option value="">Select State…</option>
+                <option value="">
+                  {lists.state.length === 0 ? 'No assigned states…' : 'Select State…'}
+                </option>
                 {lists.state.map((s) => (
                   <option key={s} value={s}>{s}</option>
                 ))}
@@ -1448,6 +2172,7 @@ export default function L1Home() {
         </div>
       )}
 
+      <div id="candidate-dossier-anchor" />
       {candDetail && (
         <section className="l1-cand-summary-card">
           <div className="l1-cand-header">
@@ -1922,163 +2647,203 @@ export default function L1Home() {
                   )}
                 </div>
 
-                <div className="l1-table-responsive">
-                  <table className="l1-audit-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: '110px' }}>Month</th>
-                        <th style={{ width: '90px' }}>Year</th>
-                        <th style={{ width: '80px' }}>Work Days</th>
-                        <th style={{ width: '80px' }}>Pay Days</th>
-                        <th style={{ width: '80px' }}>Leave Days</th>
-                        <th style={{ width: '130px' }}>Credit Date</th>
-                        <th style={{ width: '110px' }}>Gross (₹)</th>
-                        <th style={{ width: '100px' }}>Deductions (₹)</th>
-                        <th style={{ width: '110px' }}>Net (₹)</th>
-                        <th style={{ width: '110px' }}>Credited (₹)</th>
-                        <th>Bank Name</th>
-                        {!isAuditSubmitted && salaryDetailList.length > 3 && <th style={{ width: '50px' }}>Action</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {salaryDetailList.map((sal, idx) => (
-                        <tr key={sal.id || idx}>
-                          <td>
+                <div className="l1-salary-records-container">
+                  {salaryDetailList.map((sal, idx) => {
+                    const monthObj = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+                    return (
+                      <div key={sal.id || idx} className="l1-salary-month-card">
+                        <div className="l1-salary-month-header">
+                          <div className="l1-salary-month-badge-wrap">
+                            <span className="l1-salary-month-badge">Month {idx + 1}</span>
+                            <span className="l1-salary-month-period-title">
+                              {monthObj} {sal.year || 2024}
+                            </span>
+                            <span className="l1-salary-month-sync-hint">
+                              🔗 Synchronized to Salary Slips & Bank Statements
+                            </span>
+                          </div>
+                          {!isAuditSubmitted && salaryDetailList.length > 3 && (
+                            <button
+                              type="button"
+                              className="l1-btn-remove-month"
+                              onClick={() => handleRemoveSalaryRow(sal.id)}
+                              title="Remove Month"
+                            >
+                              <span>🗑️</span> Remove Month
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="l1-salary-six-col-grid">
+                          {/* Row 1 (Cols 1-6) */}
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Month</label>
                             <select
+                              className="l1-salary-control"
                               value={sal.month || 1}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'month', parseInt(e.target.value, 10))}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Month`}
                             >
-                              <option value={1}>01 - Jan</option>
-                              <option value={2}>02 - Feb</option>
-                              <option value={3}>03 - Mar</option>
-                              <option value={4}>04 - Apr</option>
+                              <option value={1}>01 - January</option>
+                              <option value={2}>02 - February</option>
+                              <option value={3}>03 - March</option>
+                              <option value={4}>04 - April</option>
                               <option value={5}>05 - May</option>
-                              <option value={6}>06 - Jun</option>
-                              <option value={7}>07 - Jul</option>
-                              <option value={8}>08 - Aug</option>
-                              <option value={9}>09 - Sep</option>
-                              <option value={10}>10 - Oct</option>
-                              <option value={11}>11 - Nov</option>
-                              <option value={12}>12 - Dec</option>
+                              <option value={6}>06 - June</option>
+                              <option value={7}>07 - July</option>
+                              <option value={8}>08 - August</option>
+                              <option value={9}>09 - September</option>
+                              <option value={10}>10 - October</option>
+                              <option value={11}>11 - November</option>
+                              <option value={12}>12 - December</option>
                             </select>
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Year</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               min="2020"
-                              max="2030"
+                              max="2035"
                               value={sal.year || 2024}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'year', parseInt(e.target.value, 10))}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Year`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Work Days</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               placeholder="26"
                               min="0"
                               max="31"
                               value={sal.working_days ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'working_days', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Work Days`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Pay Days</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               placeholder="26"
                               min="0"
                               max="31"
                               value={sal.pay_days ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'pay_days', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Pay Days`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Leave Days</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               placeholder="0"
                               min="0"
                               max="31"
                               value={sal.leave_days ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'leave_days', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Leave Days`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Credit Date</label>
                             <input
                               type="date"
+                              className="l1-salary-control"
                               value={sal.credit_date || ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'credit_date', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Credit Date`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          {/* Row 2 (Cols 1-6) */}
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Gross Salary (₹)</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               placeholder="0"
                               min="0"
                               value={sal.gross_salary ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'gross_salary', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Gross Salary`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Deductions (₹)</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               placeholder="0"
                               min="0"
                               value={sal.deductions ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'deductions', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Deductions`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Net Salary (₹)</label>
                             <input
                               type="number"
+                              className="l1-salary-control calculated-field"
                               placeholder="0"
                               min="0"
                               value={sal.net_salary ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'net_salary', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Net Salary`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col">
+                            <label className="l1-salary-label">Credited (₹)</label>
                             <input
                               type="number"
+                              className="l1-salary-control"
                               placeholder="0"
                               min="0"
                               value={sal.amount_credited ?? ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'amount_credited', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Amount Credited`}
                             />
-                          </td>
-                          <td>
+                          </div>
+
+                          <div className="l1-salary-col l1-salary-col-span-2">
+                            <label className="l1-salary-label">Bank Name</label>
                             <input
                               type="text"
-                              placeholder="e.g. SBI, HDFC"
+                              className="l1-salary-control"
+                              placeholder="e.g. State Bank of India, HDFC"
                               value={sal.bank_name || ''}
                               onChange={(e) => handleUpdateSalaryField(sal.id, 'bank_name', e.target.value)}
                               disabled={isAuditSubmitted}
+                              aria-label={`Month ${idx + 1} Bank Name`}
                             />
-                          </td>
-                          {!isAuditSubmitted && salaryDetailList.length > 3 && (
-                            <td style={{ textAlign: 'center' }}>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveSalaryRow(sal.id)}
-                                title="Remove Month"
-                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626', fontSize: '15px' }}
-                              >
-                                🗑️
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
 
                 {/* Salary Summary Bar */}
@@ -2287,25 +3052,13 @@ export default function L1Home() {
                   </div>
 
                   <div className="l1-slot-controls">
-                    <div className="l1-period-picker">
-                      <select
-                        value={row.month}
-                        aria-label={`Slot ${index + 1} Month`}
-                        onChange={(e) => updateRowField('SALARY', row.id, 'month', parseInt(e.target.value, 10))}
-                      >
-                        {MONTH_NAMES.map((m, mIdx) => (
-                          <option key={mIdx + 1} value={mIdx + 1}>{m}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={row.year}
-                        aria-label={`Slot ${index + 1} Year`}
-                        onChange={(e) => updateRowField('SALARY', row.id, 'year', parseInt(e.target.value, 10))}
-                      >
-                        {years.map((y) => (
-                          <option key={y} value={y}>{y}</option>
-                        ))}
-                      </select>
+                    <div className="l1-period-picker l1-period-synchronized">
+                      <div className="l1-sync-period-pill" title="Synchronized with Section 3 Monthly Salary Disbursement Record">
+                        <span className="l1-sync-period-icon">📅</span>
+                        <span className="l1-sync-period-text">
+                          {MONTH_NAMES[(row.month || 1) - 1]} {row.year}
+                        </span>
+                      </div>
                     </div>
 
                     <FileUploadControl
@@ -2316,6 +3069,16 @@ export default function L1Home() {
                       label={`Attach Salary Slip (${MONTH_NAMES[row.month - 1]} ${row.year})`}
                       helperText="PDF, PNG, JPG (up to 10MB)"
                       stagedLabel="Staged (Pending Submit)"
+                      disabled={isAuditSubmitted}
+                      isUnavailable={row.notAvailable}
+                      onMarkNotAvailable={() => handleMarkPayslipNotAvailable(index + 1, row.id)}
+                      onResetAvailability={() => handleResetPayslipAvailability(index + 1, row.id)}
+                      disableNotAvailable={!!salarySlips[index]}
+                      notAvailableTitle={
+                        salarySlips[index]
+                          ? 'Cannot mark as Not Available: a verified payslip is already uploaded in Drive'
+                          : 'Record that payslip is unavailable'
+                      }
                       onSelect={(file) => updateRowField('SALARY', row.id, 'file', file)}
                       onRemove={() => updateRowField('SALARY', row.id, 'file', null)}
                     />
@@ -2327,9 +3090,9 @@ export default function L1Home() {
                 <button
                   type="button"
                   className="l1-btn-add-slot"
-                  onClick={() => handleAddRow('SALARY')}
+                  onClick={handleAddSalaryRow}
                 >
-                  + Add Another Salary Slip Month
+                  + Add Salary Month (Synchronized)
                 </button>
               )}
             </div>
@@ -2439,25 +3202,13 @@ export default function L1Home() {
                   </div>
 
                   <div className="l1-slot-controls">
-                    <div className="l1-period-picker">
-                      <select
-                        value={row.month}
-                        aria-label={`Bank Slot ${index + 1} Month`}
-                        onChange={(e) => updateRowField('BANK', row.id, 'month', parseInt(e.target.value, 10))}
-                      >
-                        {MONTH_NAMES.map((m, mIdx) => (
-                          <option key={mIdx + 1} value={mIdx + 1}>{m}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={row.year}
-                        aria-label={`Bank Slot ${index + 1} Year`}
-                        onChange={(e) => updateRowField('BANK', row.id, 'year', parseInt(e.target.value, 10))}
-                      >
-                        {years.map((y) => (
-                          <option key={y} value={y}>{y}</option>
-                        ))}
-                      </select>
+                    <div className="l1-period-picker l1-period-synchronized">
+                      <div className="l1-sync-period-pill" title="Synchronized with Section 3 Monthly Salary Disbursement Record">
+                        <span className="l1-sync-period-icon">📅</span>
+                        <span className="l1-sync-period-text">
+                          {MONTH_NAMES[(row.month || 1) - 1]} {row.year}
+                        </span>
+                      </div>
                     </div>
 
                     <FileUploadControl
@@ -2479,9 +3230,9 @@ export default function L1Home() {
                 <button
                   type="button"
                   className="l1-btn-add-slot"
-                  onClick={() => handleAddRow('BANK')}
+                  onClick={handleAddSalaryRow}
                 >
-                  + Add Another Bank Statement Month
+                  + Add Salary Month (Synchronized)
                 </button>
               )}
             </div>

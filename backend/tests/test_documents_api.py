@@ -31,7 +31,9 @@ AUTH_USER = CurrentUser(
     email="coordinator@cpass.org",
     full_name="Test Coordinator",
     role="L1_COORDINATOR",
+    assigned_state="ODISHA",
 )
+
 
 CANDIDATE_DATA = {
     "candidate_id": 99901,
@@ -115,6 +117,9 @@ def test_get_summary_calculates_eligibility(mock_supabase, auth_override):
 
 def test_upload_invalid_document_type(mock_supabase, auth_override):
     """Uploading an unrecognized document type must return 400."""
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        CANDIDATE_DATA
+    ]
     res = client.post(
         "/candidates/99901/documents",
         data={"document_type": "INVALID_TYPE"},
@@ -126,6 +131,9 @@ def test_upload_invalid_document_type(mock_supabase, auth_override):
 
 def test_upload_file_exceeds_max_size(mock_supabase, auth_override):
     """Files exceeding 10MB limit must be rejected with 400."""
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        CANDIDATE_DATA
+    ]
     oversized = b"a" * (MAX_FILE_SIZE_BYTES + 1024)
     res = client.post(
         "/candidates/99901/documents",
@@ -138,6 +146,9 @@ def test_upload_file_exceeds_max_size(mock_supabase, auth_override):
 
 def test_upload_unsupported_mime_type(mock_supabase, auth_override):
     """Unsupported file formats (e.g. .exe) must be rejected with 400."""
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        CANDIDATE_DATA
+    ]
     res = client.post(
         "/candidates/99901/documents",
         data={"document_type": "APPOINTMENT_LETTER"},
@@ -145,6 +156,7 @@ def test_upload_unsupported_mime_type(mock_supabase, auth_override):
     )
     assert res.status_code == 400
     assert "Unsupported file format" in res.json()["detail"]
+
 
 
 def test_appointment_letter_enforces_single_active_constraint(mock_supabase, auth_override):
@@ -295,15 +307,22 @@ def test_partial_failure_reconciles_drive_file(mock_supabase, auth_override):
 
 def test_download_document_streams_file(mock_supabase, auth_override):
     """Authorized download returns streaming file response."""
-    mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
-        {
-            "id": "doc-uuid-1",
-            "candidate_id": 99901,
-            "drive_file_id": "drive-file-xyz",
-            "file_name": "appointment.pdf",
-            "mime_type": "application/pdf",
-        }
-    ]
+    def table_mock(tbl):
+        m = MagicMock()
+        if tbl == "ddugky_candidates":
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [CANDIDATE_DATA]
+        elif tbl == "candidate_documents":
+            m.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {
+                    "id": "doc-uuid-1",
+                    "candidate_id": 99901,
+                    "drive_file_id": "drive-file-xyz",
+                    "file_name": "appointment.pdf",
+                    "mime_type": "application/pdf",
+                }
+            ]
+        return m
+    mock_supabase.table.side_effect = table_mock
 
     with patch(
         "app.routers.documents.google_drive_service.download_file",
@@ -317,15 +336,25 @@ def test_download_document_streams_file(mock_supabase, auth_override):
 
 def test_delete_document_removes_from_drive_and_db(mock_supabase, auth_override):
     """Deleting a document deletes it from Drive and removes the database record."""
-    mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
-        {"id": "doc-uuid-1", "drive_file_id": "drive-file-xyz"}
-    ]
+    captured_delete = MagicMock()
+    def table_mock(tbl):
+        m = MagicMock()
+        if tbl == "ddugky_candidates":
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [CANDIDATE_DATA]
+        elif tbl == "candidate_documents":
+            m.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": "doc-uuid-1", "drive_file_id": "drive-file-xyz"}
+            ]
+            m.delete.return_value.eq.return_value.execute = captured_delete
+        return m
+    mock_supabase.table.side_effect = table_mock
 
     with patch("app.routers.documents.google_drive_service.delete_file") as mock_delete:
         res = client.delete("/candidates/99901/documents/doc-uuid-1")
         assert res.status_code == 200
         mock_delete.assert_called_once_with("drive-file-xyz")
-        mock_supabase.table.return_value.delete.return_value.eq.return_value.execute.assert_called_once()
+        captured_delete.assert_called_once()
+
 
 
 def test_drive_folder_hierarchy_structure():
@@ -660,7 +689,9 @@ def test_l2_manager_can_list_and_download_documents(mock_supabase):
         email="l2@cpass.org",
         full_name="Suresh Kumar",
         role="L2_MANAGER",
+        assigned_state="ODISHA",
     )
+
     app.dependency_overrides[get_current_user] = lambda: l2_user
     try:
         mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
@@ -710,7 +741,9 @@ def test_l2_manager_denied_batch_submit_and_delete(mock_supabase):
         email="l2@cpass.org",
         full_name="Suresh Kumar",
         role="L2_MANAGER",
+        assigned_state="ODISHA",
     )
+
     app.dependency_overrides[get_current_user] = lambda: l2_user
     try:
         res1 = client.post("/candidates/99901/documents/submit")

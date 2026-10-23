@@ -25,7 +25,9 @@ L1_USER = CurrentUser(
     email="l1@cpass.org",
     full_name="Ananya Sharma",
     role="L1_COORDINATOR",
+    assigned_state="ODISHA",
 )
+
 
 ADMIN_USER = CurrentUser(
     id="admin-uuid",
@@ -519,7 +521,9 @@ L2_USER = CurrentUser(
     email="l2@cpass.org",
     full_name="Suresh Kumar",
     role="L2_MANAGER",
+    assigned_state="ODISHA",
 )
+
 
 
 def test_l1_cannot_call_l2_review_endpoints(auth_override, mock_supabase):

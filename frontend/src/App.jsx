@@ -34,9 +34,10 @@ function Shell() {
 
   const roleDisplay = {
     L1_COORDINATOR: 'Placement Coordinator (L1)',
-    L2_MANAGER: 'Centre Manager (L2)',
-    L3_LEADER: 'Business Leader (L3)',
-    ADMIN: 'System Administrator',
+    L2_MANAGER: 'Center Head (L2)',
+    L3_COPS: 'COPS (L3)',
+    L4_LEADER: 'Business Leader (L4)',
+    L5_CEO: 'Chief Executive Officer (L5)',
   }[profile.role] || profile.role
 
   return (

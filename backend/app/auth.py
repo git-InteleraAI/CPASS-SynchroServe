@@ -1,10 +1,106 @@
 from dataclasses import dataclass
+import time
+from typing import Any
 
 from fastapi import Depends, Header, HTTPException, Request
+import httpx
 
 from .db import supabase
 
-ALL_CENTRE_ROLES = {"ADMIN", "L3_LEADER"}
+ALL_CENTRE_ROLES = {"ADMIN", "L3_LEADER", "L4_LEADER", "L5_CEO"}
+ALL_STATE_ROLES = {"ADMIN", "L3_LEADER", "L4_LEADER", "L5_CEO"}
+
+# The canonical 12 CPASS master states
+ALL_12_STATES: tuple[str, ...] = (
+    "ANDHRA PRADESH",
+    "GUJARAT",
+    "KERALA",
+    "MIZORAM",
+    "ODISHA",
+    "PUDUCHERRY",
+    "PUNJAB",
+    "RAJASTHAN",
+    "TAMIL NADU",
+    "TELANGANA",
+    "UTTAR PRADESH",
+    "WEST BENGAL",
+)
+
+STATE_ALIASES: dict[str, str] = {
+    # Tamil Nadu
+    "tn": "TAMIL NADU",
+    "tamilnadu": "TAMIL NADU",
+    "tamil nadu": "TAMIL NADU",
+    "tamil_nadu": "TAMIL NADU",
+    # Telangana
+    "ts": "TELANGANA",
+    "tg": "TELANGANA",
+    "telangana": "TELANGANA",
+    # Kerala
+    "kl": "KERALA",
+    "kerala": "KERALA",
+    # Andhra Pradesh
+    "ap": "ANDHRA PRADESH",
+    "andhra": "ANDHRA PRADESH",
+    "andhrapradesh": "ANDHRA PRADESH",
+    "andhra pradesh": "ANDHRA PRADESH",
+    "andhra_pradesh": "ANDHRA PRADESH",
+    # Rajasthan
+    "rj": "RAJASTHAN",
+    "rajasthan": "RAJASTHAN",
+    # Odisha
+    "od": "ODISHA",
+    "or": "ODISHA",
+    "odisha": "ODISHA",
+    "orissa": "ODISHA",
+    # Gujarat
+    "gj": "GUJARAT",
+    "gujarat": "GUJARAT",
+    # Punjab
+    "pb": "PUNJAB",
+    "punjab": "PUNJAB",
+    # Uttar Pradesh
+    "up": "UTTAR PRADESH",
+    "uttarpradesh": "UTTAR PRADESH",
+    "uttar pradesh": "UTTAR PRADESH",
+    "uttar_pradesh": "UTTAR PRADESH",
+    # Mizoram
+    "mz": "MIZORAM",
+    "mizoram": "MIZORAM",
+    # Puducherry
+    "py": "PUDUCHERRY",
+    "pondy": "PUDUCHERRY",
+    "puducherry": "PUDUCHERRY",
+    "pondicherry": "PUDUCHERRY",
+    # West Bengal
+    "wb": "WEST BENGAL",
+    "westbengal": "WEST BENGAL",
+    "west bengal": "WEST BENGAL",
+    "west_bengal": "WEST BENGAL",
+}
+
+
+def resolve_state(val: Any) -> str | None:
+    """Normalize and resolve any state string, code, username, or email to a canonical state name."""
+    if not val:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    # Strip email domain if present
+    if "@" in s:
+        s = s.split("@")[0].strip()
+    # Strip .cpass convention (e.g. tn.cpass -> tn)
+    if ".cpass" in s.lower():
+        s = s.lower().split(".cpass")[0].strip()
+
+    clean = s.lower().replace(" ", "").replace("_", "").replace("-", "")
+    if clean in STATE_ALIASES:
+        return STATE_ALIASES[clean]
+    for canon in ALL_12_STATES:
+        if canon.lower().replace(" ", "") == clean:
+            return canon
+    return None
 
 
 @dataclass
@@ -13,10 +109,21 @@ class CurrentUser:
     email: str | None
     full_name: str
     role: str
+    assigned_state: str | None = None
+
+    def __post_init__(self):
+        if self.assigned_state:
+            self.assigned_state = resolve_state(self.assigned_state)
+        elif self.email:
+            self.assigned_state = resolve_state(self.email)
 
     @property
     def sees_all_centres(self) -> bool:
         return self.role in ALL_CENTRE_ROLES
+
+    @property
+    def sees_all_states(self) -> bool:
+        return self.role in ALL_STATE_ROLES
 
 
 def extract_token(request: Request, authorization: str | None = None) -> str:
@@ -39,8 +146,7 @@ def get_current_user(
     authorization: str | None = Header(default=None),
 ) -> CurrentUser:
     """Validate Supabase access token (from Bearer header or HttpOnly cookie)
-
-    and load the user's active CPASS profile. Role is strictly derived from the DB.
+    and load the user's active CPASS profile. Role and state are strictly derived from the DB/server.
     """
     token = extract_token(request, authorization)
 
@@ -51,13 +157,38 @@ def get_current_user(
     if auth_user is None:
         raise HTTPException(401, "Invalid or expired token")
 
-    rows = supabase.table("profiles").select("*").eq("id", auth_user.id).limit(1).execute().data
+    rows = None
+    for attempt in range(3):
+        try:
+            rows = supabase.table("profiles").select("*").eq("id", auth_user.id).limit(1).execute().data
+            break
+        except (httpx.TransportError, BlockingIOError):
+            if attempt == 2:
+                raise
+            time.sleep(0.05 * (attempt + 1))
     if not rows:
         raise HTTPException(403, "No CPASS profile for this user. Ask an admin to create one.")
     p = rows[0]
     if not p["is_active"]:
         raise HTTPException(403, "This account is disabled.")
-    return CurrentUser(id=p["id"], email=p.get("email"), full_name=p["full_name"], role=p["role"])
+
+    meta = auth_user.user_metadata or {}
+    assigned_state = (
+        resolve_state(p.get("assigned_state"))
+        or resolve_state(p.get("state"))
+        or resolve_state(meta.get("assigned_state"))
+        or resolve_state(meta.get("state"))
+        or resolve_state(p.get("email"))
+        or resolve_state(auth_user.email)
+    )
+
+    return CurrentUser(
+        id=p["id"],
+        email=p.get("email"),
+        full_name=p["full_name"],
+        role=p["role"],
+        assigned_state=assigned_state,
+    )
 
 
 def require_roles(*roles: str):
@@ -69,14 +200,66 @@ def require_roles(*roles: str):
     return checker
 
 
+def allowed_states(user: CurrentUser) -> list[str] | None:
+    """None = unrestricted (sees all states).
+    Otherwise returns list of permitted canonical state names.
+    For L1_COORDINATOR: strictly limited to [user.assigned_state] if assigned, else [] (fails closed).
+    """
+    if user.sees_all_states:
+        return None
+    if user.role == "L1_COORDINATOR":
+        if user.assigned_state:
+            return [user.assigned_state]
+        return []  # Fail-closed: unassigned L1 coordinator sees zero states
+    if user.assigned_state:
+        return [user.assigned_state]
+    return None
+
+
 def allowed_tc_ids(user: CurrentUser) -> list[int] | None:
-    """None = all centres. Otherwise the centres assigned to this user."""
+    """None = all centres permitted within user's permitted state(s).
+    Otherwise explicit list of permitted tc_ids.
+    Fails closed: if user is not in ALL_CENTRE_ROLES and has no state or centre assignments, returns [].
+    """
     if user.sees_all_centres:
         return None
     try:
         rows = supabase.table("user_centres").select("tc_id").eq("user_id", user.id).execute().data
-        if rows:
+        if rows and isinstance(rows, list) and isinstance(rows[0], dict) and "tc_id" in rows[0]:
             return [r["tc_id"] for r in rows]
     except Exception:
         pass
-    return None
+
+    # If user has a valid assigned state, centre access is governed by state boundaries
+    if user.assigned_state:
+        return None
+
+    # Missing state and centre assignments fail closed
+    return []
+
+
+
+def get_candidate_state(cand: dict[str, Any]) -> str | None:
+    """Extract and resolve canonical state name from candidate record.
+    Checks state_name first, then tc_state_name.
+    """
+    return resolve_state(cand.get("state_name")) or resolve_state(cand.get("tc_state_name"))
+
+
+def check_candidate_access(user: CurrentUser, cand: dict[str, Any]) -> None:
+    """Verify that user is authorized to view or edit this candidate.
+    Enforces state-based authorization for L1 Placement Coordinators and any state-scoped user.
+    Fails closed on missing or mismatched assignments.
+    """
+    permitted_st = allowed_states(user)
+    if permitted_st is not None:
+        cand_state = get_candidate_state(cand)
+        if not cand_state or cand_state not in permitted_st:
+            raise HTTPException(403, "You do not have access to candidates in this state.")
+
+    permitted_tcs = allowed_tc_ids(user)
+    if permitted_tcs is not None:
+        tc_id = cand.get("tc_id")
+        if tc_id is not None and tc_id not in permitted_tcs:
+            raise HTTPException(403, "You are not assigned to this candidate's training centre.")
+

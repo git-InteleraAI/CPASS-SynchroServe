@@ -147,9 +147,19 @@ export async function api(path, params, options = {}, _isRetry = false) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    const msg = body.detail || body.message || `Request failed (${res.status})`
+    let msg
+    if (Array.isArray(body.detail)) {
+      msg = body.detail
+        .map((d) => d.msg || (typeof d === 'string' ? d : JSON.stringify(d)))
+        .join(', ')
+    } else if (body.detail && typeof body.detail === 'object') {
+      msg = body.detail.msg || JSON.stringify(body.detail)
+    } else {
+      msg = body.detail || body.message || `Request failed (${res.status})`
+    }
     const err = new Error(msg)
     err.status = res.status
+    err.detail = body.detail
     throw err
   }
 
