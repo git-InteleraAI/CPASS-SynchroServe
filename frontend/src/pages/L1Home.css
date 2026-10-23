@@ -329,7 +329,7 @@
 
 .l1-cand-meta-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(4, 2fr);
   gap: 12px;
   background: var(--soft);
   border-radius: 14px;
@@ -384,117 +384,7 @@
   align-items: flex-start;
 }
 
-/* --------------------------------------------------------------------------
-   Document Completion Overview / Checklist Card
-   -------------------------------------------------------------------------- */
-.l1-overview-card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  padding: clamp(18px, 2.5vw, 24px);
-  box-shadow: 0 4px 20px rgba(10, 42, 122, 0.04);
-}
 
-.l1-overview-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.l1-overview-header h3 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--ink);
-}
-
-.l1-requirements-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-}
-
-.l1-req-card {
-  background: #F8FAFC;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  transition: all 0.2s ease;
-}
-
-.l1-req-card.satisfied {
-  background: #F0FDF4;
-  border-color: #BBF7D0;
-}
-
-.l1-req-card.staged-only {
-  background: #EFF6FF;
-  border-color: #BFDBFE;
-}
-
-.l1-req-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.l1-req-title {
-  font-size: 14.5px;
-  font-weight: 700;
-  color: var(--ink);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.l1-req-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  font-size: 14px;
-}
-
-.l1-req-card.satisfied .l1-req-icon {
-  background: #DCFCE7;
-  color: #166534;
-}
-
-.l1-req-card.staged-only .l1-req-icon {
-  background: #DBEAFE;
-  color: #1E40AF;
-}
-
-.l1-req-card:not(.satisfied):not(.staged-only) .l1-req-icon {
-  background: #FEE2E2;
-  color: #991B1B;
-}
-
-.l1-req-detail {
-  font-size: 12.5px;
-  color: var(--mut);
-  line-height: 1.4;
-}
-
-.l1-req-status-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: auto;
-  padding-top: 8px;
-  border-top: 1px dashed rgba(0, 0, 0, 0.08);
-  font-size: 12px;
-}
 
 /* --------------------------------------------------------------------------
    Document Workspaces (Sections 1, 2, 3)

@@ -313,7 +313,6 @@ export default function L1Home() {
   const [auditSavingDraft, setAuditSavingDraft] = useState(false)
   const [auditSubmitting, setAuditSubmitting] = useState(false)
   const [auditToast, setAuditToast] = useState(null) // { message, type }
-  const [auditRemarks, setAuditRemarks] = useState('')
 
   const [employerList, setEmployerList] = useState(() => [createDefaultEmployer(null)])
   const [salaryDetailList, setSalaryDetailList] = useState(() => createDefaultSalaryList(currentYear))
@@ -396,7 +395,6 @@ export default function L1Home() {
     setSalaryDetailList(createDefaultSalaryList(currentYear))
     setDocumentAudit(createDefaultDocAudit())
     setSignoffDetails(createDefaultSignoffs())
-    setAuditRemarks('')
     setStatementModalOpen(false)
     setStatementData(null)
   }
@@ -500,14 +498,12 @@ export default function L1Home() {
               business_leader: { ...createDefaultSignoffs().business_leader, ...(a.signoff_details.business_leader || {}) },
             })
           }
-          setAuditRemarks(a.remarks || '')
         } else {
           setAuditRecord(null)
           setEmployerList([createDefaultEmployer(detail)])
           setSalaryDetailList(createDefaultSalaryList(currentYear))
           setDocumentAudit(createDefaultDocAudit())
           setSignoffDetails(createDefaultSignoffs())
-          setAuditRemarks('')
         }
       })
       .catch((err) => {
@@ -651,13 +647,6 @@ export default function L1Home() {
     })
   }
 
-  function handleUpdateSignoff(official, field, value) {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
-    setSignoffDetails((prev) => ({
-      ...prev,
-      [official]: { ...prev[official], [field]: value },
-    }))
-  }
 
   // --- Audit Draft & Submit Handlers ---
   async function handleSaveDraft(isSilent = false) {
@@ -713,7 +702,7 @@ export default function L1Home() {
         })),
         document_audit: documentAudit,
         signoff_details: signoffDetails,
-        remarks: auditRemarks || null,
+        remarks: auditRecord?.remarks || null,
       }
 
       const res = await api(`/candidates/${sel.cand}/audit/draft`, null, {
@@ -859,7 +848,7 @@ export default function L1Home() {
         })),
         document_audit: documentAudit,
         signoff_details: signoffDetails,
-        remarks: auditRemarks || null,
+        remarks: auditRecord?.remarks || null,
       }
 
       const res = await api(`/candidates/${sel.cand}/audit/submit`, null, {
@@ -1279,11 +1268,6 @@ export default function L1Home() {
   const stagedBankCount = bankRows.filter((r) => r.file).length + Object.values(stagedBankReplacements).filter((r) => r.file).length
   const otherDocStagedCount = stagedOtherDoc?.file ? 1 : 0
   const totalStagedFiles = (stagedAppointment?.file ? 1 : 0) + stagedSalaryCount + stagedBankCount + otherDocStagedCount
-
-  const appointmentSatisfied = !!appointmentDoc || !!stagedAppointment?.file
-  const salarySatisfied = salarySlips.length + stagedSalaryCount >= 3
-  const bankSatisfied = bankStatements.length + stagedBankCount >= 3
-  const allRequirementsSatisfied = appointmentSatisfied && salarySatisfied && bankSatisfied
 
   // Candidate initials
   const candInitials = candDetail
@@ -2122,76 +2106,7 @@ export default function L1Home() {
                 </div>
               </div>
 
-              <section className="l1-overview-card">
-            <div className="l1-overview-header">
-              <h3>Document Verification Progress</h3>
-              <span className={`l1-status-pill ${allRequirementsSatisfied ? 'success' : 'warning'}`}>
-                {allRequirementsSatisfied ? '✓ Placement Requirements Satisfied' : 'Pending Verification Requirements'}
-              </span>
-            </div>
 
-            <div className="l1-requirements-grid">
-              {/* Category 1: Appointment Letter */}
-              <div className={`l1-req-card ${appointmentDoc ? 'satisfied' : stagedAppointment?.file ? 'staged-only' : ''}`}>
-                <div className="l1-req-card-top">
-                  <div className="l1-req-title">
-                    <span className="l1-req-icon">✉</span>
-                    Appointment Letter
-                  </div>
-                  <span className={`l1-status-pill ${appointmentDoc ? 'success' : stagedAppointment?.file ? 'info' : 'danger'}`}>
-                    {appointmentDoc ? 'Verified' : stagedAppointment?.file ? 'Staged' : 'Missing'}
-                  </span>
-                </div>
-                <div className="l1-req-detail">
-                  Exactly 1 signed appointment or offer letter per candidate.
-                </div>
-                <div className="l1-req-status-row">
-                  <span>Requirement: 1 file</span>
-                  <strong>{appointmentDoc ? '1 Verified' : stagedAppointment?.file ? '1 Staged' : '0 Provided'}</strong>
-                </div>
-              </div>
-
-              {/* Category 2: Salary Slips */}
-              <div className={`l1-req-card ${salarySlips.length >= 3 ? 'satisfied' : salarySlips.length + stagedSalaryCount >= 3 ? 'staged-only' : ''}`}>
-                <div className="l1-req-card-top">
-                  <div className="l1-req-title">
-                    <span className="l1-req-icon">₹</span>
-                    Salary Slips
-                  </div>
-                  <span className={`l1-status-pill ${salarySlips.length >= 3 ? 'success' : salarySlips.length + stagedSalaryCount >= 3 ? 'info' : 'warning'}`}>
-                    {salarySlips.length >= 3 ? 'Satisfied' : salarySlips.length + stagedSalaryCount >= 3 ? 'Staged Satisfied' : 'Incomplete'}
-                  </span>
-                </div>
-                <div className="l1-req-detail">
-                  At least 3 distinct reporting months required (up to 12).
-                </div>
-                <div className="l1-req-status-row">
-                  <span>Requirement: Min 3 months</span>
-                  <strong>{salarySlips.length} Persisted + {stagedSalaryCount} Staged</strong>
-                </div>
-              </div>
-
-              {/* Category 3: Bank Statements */}
-              <div className={`l1-req-card ${bankStatements.length >= 3 ? 'satisfied' : bankStatements.length + stagedBankCount >= 3 ? 'staged-only' : ''}`}>
-                <div className="l1-req-card-top">
-                  <div className="l1-req-title">
-                    <span className="l1-req-icon">▤</span>
-                    Bank Statements
-                  </div>
-                  <span className={`l1-status-pill ${bankStatements.length >= 3 ? 'success' : bankStatements.length + stagedBankCount >= 3 ? 'info' : 'warning'}`}>
-                    {bankStatements.length >= 3 ? 'Satisfied' : bankStatements.length + stagedBankCount >= 3 ? 'Staged Satisfied' : 'Incomplete'}
-                  </span>
-                </div>
-                <div className="l1-req-detail">
-                  At least 3 distinct reporting months required matching salary disbursement.
-                </div>
-                <div className="l1-req-status-row">
-                  <span>Requirement: Min 3 months</span>
-                  <strong>{bankStatements.length} Persisted + {stagedBankCount} Staged</strong>
-                </div>
-              </div>
-            </div>
-          </section>
 
           {/* ================================================================
              SECTION 1: APPOINTMENT / OFFER LETTER
@@ -2735,14 +2650,14 @@ export default function L1Home() {
                 </div>
               </div>
 
-              {/* Section 4: Document Verification & Criteria Compliance Audit */}
+              {/* Section 4: Document Evidence Audit */}
               <div className="l1-audit-card">
                 <div className="l1-audit-card-header">
                   <div className="l1-audit-card-title">
                     <span style={{ fontSize: '20px' }}>📑</span>
                     <div>
-                      <h3>4. Document Evidence &amp; Compliance Audit</h3>
-                      <p>Verification of candidate placement evidence (AL/OL, PS1-PS3, BS1-BS3) against audit criteria</p>
+                      <h3>4. Document Evidence Audit</h3>
+                      <p>Verification of candidate placement evidence (AL/OL, PS1-PS3, BS1-BS3)</p>
                     </div>
                   </div>
                   <span className="l1-status-pill info">Evidence Cross-Verification</span>
@@ -2755,8 +2670,7 @@ export default function L1Home() {
                         <th style={{ width: '80px' }}>Code</th>
                         <th>Document Evidence</th>
                         <th style={{ width: '130px' }}>Availability</th>
-                        <th style={{ width: '170px' }}>Criteria Compliance</th>
-                        <th style={{ width: '170px' }}>Repository Link</th>
+                        <th style={{ width: '170px' }}>Drive Status</th>
                         <th>Coordinator Remarks</th>
                       </tr>
                     </thead>
@@ -2787,17 +2701,6 @@ export default function L1Home() {
                                 <option value="Yes">Yes</option>
                                 <option value="No">No</option>
                                 <option value="Pending">Pending</option>
-                              </select>
-                            </td>
-                            <td>
-                              <select
-                                value={entry.compliance || 'Under Verification'}
-                                onChange={(e) => handleUpdateDocAudit(item.key, 'compliance', e.target.value)}
-                                disabled={isAuditSubmitted}
-                              >
-                                <option value="Compliant">Compliant</option>
-                                <option value="Non-Compliant">Non-Compliant</option>
-                                <option value="Under Verification">Under Verification</option>
                               </select>
                             </td>
                             <td>
@@ -2837,6 +2740,7 @@ export default function L1Home() {
               </div>
 
               {/* Section 5: Authorizations & Sign-off Details */}
+              {/* Section 5: Authorizations & Sign-off Details */}
               <div className="l1-audit-card">
                 <div className="l1-audit-card-header">
                   <div className="l1-audit-card-title">
@@ -2846,7 +2750,7 @@ export default function L1Home() {
                       <p>Sign-offs and recommendation statements from Centre Head, COPS Team, and Business Leader</p>
                     </div>
                   </div>
-                  <span className="l1-status-pill info">Corporate Endorsements</span>
+                  <span className="l1-status-pill secondary">Read-Only (Corporate Endorsements)</span>
                 </div>
 
                 <div className="l1-signoff-grid">
@@ -2858,8 +2762,8 @@ export default function L1Home() {
                         <input
                           type="checkbox"
                           checked={!!signoffDetails.centre_head?.recommended}
-                          onChange={(e) => handleUpdateSignoff('centre_head', 'recommended', e.target.checked)}
-                          disabled={isAuditSubmitted}
+                          disabled={true}
+                          readOnly
                         />
                         Recommended
                       </label>
@@ -2870,8 +2774,8 @@ export default function L1Home() {
                         type="text"
                         placeholder="Name of Centre Head"
                         value={signoffDetails.centre_head?.name || ''}
-                        onChange={(e) => handleUpdateSignoff('centre_head', 'name', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                     <div className="l1-field-group">
@@ -2879,8 +2783,8 @@ export default function L1Home() {
                       <input
                         type="date"
                         value={signoffDetails.centre_head?.date || ''}
-                        onChange={(e) => handleUpdateSignoff('centre_head', 'date', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                     <div className="l1-field-group">
@@ -2889,8 +2793,8 @@ export default function L1Home() {
                         type="text"
                         placeholder="e.g. Dossier physically verified"
                         value={signoffDetails.centre_head?.remarks || ''}
-                        onChange={(e) => handleUpdateSignoff('centre_head', 'remarks', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                   </div>
@@ -2903,8 +2807,8 @@ export default function L1Home() {
                         <input
                           type="checkbox"
                           checked={!!signoffDetails.cops_team?.verified}
-                          onChange={(e) => handleUpdateSignoff('cops_team', 'verified', e.target.checked)}
-                          disabled={isAuditSubmitted}
+                          disabled={true}
+                          readOnly
                         />
                         Verified
                       </label>
@@ -2915,8 +2819,8 @@ export default function L1Home() {
                         type="text"
                         placeholder="Name of COPS Auditor"
                         value={signoffDetails.cops_team?.name || ''}
-                        onChange={(e) => handleUpdateSignoff('cops_team', 'name', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                     <div className="l1-field-group">
@@ -2924,8 +2828,8 @@ export default function L1Home() {
                       <input
                         type="date"
                         value={signoffDetails.cops_team?.date || ''}
-                        onChange={(e) => handleUpdateSignoff('cops_team', 'date', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                     <div className="l1-field-group">
@@ -2934,8 +2838,8 @@ export default function L1Home() {
                         type="text"
                         placeholder="e.g. Salary credits verified"
                         value={signoffDetails.cops_team?.remarks || ''}
-                        onChange={(e) => handleUpdateSignoff('cops_team', 'remarks', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                   </div>
@@ -2948,8 +2852,8 @@ export default function L1Home() {
                         <input
                           type="checkbox"
                           checked={!!signoffDetails.business_leader?.approved}
-                          onChange={(e) => handleUpdateSignoff('business_leader', 'approved', e.target.checked)}
-                          disabled={isAuditSubmitted}
+                          disabled={true}
+                          readOnly
                         />
                         Approved
                       </label>
@@ -2960,8 +2864,8 @@ export default function L1Home() {
                         type="text"
                         placeholder="Name of Business Leader"
                         value={signoffDetails.business_leader?.name || ''}
-                        onChange={(e) => handleUpdateSignoff('business_leader', 'name', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                     <div className="l1-field-group">
@@ -2969,8 +2873,8 @@ export default function L1Home() {
                       <input
                         type="date"
                         value={signoffDetails.business_leader?.date || ''}
-                        onChange={(e) => handleUpdateSignoff('business_leader', 'date', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                     <div className="l1-field-group">
@@ -2979,33 +2883,11 @@ export default function L1Home() {
                         type="text"
                         placeholder="e.g. Placement compliance approved"
                         value={signoffDetails.business_leader?.remarks || ''}
-                        onChange={(e) => handleUpdateSignoff('business_leader', 'remarks', e.target.value)}
-                        disabled={isAuditSubmitted}
+                        disabled={true}
+                        readOnly
                       />
                     </div>
                   </div>
-                </div>
-              </div>
-
-              {/* Section 6: Overall Remarks Card */}
-              <div className="l1-audit-card">
-                <div className="l1-audit-card-header">
-                  <div className="l1-audit-card-title">
-                    <span style={{ fontSize: '20px' }}>📝</span>
-                    <div>
-                      <h3>6. Overall Audit Remarks &amp; Observations</h3>
-                      <p>Optional compliance notes or exceptional observations for this candidate's placement audit</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="l1-field-group">
-                  <textarea
-                    rows={3}
-                    placeholder="Enter any additional audit remarks or observations..."
-                    value={auditRemarks}
-                    onChange={(e) => setAuditRemarks(e.target.value)}
-                    disabled={isAuditSubmitted}
-                  />
                 </div>
               </div>
 
@@ -3182,23 +3064,19 @@ export default function L1Home() {
                 )}
               </div>
 
-              {/* 4. Other Document Summary  */}
-              {
-                otherRows.length > 0 && (
-                  <div>
-                    <strong style={{ display: 'block', marginBottom: '6px', fontSize: '13.5px' }}>
-                      4. Other Documents:
-                    </strong>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      {otherRows.map((r) => (
-                        <div key={r.id} style={{ padding: '6px 12px', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '8px', fontSize: '13px' }}>
-                          {r.label}: {r.fileName} ({formatFileSize(r.fileSize)})
-                        </div>
-                      ))}
+              {/* 4. Other Document Summary */}
+              {stagedOtherDoc?.file && (
+                <div>
+                  <strong style={{ display: 'block', marginBottom: '6px', fontSize: '13.5px' }}>
+                    4. Other Document:
+                  </strong>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ padding: '6px 12px', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '8px', fontSize: '13px' }}>
+                      {otherDocTitle || otherDoc?.document_title || 'Other Supporting Document'}: {stagedOtherDoc.fileName} ({formatFileSize(stagedOtherDoc.fileSize)})
                     </div>
                   </div>
-                )
-              }
+                </div>
+              )}
 
               <div className="l1-banner-warning" style={{ margin: '4px 0 0 0' }}>
                 <span style={{ fontSize: '16px' }}>☁️</span>

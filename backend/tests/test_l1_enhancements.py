@@ -523,3 +523,185 @@ def test_unauthorized_role_blocked_from_l1_draft_and_submit(auth_l2):
     })
     assert res_submit.status_code == 403
 
+
+def test_section_5_read_only_preserves_corporate_signoffs_for_l1(auth_l1):
+    """Section 5 is read-only: L1 draft and submission preserve existing corporate signoffs."""
+    existing_signoff = {
+        "centre_head": {"name": "Official Centre Head", "confirmed": True, "date": "2024-05-10", "remarks": "Approved by CH"},
+        "cops_team": {"name": "COPS Lead", "confirmed": True, "date": "2024-05-11", "remarks": "Verified by COPS"},
+        "business_leader": {"name": "Business Leader", "confirmed": True, "date": "2024-05-12", "remarks": "Endorsed"},
+    }
+
+    existing_audit = {
+        "id": "audit-existing-id",
+        "candidate_id": 1076617,
+        "audit_status": "DRAFT",
+        "signoff_details": existing_signoff,
+    }
+
+    captured_updates = []
+
+    with patch("app.routers.audits.supabase") as mock_sb:
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[SAMPLE_CANDIDATE]
+                )
+            elif name == "placement_audits":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[existing_audit]
+                )
+                def update_capture(payload):
+                    captured_updates.append(payload)
+                    m = MagicMock()
+                    m.eq.return_value.execute.return_value = MagicMock(data=[{"id": "audit-existing-id", **payload}])
+                    return m
+                t.update.side_effect = update_capture
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        # Attempt to overwrite signoff_details with blank or tampered values as L1
+        tampered_draft_payload = {
+            "employer_details": [{"employer_name": "Tech Corp Pvt Ltd", "monthly_ctc": 18000.0}],
+            "salary_details": [
+                {"month": 1, "year": 2024, "gross_salary": 18000, "net_salary": 16500, "amount_credited": 16500},
+            ],
+            "document_audit": {},
+            "signoff_details": {
+                "centre_head": {"name": "Fake Name", "confirmed": False},
+            },
+            "remarks": None,
+        }
+
+        res = client.post("/candidates/1076617/audit/draft", json=tampered_draft_payload)
+        assert res.status_code == 200
+        # Verify Section 5 corporate signoffs in updated payload retained existing database values
+        assert len(captured_updates) == 1
+        saved_signoffs = captured_updates[0]["signoff_details"]
+        assert saved_signoffs["centre_head"]["name"] == "Official Centre Head"
+        assert saved_signoffs["centre_head"]["confirmed"] is True
+        assert saved_signoffs["cops_team"]["name"] == "COPS Lead"
+
+
+def test_section_5_and_remarks_preservation_on_submit(auth_l1):
+    """Section 5 corporate endorsements and historical remarks are preserved on final submit."""
+    existing_signoff = {
+        "centre_head": {"name": "Official Centre Head", "confirmed": True, "date": "2024-05-10"},
+        "cops_team": {"name": "COPS Lead", "confirmed": True, "date": "2024-05-11"},
+        "business_leader": {"name": "Business Leader", "confirmed": True, "date": "2024-05-12"},
+    }
+
+    existing_audit = {
+        "id": "audit-existing-id",
+        "candidate_id": 1076617,
+        "audit_status": "DRAFT",
+        "signoff_details": existing_signoff,
+        "remarks": "Historical verification observation notes",
+    }
+
+    captured_updates = []
+
+    with patch("app.routers.audits.supabase") as mock_sb:
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[SAMPLE_CANDIDATE]
+                )
+            elif name == "candidate_holds":
+                t.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[]
+                )
+            elif name == "placement_audits":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[existing_audit]
+                )
+                def update_capture(payload):
+                    captured_updates.append(payload)
+                    m = MagicMock()
+                    m.eq.return_value.execute.return_value = MagicMock(data=[{"id": "audit-existing-id", **payload}])
+                    return m
+                t.update.side_effect = update_capture
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        submit_payload = {
+            "employer_details": [{"employer_name": "Tech Corp Pvt Ltd", "monthly_ctc": 18000.0}],
+            "salary_details": [
+                {"month": 1, "year": 2024, "gross_salary": 18000, "net_salary": 16500, "amount_credited": 16500},
+                {"month": 2, "year": 2024, "gross_salary": 18000, "net_salary": 16500, "amount_credited": 16500},
+                {"month": 3, "year": 2024, "gross_salary": 18000, "net_salary": 16500, "amount_credited": 16500},
+            ],
+            "document_audit": {
+                "overall_compliance": True,
+            },
+            "signoff_details": {},  # L1 sends empty signoff
+            "remarks": None,  # L1 sends null remarks
+        }
+
+        res = client.post("/candidates/1076617/audit/submit", json=submit_payload)
+        assert res.status_code == 200
+        assert len(captured_updates) == 1
+        payload_saved = captured_updates[0]
+        # 1. Preserved corporate endorsements
+        assert payload_saved["signoff_details"]["centre_head"]["name"] == "Official Centre Head"
+        assert payload_saved["signoff_details"]["cops_team"]["name"] == "COPS Lead"
+        assert payload_saved["signoff_details"]["business_leader"]["name"] == "Business Leader"
+        # 2. Submitter and Placement Executive metadata stamped
+        assert payload_saved["signoff_details"]["submitter"]["user_id"] == "l1-user-uuid-123"
+        assert payload_saved["signoff_details"]["placement_executive"]["confirmed"] is True
+        # 3. Preserved historical remarks
+        assert payload_saved["remarks"] == "Historical verification observation notes"
+
+
+def test_new_audit_cannot_fabricate_confirmed_corporate_signoffs(auth_l1):
+    """A new audit without prior signoffs cannot have corporate roles marked confirmed by L1."""
+    captured_inserts = []
+
+    with patch("app.routers.audits.supabase") as mock_sb:
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[SAMPLE_CANDIDATE]
+                )
+            elif name == "placement_audits":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                    data=[]
+                )
+                def insert_capture(payload):
+                    captured_inserts.append(payload)
+                    m = MagicMock()
+                    m.execute.return_value = MagicMock(data=[{"id": "audit-new-id", **payload}])
+                    return m
+                t.insert.side_effect = insert_capture
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        # L1 attempts to create a new draft with forged corporate confirmation
+        forged_draft_payload = {
+            "employer_details": [{"employer_name": "Tech Corp Pvt Ltd", "monthly_ctc": 18000.0}],
+            "salary_details": [
+                {"month": 1, "year": 2024, "gross_salary": 18000, "net_salary": 16500, "amount_credited": 16500},
+            ],
+            "document_audit": {},
+            "signoff_details": {
+                "centre_head": {"name": "Forged CH", "confirmed": True},
+                "business_leader": {"name": "Forged BL", "confirmed": True},
+            },
+            "remarks": "Initial draft remarks",
+        }
+
+        res = client.post("/candidates/1076617/audit/draft", json=forged_draft_payload)
+        assert res.status_code == 200
+        assert len(captured_inserts) == 1
+        inserted_signoffs = captured_inserts[0]["signoff_details"]
+        # Corporate roles must NOT be marked confirmed by L1
+        assert inserted_signoffs["centre_head"]["confirmed"] is False
+        assert inserted_signoffs["business_leader"]["confirmed"] is False
+
+

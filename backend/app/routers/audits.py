@@ -341,6 +341,19 @@ def save_audit_draft(
         if existing.get("audit_status") == "SUBMITTED" and user.role != "ADMIN":
             raise HTTPException(400, "This placement audit has already been finalized/submitted and cannot be edited as a draft.")
 
+        # Section 5 read-only enforcement: preserve existing corporate signoff_details from database against L1 modifications
+        if user.role == "L1_COORDINATOR":
+            if existing.get("signoff_details"):
+                audit_payload["signoff_details"] = existing["signoff_details"]
+            else:
+                for key in ("centre_head", "cops_team", "business_leader"):
+                    if key in audit_payload["signoff_details"] and isinstance(audit_payload["signoff_details"][key], dict):
+                        audit_payload["signoff_details"][key]["confirmed"] = False
+
+        # Preserve historical remarks if not provided in payload
+        if payload.remarks is None and existing.get("remarks"):
+            audit_payload["remarks"] = existing["remarks"]
+
         # Update existing record
         update_res = (
             supabase.table("placement_audits")
@@ -351,6 +364,11 @@ def save_audit_draft(
         record = update_res.data[0] if update_res.data else {**existing, **audit_payload}
     else:
         # Insert new draft record
+        if user.role == "L1_COORDINATOR":
+            for key in ("centre_head", "cops_team", "business_leader"):
+                if key in audit_payload["signoff_details"] and isinstance(audit_payload["signoff_details"][key], dict):
+                    audit_payload["signoff_details"][key]["confirmed"] = False
+
         audit_payload["audit_status"] = "DRAFT"
         audit_payload["cpass_status"] = "PENDING"
         audit_payload["created_by"] = user.id
@@ -447,6 +465,17 @@ def submit_audit(
         "submitted_at": now_iso,
     }
 
+    # Section 5 read-only enforcement: Retain existing corporate signoff endorsements from database
+    if existing_res.data and existing_res.data[0].get("signoff_details"):
+        existing_signoff = existing_res.data[0]["signoff_details"]
+        for key in ("centre_head", "cops_team", "business_leader"):
+            if key in existing_signoff and existing_signoff[key]:
+                signoff_dict[key] = existing_signoff[key]
+    else:
+        for key in ("centre_head", "cops_team", "business_leader"):
+            if key in signoff_dict and isinstance(signoff_dict[key], dict):
+                signoff_dict[key]["confirmed"] = False
+
     doc_audit_data = payload.document_audit.model_dump()
 
     # Determine compliance status
@@ -473,6 +502,9 @@ def submit_audit(
     else:
         computed_cpass_status = "VERIFIED"
 
+    existing_record = existing_res.data[0] if existing_res.data else None
+    audit_remarks = payload.remarks if payload.remarks is not None else (existing_record.get("remarks") if existing_record else None)
+
     audit_payload = {
         "candidate_id": candidate_id,
         "candidate_snapshot": snapshot,
@@ -482,7 +514,7 @@ def submit_audit(
         "signoff_details": signoff_dict,
         "cpass_status": computed_cpass_status,
         "audit_status": "SUBMITTED",
-        "remarks": payload.remarks,
+        "remarks": audit_remarks,
         "finalized_at": now_iso,
         "updated_at": now_iso,
     }

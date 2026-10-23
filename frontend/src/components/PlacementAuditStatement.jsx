@@ -24,7 +24,6 @@ export default function PlacementAuditStatement({
   extraHeaderActions = null,
   extraFooterActions = null,
   hasUnsavedChanges = false,
-  showRemarksSection = true,
 }) {
   if (!statementData) return null
 
@@ -47,10 +46,6 @@ export default function PlacementAuditStatement({
   const currentSignoffs = isEditMode && editedData?.signoff_details
     ? editedData.signoff_details
     : (statementData.signoff_details || statementData.audit?.signoff_details || {})
-
-  const currentRemarks = isEditMode && editedData?.remarks !== undefined
-    ? editedData.remarks
-    : (statementData.remarks || statementData.audit?.remarks || '')
 
   // Calculate live salary summary totals
   const salarySummary = useMemo(() => {
@@ -593,16 +588,15 @@ export default function PlacementAuditStatement({
         </table>
       </div>
 
-      {/* Section 4: Document Evidence & Compliance Audit */}
+      {/* Section 4: Document Evidence Audit */}
       <div>
-        <h5 className="cpass-statement-section-title">4. Document Evidence &amp; Compliance Audit</h5>
+        <h5 className="cpass-statement-section-title">4. Document Evidence Audit</h5>
         <table className="cpass-doc-table">
           <thead>
             <tr>
               <th style={{ width: '60px' }}>Doc Code</th>
               <th>Document Description</th>
               <th style={{ width: '80px' }}>Availability</th>
-              <th style={{ width: '120px' }}>Criteria Compliance</th>
               <th>Repository Evidence Status</th>
               <th>Auditor Observations</th>
             </tr>
@@ -620,21 +614,6 @@ export default function PlacementAuditStatement({
                   ) : (
                     <span style={{ fontWeight: 700, color: '#DC2626' }}>✕ No</span>
                   )}
-                </td>
-                <td>
-                  <span
-                    style={{
-                      fontWeight: 600,
-                      color:
-                        docItem.compliance === 'Compliant'
-                          ? '#166534'
-                          : docItem.compliance === 'Under Verification'
-                          ? '#D97706'
-                          : '#DC2626',
-                    }}
-                  >
-                    {docItem.compliance || 'Under Verification'}
-                  </span>
                 </td>
                 <td style={{ fontSize: '11px', color: '#4B5563' }}>
                   {docItem.repository_status}
@@ -708,27 +687,6 @@ export default function PlacementAuditStatement({
           </div>
         </div>
       </div>
-
-      {/* Section 6: Overall Remarks */}
-      {showRemarksSection && (
-        <div>
-          <h5 className="cpass-statement-section-title">6. Auditor Remarks &amp; Compliance Notes</h5>
-          {isEditMode ? (
-            <textarea
-              rows={3}
-              className="l1-edit-cell"
-              style={{ width: '100%', padding: '8px 10px', fontSize: '13px' }}
-              placeholder="Enter any additional audit remarks or observations..."
-              value={currentRemarks}
-              onChange={(e) => onUpdateRemarks(e.target.value)}
-            />
-          ) : (
-            <div style={{ padding: '12px 14px', background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px', fontSize: '13px', color: '#1F2937', minHeight: '44px' }}>
-              {currentRemarks || 'No exceptional auditor observations recorded. Placement verified according to DDU-GKY standard guidelines.'}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Footer */}
       <div className="cpass-statement-footer">

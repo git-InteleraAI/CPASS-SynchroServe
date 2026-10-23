@@ -299,7 +299,7 @@ export default function Login() {
             </span>
           </h1>
           <p className="sub" data-in="rise" data-d="540">
-            Candidate Placement Audit &amp; Sign-off System
+            Candidate Placement Audit &amp; Sign-off Statement
           </p>
 
           <form id="lf" data-in="rise" data-d="640" onSubmit={submit} noValidate>
