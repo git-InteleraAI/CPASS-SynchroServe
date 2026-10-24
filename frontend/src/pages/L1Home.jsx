@@ -1733,43 +1733,7 @@ export default function L1Home() {
           </div>
         </div>
 
-        {/* 2. Approved */}
-        <div
-          className={`l1-compact-card approved ${activeCardFilter === 'cpass_approved' ? 'active' : ''}`}
-          onClick={() => handleCardClick('cpass_approved')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_approved')}
-          aria-label={`Approved candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_approved : 'Unavailable'}. Click to view list.`}
-        >
-          <div className="l1-compact-card-meta">
-            <span className="l1-compact-card-icon">✓</span>
-            <span className="l1-compact-card-title">Approved</span>
-          </div>
-          <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_approved : '—')}
-          </div>
-        </div>
-
-        {/* 3. Rejected */}
-        <div
-          className={`l1-compact-card rejected ${activeCardFilter === 'cpass_rejected' ? 'active' : ''}`}
-          onClick={() => handleCardClick('cpass_rejected')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_rejected')}
-          aria-label={`Rejected candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_rejected : 'Unavailable'}. Click to view list.`}
-        >
-          <div className="l1-compact-card-meta">
-            <span className="l1-compact-card-icon">✕</span>
-            <span className="l1-compact-card-title">Rejected</span>
-          </div>
-          <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_rejected : '—')}
-          </div>
-        </div>
-
-        {/* 4. Uploaded */}
+        {/* 2. Uploaded */}
         <div
           className={`l1-compact-card uploaded ${activeCardFilter === 'cpass_uploaded' ? 'active' : ''}`}
           onClick={() => handleCardClick('cpass_uploaded')}
@@ -1787,7 +1751,61 @@ export default function L1Home() {
           </div>
         </div>
 
-        {/* 5. Pending */}
+        {/* 3. Approved */}
+        <div
+          className={`l1-compact-card approved ${activeCardFilter === 'cpass_approved' ? 'active' : ''}`}
+          onClick={() => handleCardClick('cpass_approved')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_approved')}
+          aria-label={`Approved candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_approved : 'Unavailable'}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">✓</span>
+            <span className="l1-compact-card-title">Approved</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_approved : '—')}
+          </div>
+        </div>
+
+        {/* 4. Rejected */}
+        <div
+          className={`l1-compact-card rejected ${activeCardFilter === 'cpass_rejected' ? 'active' : ''}`}
+          onClick={() => handleCardClick('cpass_rejected')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_rejected')}
+          aria-label={`Rejected candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_rejected : 'Unavailable'}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">✕</span>
+            <span className="l1-compact-card-title">Rejected</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_rejected : '—')}
+          </div>
+        </div>
+
+        {/* 5. In Progress */}
+        <div
+          className={`l1-compact-card in-progress ${activeCardFilter === 'in_progress' ? 'active' : ''}`}
+          onClick={() => handleCardClick('in_progress')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('in_progress')}
+          aria-label={`In Progress candidates: ${loadingSummary ? 'Loading' : summaryData ? (summaryData.in_progress ?? summaryData.cpass_in_progress ?? 0) : 'Unavailable'}. Click to view list.`}
+        >
+          <div className="l1-compact-card-meta">
+            <span className="l1-compact-card-icon">🔄</span>
+            <span className="l1-compact-card-title">In Progress</span>
+          </div>
+          <div className="l1-compact-card-count">
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? (summaryData.in_progress ?? summaryData.cpass_in_progress ?? 0) : '—')}
+          </div>
+        </div>
+
+        {/* 6. Pending */}
         <div
           className={`l1-compact-card pending ${activeCardFilter === 'pending_remaining' ? 'active' : ''}`}
           onClick={() => handleCardClick('pending_remaining')}
@@ -1862,16 +1880,18 @@ export default function L1Home() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className="l1-cand-popup-icon">
                     {activeCardFilter === 'total' && '👥'}
+                    {activeCardFilter === 'cpass_uploaded' && '⬆'}
                     {activeCardFilter === 'cpass_approved' && '✓'}
                     {activeCardFilter === 'cpass_rejected' && '✕'}
-                    {activeCardFilter === 'cpass_uploaded' && '⬆'}
+                    {activeCardFilter === 'in_progress' && '🔄'}
                     {activeCardFilter === 'pending_remaining' && '⏱'}
                   </span>
                   <h3 id="l1-popup-title">
                     {activeCardFilter === 'total' && 'Total Candidates'}
+                    {activeCardFilter === 'cpass_uploaded' && 'Uploaded Candidates'}
                     {activeCardFilter === 'cpass_approved' && 'Approved Candidates'}
                     {activeCardFilter === 'cpass_rejected' && 'Rejected Candidates'}
-                    {activeCardFilter === 'cpass_uploaded' && 'Uploaded Candidates'}
+                    {activeCardFilter === 'in_progress' && 'In Progress Candidates'}
                     {activeCardFilter === 'pending_remaining' && 'Pending Candidates'}
                   </h3>
                   <span className="l1-cand-popup-count-badge">
@@ -1880,9 +1900,10 @@ export default function L1Home() {
                 </div>
                 <p className="l1-cand-popup-sub">
                   {activeCardFilter === 'total' && 'All candidates registered in your assigned state'}
+                  {activeCardFilter === 'cpass_uploaded' && 'Candidates uploaded by Placement Coordinator'}
                   {activeCardFilter === 'cpass_approved' && 'Candidates approved during CPASS placement verification'}
                   {activeCardFilter === 'cpass_rejected' && 'Candidates rejected during CPASS placement verification'}
-                  {activeCardFilter === 'cpass_uploaded' && 'Candidates uploaded by Placement Coordinator'}
+                  {activeCardFilter === 'in_progress' && 'Candidates whose verification process has started but is not yet completed, approved, or rejected'}
                   {activeCardFilter === 'pending_remaining' && 'Candidates not yet uploaded by Placement Coordinator (Total − Uploaded)'}
                   {sel.state ? ` (${sel.state})` : ''}
                 </p>
@@ -2004,7 +2025,7 @@ export default function L1Home() {
                                   ? 'success'
                                   : cand.cpass_status === 'REJECTED'
                                   ? 'danger'
-                                  : cand.is_uploaded
+                                  : (cand.cpass_status === 'IN_PROGRESS' || cand.is_uploaded)
                                   ? 'info'
                                   : 'warning'
                               }`}
@@ -2014,6 +2035,8 @@ export default function L1Home() {
                                 ? 'APPROVED'
                                 : cand.cpass_status === 'REJECTED'
                                 ? 'REJECTED'
+                                : cand.cpass_status === 'IN_PROGRESS'
+                                ? 'IN PROGRESS'
                                 : cand.is_uploaded
                                 ? 'UPLOADED'
                                 : 'PENDING'}

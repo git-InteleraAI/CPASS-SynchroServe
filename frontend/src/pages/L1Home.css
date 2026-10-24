@@ -1895,15 +1895,15 @@
 
 .l1-compact-summary-row {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 12px;
   margin-bottom: 20px;
   width: 100%;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1200px) {
   .l1-compact-summary-row {
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 
@@ -1950,9 +1950,10 @@
 }
 
 .l1-compact-card.total::before { background: #0B4FB8; }
+.l1-compact-card.uploaded::before { background: #6366F1; }
 .l1-compact-card.approved::before { background: #16A34A; }
 .l1-compact-card.rejected::before { background: #DC2626; }
-.l1-compact-card.uploaded::before { background: #6366F1; }
+.l1-compact-card.in-progress::before { background: #0284C7; }
 .l1-compact-card.pending::before { background: #D97706; }
 
 .l1-compact-card:hover {
@@ -2002,9 +2003,10 @@
   letter-spacing: -0.02em;
 }
 
+.l1-compact-card.uploaded .l1-compact-card-count { color: #4338CA; }
 .l1-compact-card.approved .l1-compact-card-count { color: #15803D; }
 .l1-compact-card.rejected .l1-compact-card-count { color: #DC2626; }
-.l1-compact-card.uploaded .l1-compact-card-count { color: #4338CA; }
+.l1-compact-card.in-progress .l1-compact-card-count { color: #0284C7; }
 .l1-compact-card.pending .l1-compact-card-count { color: #D97706; }
 
 /* ==========================================================================

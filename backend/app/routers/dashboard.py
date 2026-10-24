@@ -97,9 +97,11 @@ def get_dashboard_summary(
         return {
             "state": None,
             "total": 0,
+            "cpass_uploaded": 0,
             "cpass_approved": 0,
             "cpass_rejected": 0,
-            "cpass_uploaded": 0,
+            "in_progress": 0,
+            "cpass_in_progress": 0,
             "pending_remaining": 0,
         }
 
@@ -170,12 +172,18 @@ def get_dashboard_summary(
             if st in REJECTED_STATUSES or ast in REJECTED_STATUSES:
                 rejected_count += 1
 
+    # 6. In Progress Candidates in state:
+    # Verification process started (uploaded) but neither approved nor rejected yet
+    in_progress_count = max(0, uploaded_count - approved_count - rejected_count)
+
     return {
         "state": target_state,
         "total": total_count,
+        "cpass_uploaded": uploaded_count,
         "cpass_approved": approved_count,
         "cpass_rejected": rejected_count,
-        "cpass_uploaded": uploaded_count,
+        "in_progress": in_progress_count,
+        "cpass_in_progress": in_progress_count,
         "pending_remaining": pending_count,
     }
 
@@ -200,7 +208,7 @@ def get_dashboard_candidates(
     """
     raw_filter = filter or filter_type or "total"
     norm_filter = raw_filter.strip().lower()
-    valid_filters = {"total", "cpass_approved", "cpass_rejected", "cpass_uploaded", "pending_remaining"}
+    valid_filters = {"total", "cpass_approved", "cpass_rejected", "cpass_uploaded", "in_progress", "cpass_in_progress", "pending_remaining"}
     if norm_filter not in valid_filters:
         raise HTTPException(
             400,
@@ -267,6 +275,8 @@ def get_dashboard_candidates(
         or (audit_map.get(cid, {}).get("audit_status") or "").upper() in REJECTED_STATUSES
     }
 
+    in_progress_in_state = uploaded_in_state - approved_in_state - rejected_in_state
+
     # Build base candidate query
     columns = (
         "candidate_id,candidate_first_name,candidate_last_name,candidate_father_name,"
@@ -288,6 +298,18 @@ def get_dashboard_candidates(
         }
 
     if norm_filter == "cpass_rejected" and not rejected_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"in_progress", "cpass_in_progress"} and not in_progress_in_state:
         return {
             "state": target_state,
             "filter": norm_filter,
@@ -321,6 +343,8 @@ def get_dashboard_candidates(
         q = q.in_("candidate_id", list(approved_in_state))
     elif norm_filter == "cpass_rejected":
         q = q.in_("candidate_id", list(rejected_in_state))
+    elif norm_filter in {"in_progress", "cpass_in_progress"}:
+        q = q.in_("candidate_id", list(in_progress_in_state))
     elif norm_filter == "cpass_uploaded":
         q = q.in_("candidate_id", list(uploaded_in_state))
     elif norm_filter == "pending_remaining":
@@ -357,7 +381,7 @@ def get_dashboard_candidates(
         elif raw_status in REJECTED_STATUSES or raw_audit_status in REJECTED_STATUSES:
             normalized_cpass = "REJECTED"
         elif is_uploaded:
-            normalized_cpass = "UPLOADED"
+            normalized_cpass = "IN_PROGRESS"
         else:
             normalized_cpass = "PENDING"
 

@@ -178,6 +178,8 @@ def test_dashboard_summary_state_scoping_for_l1(auth_l1_tn):
         assert data["pending_remaining"] == 47
         assert data["cpass_approved"] == 1
         assert data["cpass_rejected"] == 1
+        assert data["in_progress"] == 1
+        assert data["cpass_in_progress"] == 1
 
 
 def test_dashboard_summary_state_tampering_blocked(auth_l1_tn):
@@ -196,12 +198,13 @@ def test_dashboard_summary_unassigned_fails_closed(auth_l1_unassigned):
     assert data["total"] == 0
     assert data["pending_remaining"] == 0
     assert data["cpass_uploaded"] == 0
+    assert data["in_progress"] == 0
 
 
 def test_confirmed_pending_formula_strict_verification(auth_l1_tn):
     """Pending count MUST equal Total - Uploaded and never Total - (Approved + Rejected)."""
     with patch("app.routers.dashboard.supabase") as mock_sb:
-        # Total = 100, Uploaded = 20, Approved = 10, Rejected = 5
+        # Total = 100, Uploaded = 20, Approved = 1, Rejected = 1
         mock_total_res = MagicMock(count=100)
         uploaded_cids = [1000 + i for i in range(20)]
         mock_docs_res = MagicMock(data=[{"candidate_id": cid} for cid in uploaded_cids])
@@ -236,6 +239,9 @@ def test_confirmed_pending_formula_strict_verification(auth_l1_tn):
         # Pending MUST BE 100 - 20 = 80, NOT 100 - (10 + 5) = 85
         assert data["pending_remaining"] == 80
         assert data["pending_remaining"] == data["total"] - data["cpass_uploaded"]
+        # In Progress MUST BE Uploaded - Approved - Rejected = 20 - 1 - 1 = 18
+        assert data["in_progress"] == 18
+        assert data["cpass_uploaded"] == data["cpass_approved"] + data["cpass_rejected"] + data["in_progress"]
 
 
 # -----------------------------------------------------------------------------
@@ -407,6 +413,38 @@ def test_dashboard_candidates_uploaded_filter(auth_l1_tn):
         assert data["candidates"][0]["is_uploaded"] is True
 
 
+def test_dashboard_candidates_in_progress_filter(auth_l1_tn):
+    """'in_progress' filter returns uploaded candidates whose verification is neither approved nor rejected."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_docs = MagicMock(data=[{"candidate_id": 99001}])
+        mock_auds = MagicMock(data=[{"candidate_id": 99001, "cpass_status": "PENDING", "audit_status": "DRAFT"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
+
+        prog_cand = {**TN_CANDIDATE, "candidate_id": 99001}
+        mock_prog_res = MagicMock(count=1, data=[prog_cand])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_prog_res
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_auds
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/candidates?filter_type=in_progress")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["filter"] == "in_progress"
+        assert data["total_count"] == 1
+        assert data["candidates"][0]["is_uploaded"] is True
+        assert data["candidates"][0]["cpass_status"] == "IN_PROGRESS"
+
+
 def test_dashboard_candidates_search_and_pagination(auth_l1_tn):
     """Search and pagination parameters are properly processed within the filter."""
     with patch("app.routers.dashboard.supabase") as mock_sb:
@@ -486,6 +524,7 @@ def test_dashboard_status_variants_recognition(auth_l1_tn):
         assert data["cpass_approved"] == 4
         assert data["cpass_rejected"] == 3
         assert data["cpass_uploaded"] == 8
+        assert data["in_progress"] == 1
         assert data["pending_remaining"] == 2  # Total 10 - Uploaded 8 = 2
 
 
@@ -527,6 +566,7 @@ def test_dashboard_uploaded_candidate_deduplication(auth_l1_tn):
         assert res.status_code == 200
         data = res.json()
         assert data["cpass_uploaded"] == 2
+        assert data["in_progress"] == 2
         assert data["pending_remaining"] == 3  # 5 - 2 = 3
 
 
