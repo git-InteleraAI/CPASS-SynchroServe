@@ -35,9 +35,16 @@ async def global_exception_handler(request, exc):
     if origin:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
+
+    err_str = str(exc)
+    if "Errno 11" in err_str or isinstance(exc, (BlockingIOError, OSError)):
+        detail_msg = "Database connection temporarily busy. Please retry in a moment."
+    else:
+        detail_msg = "An unexpected server error occurred. Please try again."
+
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"},
+        content={"detail": detail_msg},
         headers=headers,
     )
 

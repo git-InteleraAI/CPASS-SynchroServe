@@ -32,17 +32,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
-@media (prefers-color-scheme: dark) {
-  #login:not([data-theme="light"]) {
-    --bg: #0A0F1D;
-    --card: #121A2C;
-    --ink: #EEF1F8;
-    --mut: #9BA4BA;
-    --line: #222C45;
-    --soft: #17223A;
-    --okbg: #0F2A1E;
-  }
-}
+/* Dark mode media query disabled to enforce light theme application-wide */
 
 #login * {
   box-sizing: border-box;

@@ -436,6 +436,7 @@ export default function L1Home() {
   // L1 Dashboard Summary Cards & Filtered Candidate List State
   const [summaryData, setSummaryData] = useState(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
   const [activeCardFilter, setActiveCardFilter] = useState(null)
   const [cardCandidates, setCardCandidates] = useState([])
   const [cardCandLoading, setCardCandLoading] = useState(false)
@@ -445,24 +446,33 @@ export default function L1Home() {
   const [cardCandSearch, setCardCandSearch] = useState('')
   const [cardCandError, setCardCandError] = useState('')
 
+  const selStateRef = useRef(sel.state)
+  useEffect(() => {
+    selStateRef.current = sel.state
+  }, [sel.state])
+
   const fetchDashboardSummary = useCallback((targetState) => {
-    const s = targetState || sel.state
+    const s = targetState || selStateRef.current
     if (!s) {
       setSummaryData(null)
+      setSummaryError('')
       return
     }
     setLoadingSummary(true)
+    setSummaryError('')
     api(`/dashboard/summary?state=${encodeURIComponent(s)}`)
       .then((data) => {
         setSummaryData(data)
+        setSummaryError('')
       })
       .catch((err) => {
         console.warn('Failed to load dashboard summary:', err)
+        setSummaryError(err?.message || 'Failed to load dashboard summary metrics.')
       })
       .finally(() => {
         setLoadingSummary(false)
       })
-  }, [sel.state])
+  }, [])
 
   const fetchCardCandidates = useCallback((filterType, page = 1, search = '') => {
     if (!filterType) return
@@ -618,12 +628,24 @@ export default function L1Home() {
     }
   }
 
-  const fill = (key, promise) =>
-    promise.then((rows) => setLists((l) => ({ ...l, [key]: rows }))).catch((e) => setError(e.message))
+  const fill = (key, promise) => {
+    return promise
+      .then((rows) => {
+        const rowsArr = Array.isArray(rows) ? rows : []
+        setLists((l) => ({ ...l, [key]: rowsArr }))
+        return rowsArr
+      })
+      .catch((e) => {
+        setLists((l) => ({ ...l, [key]: [] }))
+        setError(e?.message || `Failed to load ${key} options.`)
+      })
+  }
 
   useEffect(() => {
+    let isCancelled = false
     api('/lookups/states')
       .then((rows) => {
+        if (isCancelled) return
         const stateList = Array.isArray(rows) ? rows : []
         setLists((l) => ({ ...l, state: stateList }))
         if (stateList.length === 1) {
@@ -633,7 +655,12 @@ export default function L1Home() {
           fetchDashboardSummary(singleState)
         }
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        if (!isCancelled) setError(e?.message || 'Failed to initialize assigned state.')
+      })
+    return () => {
+      isCancelled = true
+    }
   }, [fetchDashboardSummary])
 
   async function handleDownloadFile(docId, fileName) {
@@ -1648,6 +1675,42 @@ export default function L1Home() {
 
   return (
     <div className="l1-dashboard">
+      {/* Dashboard Summary Error Banner with Retry */}
+      {summaryError && (
+        <div
+          className="l1-banner-warning"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            padding: '12px 18px',
+            borderRadius: '10px',
+            background: '#FEF3C7',
+            color: '#92400E',
+            border: '1px solid #FCD34D',
+            marginBottom: '16px',
+            fontSize: '13.5px',
+          }}
+          role="alert"
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '16px' }}>⚠️</span>
+            <span>
+              <strong>Dashboard Metrics Unavailable:</strong> {summaryError}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="l1-btn-secondary"
+            style={{ padding: '5px 14px', fontSize: '13px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            onClick={() => fetchDashboardSummary(sel.state)}
+          >
+            ↻ Retry Metrics
+          </button>
+        </div>
+      )}
+
       {/* --------------------------------------------------------------------
          1. Compact Dashboard Summary Cards (Top of Dashboard)
          -------------------------------------------------------------------- */}
@@ -1659,14 +1722,14 @@ export default function L1Home() {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('total')}
-          aria-label={`Total candidates: ${summaryData?.total ?? 0}. Click to view list.`}
+          aria-label={`Total candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.total : 'Unavailable'}. Click to view list.`}
         >
           <div className="l1-compact-card-meta">
             <span className="l1-compact-card-icon">👥</span>
             <span className="l1-compact-card-title">Total</span>
           </div>
           <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : (summaryData?.total ?? 0)}
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.total : '—')}
           </div>
         </div>
 
@@ -1677,14 +1740,14 @@ export default function L1Home() {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_approved')}
-          aria-label={`Approved candidates: ${summaryData?.cpass_approved ?? 0}. Click to view list.`}
+          aria-label={`Approved candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_approved : 'Unavailable'}. Click to view list.`}
         >
           <div className="l1-compact-card-meta">
             <span className="l1-compact-card-icon">✓</span>
             <span className="l1-compact-card-title">Approved</span>
           </div>
           <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : (summaryData?.cpass_approved ?? 0)}
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_approved : '—')}
           </div>
         </div>
 
@@ -1695,14 +1758,14 @@ export default function L1Home() {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_rejected')}
-          aria-label={`Rejected candidates: ${summaryData?.cpass_rejected ?? 0}. Click to view list.`}
+          aria-label={`Rejected candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_rejected : 'Unavailable'}. Click to view list.`}
         >
           <div className="l1-compact-card-meta">
             <span className="l1-compact-card-icon">✕</span>
             <span className="l1-compact-card-title">Rejected</span>
           </div>
           <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : (summaryData?.cpass_rejected ?? 0)}
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_rejected : '—')}
           </div>
         </div>
 
@@ -1713,14 +1776,14 @@ export default function L1Home() {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('cpass_uploaded')}
-          aria-label={`Uploaded candidates: ${summaryData?.cpass_uploaded ?? 0}. Click to view list.`}
+          aria-label={`Uploaded candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.cpass_uploaded : 'Unavailable'}. Click to view list.`}
         >
           <div className="l1-compact-card-meta">
             <span className="l1-compact-card-icon">⬆</span>
             <span className="l1-compact-card-title">Uploaded</span>
           </div>
           <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : (summaryData?.cpass_uploaded ?? 0)}
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.cpass_uploaded : '—')}
           </div>
         </div>
 
@@ -1731,14 +1794,14 @@ export default function L1Home() {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleCardClick('pending_remaining')}
-          aria-label={`Pending candidates: ${summaryData?.pending_remaining ?? 0}. Click to view list.`}
+          aria-label={`Pending candidates: ${loadingSummary ? 'Loading' : summaryData ? summaryData.pending_remaining : 'Unavailable'}. Click to view list.`}
         >
           <div className="l1-compact-card-meta">
             <span className="l1-compact-card-icon">⏱</span>
             <span className="l1-compact-card-title">Pending</span>
           </div>
           <div className="l1-compact-card-count">
-            {loadingSummary ? '…' : (summaryData?.pending_remaining ?? 0)}
+            {loadingSummary ? '…' : summaryError ? '—' : (summaryData ? summaryData.pending_remaining : '—')}
           </div>
         </div>
       </section>

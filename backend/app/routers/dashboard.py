@@ -29,7 +29,7 @@ from ..auth import (
     require_roles,
     resolve_state,
 )
-from ..db import supabase
+from ..db import retry_read_query, supabase
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -103,27 +103,27 @@ def get_dashboard_summary(
             "pending_remaining": 0,
         }
 
-    # 1. Total Candidates in state
-    total_res = (
-        supabase.table("ddugky_candidates")
+    # 1. Total Candidates in state (Authoritative source of truth: tc_state_name)
+    total_res = retry_read_query(
+        lambda: supabase.table("ddugky_candidates")
         .select("candidate_id", count="exact")
-        .or_(f"state_name.eq.{target_state},tc_state_name.eq.{target_state}")
+        .eq("tc_state_name", target_state)
         .limit(1)
         .execute()
     )
     total_count = total_res.count or 0
 
     # 2. Uploaded Candidates (candidates in target_state having candidate_documents or placement_audits)
-    docs_res = (
-        supabase.table("candidate_documents")
+    docs_res = retry_read_query(
+        lambda: supabase.table("candidate_documents")
         .select("candidate_id")
         .neq("upload_status", "FAILED")
         .execute()
     )
     doc_cids = {d["candidate_id"] for d in (docs_res.data or []) if d.get("candidate_id")}
 
-    aud_res = (
-        supabase.table("placement_audits")
+    aud_res = retry_read_query(
+        lambda: supabase.table("placement_audits")
         .select("candidate_id,cpass_status,audit_status")
         .execute()
     )
@@ -133,11 +133,11 @@ def get_dashboard_summary(
 
     uploaded_in_state: set[int] = set()
     if all_uploaded_cids:
-        cand_check = (
-            supabase.table("ddugky_candidates")
-            .select("candidate_id,state_name,tc_state_name")
+        cand_check = retry_read_query(
+            lambda: supabase.table("ddugky_candidates")
+            .select("candidate_id,tc_state_name")
             .in_("candidate_id", list(all_uploaded_cids))
-            .or_(f"state_name.eq.{target_state},tc_state_name.eq.{target_state}")
+            .eq("tc_state_name", target_state)
             .execute()
         )
         for r in (cand_check.data or []):
@@ -224,16 +224,16 @@ def get_dashboard_candidates(
         }
 
     # Fetch uploaded IDs and audit statuses for state
-    docs_res = (
-        supabase.table("candidate_documents")
+    docs_res = retry_read_query(
+        lambda: supabase.table("candidate_documents")
         .select("candidate_id")
         .neq("upload_status", "FAILED")
         .execute()
     )
     doc_cids = {d["candidate_id"] for d in (docs_res.data or []) if d.get("candidate_id")}
 
-    aud_res = (
-        supabase.table("placement_audits")
+    aud_res = retry_read_query(
+        lambda: supabase.table("placement_audits")
         .select("candidate_id,cpass_status,audit_status")
         .execute()
     )
@@ -243,11 +243,11 @@ def get_dashboard_candidates(
 
     uploaded_in_state: set[int] = set()
     if all_uploaded_cids:
-        cand_check = (
-            supabase.table("ddugky_candidates")
-            .select("candidate_id,state_name,tc_state_name")
+        cand_check = retry_read_query(
+            lambda: supabase.table("ddugky_candidates")
+            .select("candidate_id,tc_state_name")
             .in_("candidate_id", list(all_uploaded_cids))
-            .or_(f"state_name.eq.{target_state},tc_state_name.eq.{target_state}")
+            .eq("tc_state_name", target_state)
             .execute()
         )
         for r in (cand_check.data or []):
@@ -314,7 +314,7 @@ def get_dashboard_candidates(
     q = (
         supabase.table("ddugky_candidates")
         .select(columns, count="exact")
-        .or_(f"state_name.eq.{target_state},tc_state_name.eq.{target_state}")
+        .eq("tc_state_name", target_state)
     )
 
     if norm_filter == "cpass_approved":
@@ -339,7 +339,7 @@ def get_dashboard_candidates(
     offset = (actual_page - 1) * actual_page_size
     q = q.order("candidate_id", desc=False).range(offset, offset + actual_page_size - 1)
 
-    res = q.execute()
+    res = retry_read_query(lambda: q.execute())
     total_count = res.count or 0
     rows = res.data or []
 

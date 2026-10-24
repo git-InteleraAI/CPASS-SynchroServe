@@ -156,9 +156,9 @@ def test_dashboard_summary_state_scoping_for_l1(auth_l1_tn):
             t = MagicMock()
             if name == "ddugky_candidates":
                 # First call: total count query
-                t.select.return_value.or_.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
                 # Second call: candidate state check
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
             elif name == "placement_audits":
@@ -217,8 +217,8 @@ def test_confirmed_pending_formula_strict_verification(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.or_.return_value.limit.return_value.execute.return_value = mock_total_res
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
             elif name == "placement_audits":
@@ -252,7 +252,7 @@ def test_dashboard_candidates_total_filter(auth_l1_tn):
             t = MagicMock()
             if name == "ddugky_candidates":
                 # Base candidate query
-                t.select.return_value.or_.return_value.order.return_value.range.return_value.execute.return_value = mock_q_res
+                t.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value = mock_q_res
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = MagicMock(data=[])
             elif name == "placement_audits":
@@ -278,7 +278,7 @@ def test_dashboard_candidates_pending_remaining_excludes_uploaded(auth_l1_tn):
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_docs = MagicMock(data=[{"candidate_id": 99001}])
         mock_auds = MagicMock(data=[])
-        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
 
         pending_cand = {**TN_CANDIDATE, "candidate_id": 99005, "candidate_first_name": "Karthik"}
         mock_pending_res = MagicMock(count=1, data=[pending_cand])
@@ -286,8 +286,8 @@ def test_dashboard_candidates_pending_remaining_excludes_uploaded(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
-                t.select.return_value.or_.return_value.not_.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_pending_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.not_.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_pending_res
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
             elif name == "placement_audits":
@@ -317,7 +317,7 @@ def test_dashboard_candidates_approved_filter(auth_l1_tn):
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_docs = MagicMock(data=[{"candidate_id": 99001}])
         mock_auds = MagicMock(data=[{"candidate_id": 99001, "cpass_status": "L2_APPROVED", "audit_status": "VERIFIED"}])
-        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
 
         appr_cand = {**TN_CANDIDATE, "candidate_id": 99001}
         mock_appr_res = MagicMock(count=1, data=[appr_cand])
@@ -325,8 +325,8 @@ def test_dashboard_candidates_approved_filter(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
-                t.select.return_value.or_.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_appr_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_appr_res
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs
             elif name == "placement_audits":
@@ -350,7 +350,7 @@ def test_dashboard_candidates_rejected_filter(auth_l1_tn):
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_docs = MagicMock(data=[{"candidate_id": 99001}])
         mock_auds = MagicMock(data=[{"candidate_id": 99001, "cpass_status": "REJECTED", "audit_status": "REJECTED"}])
-        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
 
         rej_cand = {**TN_CANDIDATE, "candidate_id": 99001}
         mock_rej_res = MagicMock(count=1, data=[rej_cand])
@@ -358,8 +358,8 @@ def test_dashboard_candidates_rejected_filter(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
-                t.select.return_value.or_.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_rej_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_rej_res
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs
             elif name == "placement_audits":
@@ -381,7 +381,7 @@ def test_dashboard_candidates_uploaded_filter(auth_l1_tn):
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_docs = MagicMock(data=[{"candidate_id": 99001}])
         mock_auds = MagicMock(data=[])
-        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
 
         upl_cand = {**TN_CANDIDATE, "candidate_id": 99001}
         mock_upl_res = MagicMock(count=1, data=[upl_cand])
@@ -389,8 +389,8 @@ def test_dashboard_candidates_uploaded_filter(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
-                t.select.return_value.or_.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_upl_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_upl_res
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs
             elif name == "placement_audits":
@@ -416,7 +416,7 @@ def test_dashboard_candidates_search_and_pagination(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.or_.return_value.or_.return_value.order.return_value.range.return_value.execute.return_value = mock_q_res
+                t.select.return_value.eq.return_value.or_.return_value.order.return_value.range.return_value.execute.return_value = mock_q_res
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = MagicMock(data=[])
             elif name == "placement_audits":
@@ -470,8 +470,8 @@ def test_dashboard_status_variants_recognition(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.or_.return_value.limit.return_value.execute.return_value = mock_total_res
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs
             elif name == "placement_audits":
@@ -513,8 +513,8 @@ def test_dashboard_uploaded_candidate_deduplication(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.or_.return_value.limit.return_value.execute.return_value = mock_total_res
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs
             elif name == "placement_audits":
@@ -550,7 +550,7 @@ def test_dashboard_empty_approved_and_rejected_short_circuit(auth_l1_tn):
         def table_dispatch(name):
             t = MagicMock()
             if name == "ddugky_candidates":
-                t.select.return_value.in_.return_value.or_.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
             elif name == "candidate_documents":
                 t.select.return_value.neq.return_value.execute.return_value = mock_docs
             elif name == "placement_audits":

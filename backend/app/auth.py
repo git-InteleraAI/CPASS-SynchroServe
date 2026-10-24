@@ -141,6 +141,16 @@ def extract_token(request: Request, authorization: str | None = None) -> str:
     raise HTTPException(401, "Missing authentication token")
 
 
+# Short-TTL in-memory cache for validated sessions: token -> (CurrentUser, expiry_monotonic)
+_USER_SESSION_CACHE: dict[str, tuple[CurrentUser, float]] = {}
+_USER_CACHE_TTL_SECONDS = 45.0
+
+
+def clear_user_cache():
+    """Clear in-memory user session cache (used in tests or on user update)."""
+    _USER_SESSION_CACHE.clear()
+
+
 def get_current_user(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -150,10 +160,28 @@ def get_current_user(
     """
     token = extract_token(request, authorization)
 
-    try:
-        auth_user = supabase.auth.get_user(token).user
-    except Exception:
-        raise HTTPException(401, "Invalid or expired token")
+    # Check fast in-memory cache to avoid redundant remote Supabase calls
+    now = time.monotonic()
+    cached = _USER_SESSION_CACHE.get(token)
+    if cached:
+        cached_user, expiry = cached
+        if now < expiry:
+            return cached_user
+        _USER_SESSION_CACHE.pop(token, None)
+
+    # Bounded retry on token verification for transient socket/connection errors
+    auth_user = None
+    for attempt in range(3):
+        try:
+            auth_user = supabase.auth.get_user(token).user
+            break
+        except (httpx.TransportError, BlockingIOError, OSError):
+            if attempt == 2:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+        except Exception:
+            raise HTTPException(401, "Invalid or expired token")
+
     if auth_user is None:
         raise HTTPException(401, "Invalid or expired token")
 
@@ -162,7 +190,7 @@ def get_current_user(
         try:
             rows = supabase.table("profiles").select("*").eq("id", auth_user.id).limit(1).execute().data
             break
-        except (httpx.TransportError, BlockingIOError):
+        except (httpx.TransportError, BlockingIOError, OSError):
             if attempt == 2:
                 raise
             time.sleep(0.05 * (attempt + 1))
@@ -182,13 +210,17 @@ def get_current_user(
         or resolve_state(auth_user.email)
     )
 
-    return CurrentUser(
+    user = CurrentUser(
         id=p["id"],
         email=p.get("email"),
         full_name=p["full_name"],
         role=p["role"],
         assigned_state=assigned_state,
     )
+
+    # Cache valid session
+    _USER_SESSION_CACHE[token] = (user, now + _USER_CACHE_TTL_SECONDS)
+    return user
 
 
 def require_roles(*roles: str):
@@ -238,12 +270,23 @@ def allowed_tc_ids(user: CurrentUser) -> list[int] | None:
     return []
 
 
-
 def get_candidate_state(cand: dict[str, Any]) -> str | None:
     """Extract and resolve canonical state name from candidate record.
-    Checks state_name first, then tc_state_name.
+    
+    Training Centre State (tc_state_name) is the authoritative source of truth
+    for state ownership and L1 coordinator scoping.
+    Fails safely if tc_state_name is missing or invalid.
     """
-    return resolve_state(cand.get("state_name")) or resolve_state(cand.get("tc_state_name"))
+    tc_st = cand.get("tc_state_name")
+    if tc_st:
+        resolved = resolve_state(tc_st)
+        if resolved:
+            return resolved
+        import logging
+        logging.getLogger("cpass.auth").warning(
+            "Candidate %s has unresolvable tc_state_name: %r", cand.get("candidate_id"), tc_st
+        )
+    return None
 
 
 def check_candidate_access(user: CurrentUser, cand: dict[str, Any]) -> None:
@@ -262,4 +305,5 @@ def check_candidate_access(user: CurrentUser, cand: dict[str, Any]) -> None:
         tc_id = cand.get("tc_id")
         if tc_id is not None and tc_id not in permitted_tcs:
             raise HTTPException(403, "You are not assigned to this candidate's training centre.")
+
 

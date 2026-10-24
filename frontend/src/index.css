@@ -33,18 +33,9 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0A0F1D;
-    --card: #121A2C;
-    --ink: #EEF1F8;
-    --mut: #9BA4BA;
-    --line: #222C45;
-    --soft: #17223A;
-    --okbg: #0F2A1E;
-    --warnbg: #2B1D0B;
-    --dangerbg: #2B0F13;
-  }
+/* CPASS is strictly a light-theme enterprise application. Automatic OS dark mode is disabled. */
+html, :root {
+  color-scheme: light !important;
 }
 
 * {
