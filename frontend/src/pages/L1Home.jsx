@@ -1931,6 +1931,7 @@ export default function L1Home() {
                   type="text"
                   className="l1-cand-popup-search-input"
                   placeholder="Search by Candidate Name or Candidate ID…"
+                  aria-label="Search by Candidate Name or Candidate ID"
                   value={cardCandSearch}
                   onChange={(e) => setCardCandSearch(e.target.value)}
                   onKeyDown={(e) => {
@@ -1956,8 +1957,7 @@ export default function L1Home() {
               </div>
               <button
                 type="button"
-                className="l1-btn-primary"
-                style={{ padding: '8px 18px', fontSize: '13px' }}
+                className="l1-btn-primary l1-cand-popup-search-btn"
                 onClick={() => fetchCardCandidates(activeCardFilter, 1, cardCandSearch)}
               >
                 Search
@@ -2022,12 +2022,14 @@ export default function L1Home() {
                             <span
                               className={`l1-status-pill ${
                                 cand.cpass_status === 'APPROVED'
-                                  ? 'success'
+                                  ? 'approved success'
                                   : cand.cpass_status === 'REJECTED'
-                                  ? 'danger'
-                                  : (cand.cpass_status === 'IN_PROGRESS' || cand.is_uploaded)
-                                  ? 'info'
-                                  : 'warning'
+                                  ? 'rejected danger'
+                                  : cand.cpass_status === 'IN_PROGRESS'
+                                  ? 'in-progress info'
+                                  : cand.is_uploaded
+                                  ? 'uploaded info'
+                                  : 'pending warning'
                               }`}
                               style={{ fontSize: '11px', padding: '2px 8px' }}
                             >
@@ -3046,9 +3048,19 @@ export default function L1Home() {
                   <p>At least 3 distinct reporting months required. You may add up to 12 months for extended placements.</p>
                 </div>
               </div>
-              <span className={`l1-status-pill ${salarySlips.length + stagedSalaryCount >= 3 ? 'success' : 'warning'}`}>
-                {salarySlips.length} Persisted + {stagedSalaryCount} Staged
-              </span>
+              <div className="l1-doc-counter-badge" aria-label={`Salary slips: ${salarySlips.length} Persisted, ${stagedSalaryCount} Staged`}>
+                <div className="l1-counter-segment">
+                  <span className={`l1-counter-dot ${salarySlips.length > 0 ? 'persisted' : 'empty'}`}>●</span>
+                  <span className="l1-counter-count">{salarySlips.length}</span>
+                  <span className="l1-counter-label">Persisted</span>
+                </div>
+                <div className="l1-counter-divider" aria-hidden="true" />
+                <div className="l1-counter-segment">
+                  <span className={`l1-counter-dot ${stagedSalaryCount > 0 ? 'staged' : 'empty'}`}>●</span>
+                  <span className="l1-counter-count">{stagedSalaryCount}</span>
+                  <span className="l1-counter-label">Staged</span>
+                </div>
+              </div>
             </div>
 
             {/* Persisted Salary Slips */}
@@ -3196,9 +3208,19 @@ export default function L1Home() {
                   <p>At least 3 distinct reporting months required showing direct salary credits. Up to 12 months maximum.</p>
                 </div>
               </div>
-              <span className={`l1-status-pill ${bankStatements.length + stagedBankCount >= 3 ? 'success' : 'warning'}`}>
-                {bankStatements.length} Persisted + {stagedBankCount} Staged
-              </span>
+              <div className="l1-doc-counter-badge" aria-label={`Bank statements: ${bankStatements.length} Persisted, ${stagedBankCount} Staged`}>
+                <div className="l1-counter-segment">
+                  <span className={`l1-counter-dot ${bankStatements.length > 0 ? 'persisted' : 'empty'}`}>●</span>
+                  <span className="l1-counter-count">{bankStatements.length}</span>
+                  <span className="l1-counter-label">Persisted</span>
+                </div>
+                <div className="l1-counter-divider" aria-hidden="true" />
+                <div className="l1-counter-segment">
+                  <span className={`l1-counter-dot ${stagedBankCount > 0 ? 'staged' : 'empty'}`}>●</span>
+                  <span className="l1-counter-count">{stagedBankCount}</span>
+                  <span className="l1-counter-label">Staged</span>
+                </div>
+              </div>
             </div>
 
             {/* Persisted Bank Statements */}
@@ -3734,7 +3756,7 @@ export default function L1Home() {
         </ErrorBoundary>
       )}
 
-      {/* Sticky Bottom Action Dock for Audit */}
+      {/* Placement Audit Statement Workflow Section (Normal Document Flow) */}
       {sel.cand && (
         <div className="l1-submit-dock l1-no-print">
                 <div className="l1-dock-info">
@@ -3750,7 +3772,7 @@ export default function L1Home() {
                       : 'Save draft at any time. Submit statement once at least 1 employer and 3 monthly salary records are complete.'}
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: '10px' }}>
+                <div className="l1-dock-actions" style={{ display: 'flex', gap: '10px' }}>
                   {auditRecord && (
                     <button
                       type="button"

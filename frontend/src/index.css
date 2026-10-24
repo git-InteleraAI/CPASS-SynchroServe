@@ -163,6 +163,26 @@ button, select, input, textarea {
   background: rgba(244, 0, 15, 0.04);
 }
 
+@media (max-width: 640px) {
+  .top {
+    padding: 10px 14px;
+    gap: 10px;
+  }
+  .top .logo {
+    height: 36px;
+  }
+  .user {
+    gap: 8px;
+  }
+  .user-info small {
+    display: none;
+  }
+  .link {
+    padding: 5px 12px;
+    font-size: 12px;
+  }
+}
+
 .content-container {
   max-width: 1240px;
   width: 100%;
