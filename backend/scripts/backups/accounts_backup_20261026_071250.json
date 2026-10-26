@@ -1,0 +1,821 @@
+{
+  "timestamp_utc": "2026-10-26T07:12:50.759781+00:00",
+  "total_profiles": 39,
+  "total_auth_users": 39,
+  "profiles": [
+    {
+      "id": "d532416b-9151-4073-93bc-739e560cbe46",
+      "full_name": "Manu Mansoor",
+      "email": "manumansoor2000@gmail.com",
+      "role": "ADMIN",
+      "is_active": true,
+      "created_at": "2026-10-21T11:41:53.594316+00:00",
+      "assigned_state": null
+    },
+    {
+      "id": "9f6c8c9e-85be-4d64-8f73-bb8542b546f2",
+      "full_name": "Ananya Sharma (L1 Coordinator)",
+      "email": "l1_coordinator@cpass.org",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-21T14:07:34.238651+00:00",
+      "assigned_state": null
+    },
+    {
+      "id": "b9f36866-aa12-4d73-8459-46e7a9dbf82c",
+      "full_name": "Telangana Placement Coordinator",
+      "email": "ts.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:03:27.631659+00:00",
+      "assigned_state": "TELANGANA"
+    },
+    {
+      "id": "2f1db93b-c1a8-47f9-9588-ab22759c1eb7",
+      "full_name": "Andhra Pradesh Placement Coordinator",
+      "email": "ap.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:03:33.070531+00:00",
+      "assigned_state": "ANDHRA PRADESH"
+    },
+    {
+      "id": "c5817e3d-15f2-482e-a3e8-4a9be0d8e94d",
+      "full_name": "Kerala Placement Coordinator",
+      "email": "kl.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:03:38.275717+00:00",
+      "assigned_state": "KERALA"
+    },
+    {
+      "id": "8f011bca-25b1-48ae-bcbd-3e46d11c208d",
+      "full_name": "Rajasthan Placement Coordinator",
+      "email": "rj.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:03:43.392925+00:00",
+      "assigned_state": "RAJASTHAN"
+    },
+    {
+      "id": "ad741c2b-274b-4040-980a-69e326e9b3e6",
+      "full_name": "Odisha Placement Coordinator",
+      "email": "od.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:03:49.160409+00:00",
+      "assigned_state": "ODISHA"
+    },
+    {
+      "id": "ecd7cdee-50fc-4488-8882-a2745a341497",
+      "full_name": "Gujarat Placement Coordinator",
+      "email": "gj.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:03:55.679325+00:00",
+      "assigned_state": "GUJARAT"
+    },
+    {
+      "id": "414da3a8-cab1-4025-ba82-b381e543157a",
+      "full_name": "Punjab Placement Coordinator",
+      "email": "pb.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:04:05.960914+00:00",
+      "assigned_state": "PUNJAB"
+    },
+    {
+      "id": "8c198656-8e3e-405d-89d2-86a5900c4d6a",
+      "full_name": "Uttar Pradesh Placement Coordinator",
+      "email": "up.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:04:13.80554+00:00",
+      "assigned_state": "UTTAR PRADESH"
+    },
+    {
+      "id": "7450639f-ec7d-4793-9bb3-4d2e2a024133",
+      "full_name": "Mizoram Placement Coordinator",
+      "email": "mz.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:04:20.588974+00:00",
+      "assigned_state": "MIZORAM"
+    },
+    {
+      "id": "a1507089-5841-4e78-b534-bc3313dbe257",
+      "full_name": "Puducherry Placement Coordinator",
+      "email": "py.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:04:26.983495+00:00",
+      "assigned_state": "PUDUCHERRY"
+    },
+    {
+      "id": "eb49c010-0ea3-45d8-a688-b215ec66508a",
+      "full_name": "West Bengal Placement Coordinator",
+      "email": "wb.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:12:12.567713+00:00",
+      "assigned_state": "WEST BENGAL"
+    },
+    {
+      "id": "49d0d1fc-6db2-4615-9e13-2c5701b433bf",
+      "full_name": "Tamil Nadu Placement Coordinator",
+      "email": "tn.cpass@synchroserve.in",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-23T11:13:52.542716+00:00",
+      "assigned_state": "TAMIL NADU"
+    },
+    {
+      "id": "a54ff9f6-0e39-4090-840d-bc8b02000521",
+      "full_name": "Suresh Kumar (Centre Manager)",
+      "email": "l2_manager@cpass.org",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-22T11:04:35.631482+00:00",
+      "assigned_state": "ANDHRA PRADESH"
+    },
+    {
+      "id": "3c161ed8-83c9-4e4d-bc12-0343d77b85bd",
+      "full_name": "Andhra Pradesh - Placement Executive",
+      "email": "appe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:11:35.64614+00:00",
+      "assigned_state": "ANDHRA PRADESH"
+    },
+    {
+      "id": "dd650ecc-95c8-4569-ac39-b5e255f93c48",
+      "full_name": "Andhra Pradesh - Centre Head",
+      "email": "apch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:13.850748+00:00",
+      "assigned_state": "ANDHRA PRADESH"
+    },
+    {
+      "id": "3c84f59f-5a58-44b4-bde5-f799df3bcef2",
+      "full_name": "Gujarat - Placement Executive",
+      "email": "gjpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:14.056549+00:00",
+      "assigned_state": "GUJARAT"
+    },
+    {
+      "id": "089e2af0-2f1d-4095-8b55-486240824ea0",
+      "full_name": "Gujarat - Centre Head",
+      "email": "gjch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:14.268873+00:00",
+      "assigned_state": "GUJARAT"
+    },
+    {
+      "id": "19bba62f-7d54-4d46-9f87-ee39c82e7d12",
+      "full_name": "Kerala - Placement Executive",
+      "email": "klpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:14.478816+00:00",
+      "assigned_state": "KERALA"
+    },
+    {
+      "id": "2758cce8-5529-4d65-9f81-bf490a709aed",
+      "full_name": "Kerala - Centre Head",
+      "email": "klch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:14.682466+00:00",
+      "assigned_state": "KERALA"
+    },
+    {
+      "id": "3b8ed166-fe09-46c2-83ee-45179c0023e5",
+      "full_name": "Mizoram - Placement Executive",
+      "email": "mzpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:14.888014+00:00",
+      "assigned_state": "MIZORAM"
+    },
+    {
+      "id": "3fa10a1c-be4c-4dd0-a7c4-73ab6e760abc",
+      "full_name": "Mizoram - Centre Head",
+      "email": "mzch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:15.098107+00:00",
+      "assigned_state": "MIZORAM"
+    },
+    {
+      "id": "42aacb00-a6db-469f-a526-27f487b73744",
+      "full_name": "Odisha - Placement Executive",
+      "email": "odpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:15.29839+00:00",
+      "assigned_state": "ODISHA"
+    },
+    {
+      "id": "c23bcc77-c652-4f59-8401-2c0583ff1869",
+      "full_name": "Odisha - Centre Head",
+      "email": "odch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:15.501231+00:00",
+      "assigned_state": "ODISHA"
+    },
+    {
+      "id": "3a0496ff-c10b-4fcf-bce3-be19c0040ac8",
+      "full_name": "Puducherry - Placement Executive",
+      "email": "pype@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:15.706451+00:00",
+      "assigned_state": "PUDUCHERRY"
+    },
+    {
+      "id": "ccaa7a4e-76e2-489e-9401-1bb1a51ef726",
+      "full_name": "Puducherry - Centre Head",
+      "email": "pych@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:15.911823+00:00",
+      "assigned_state": "PUDUCHERRY"
+    },
+    {
+      "id": "b0c96110-8639-4ab0-bb42-dfb23fbb12f1",
+      "full_name": "Punjab - Placement Executive",
+      "email": "pbpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:16.122635+00:00",
+      "assigned_state": "PUNJAB"
+    },
+    {
+      "id": "de15d422-fb1a-4ce1-a8c4-e8c656740962",
+      "full_name": "Punjab - Centre Head",
+      "email": "pbch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:16.327495+00:00",
+      "assigned_state": "PUNJAB"
+    },
+    {
+      "id": "6f321f76-aafa-4811-8e9a-8c65758a4ee9",
+      "full_name": "Rajasthan - Placement Executive",
+      "email": "rjpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:16.530069+00:00",
+      "assigned_state": "RAJASTHAN"
+    },
+    {
+      "id": "ecd51b29-cdaa-4e85-bfd1-ce3e233740bc",
+      "full_name": "Rajasthan - Centre Head",
+      "email": "rjch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:16.738286+00:00",
+      "assigned_state": "RAJASTHAN"
+    },
+    {
+      "id": "39429909-879b-4241-a19e-76d125315685",
+      "full_name": "Tamil Nadu - Placement Executive",
+      "email": "tnpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:16.942229+00:00",
+      "assigned_state": "TAMIL NADU"
+    },
+    {
+      "id": "22b7c82b-8710-4ed8-a10f-b6cb49a7275e",
+      "full_name": "Tamil Nadu - Centre Head",
+      "email": "tnch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:17.145055+00:00",
+      "assigned_state": "TAMIL NADU"
+    },
+    {
+      "id": "6a7becc0-bb9a-4d70-8e63-44958ca37244",
+      "full_name": "Telangana - Placement Executive",
+      "email": "tspe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:17.353913+00:00",
+      "assigned_state": "TELANGANA"
+    },
+    {
+      "id": "e819b61b-bee5-4b8a-b301-29d2610b9e31",
+      "full_name": "Telangana - Centre Head",
+      "email": "tsch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:17.560003+00:00",
+      "assigned_state": "TELANGANA"
+    },
+    {
+      "id": "0b486422-fb04-43ee-ad22-e36fcf6a965c",
+      "full_name": "Uttar Pradesh - Placement Executive",
+      "email": "uppe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:17.760782+00:00",
+      "assigned_state": "UTTAR PRADESH"
+    },
+    {
+      "id": "5823816c-f87c-4a2b-9ff0-f97b086d6bba",
+      "full_name": "Uttar Pradesh - Centre Head",
+      "email": "upch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:17.966493+00:00",
+      "assigned_state": "UTTAR PRADESH"
+    },
+    {
+      "id": "5d0932cf-4699-441e-8cb3-d3dd7a5e9c24",
+      "full_name": "West Bengal - Placement Executive",
+      "email": "wbpe@synchroserve.com",
+      "role": "L1_COORDINATOR",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:18.167428+00:00",
+      "assigned_state": "WEST BENGAL"
+    },
+    {
+      "id": "ecf5a5dc-e43e-4440-9bd3-f2cc13652749",
+      "full_name": "West Bengal - Centre Head",
+      "email": "wbch@synchroserve.com",
+      "role": "L2_MANAGER",
+      "is_active": true,
+      "created_at": "2026-10-26T07:12:18.384276+00:00",
+      "assigned_state": "WEST BENGAL"
+    }
+  ],
+  "auth_users": [
+    {
+      "id": "ecf5a5dc-e43e-4440-9bd3-f2cc13652749",
+      "email": "wbch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:18.313282+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:40.038324+00:00",
+      "user_metadata": {
+        "assigned_state": "WEST BENGAL",
+        "email_verified": true,
+        "full_name": "West Bengal - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "5d0932cf-4699-441e-8cb3-d3dd7a5e9c24",
+      "email": "wbpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:18.103473+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.896697+00:00",
+      "user_metadata": {
+        "assigned_state": "WEST BENGAL",
+        "email_verified": true,
+        "full_name": "West Bengal - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "5823816c-f87c-4a2b-9ff0-f97b086d6bba",
+      "email": "upch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:17.899454+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.753262+00:00",
+      "user_metadata": {
+        "assigned_state": "UTTAR PRADESH",
+        "email_verified": true,
+        "full_name": "Uttar Pradesh - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "0b486422-fb04-43ee-ad22-e36fcf6a965c",
+      "email": "uppe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:17.696268+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.609972+00:00",
+      "user_metadata": {
+        "assigned_state": "UTTAR PRADESH",
+        "email_verified": true,
+        "full_name": "Uttar Pradesh - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "e819b61b-bee5-4b8a-b301-29d2610b9e31",
+      "email": "tsch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:17.492197+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.466278+00:00",
+      "user_metadata": {
+        "assigned_state": "TELANGANA",
+        "email_verified": true,
+        "full_name": "Telangana - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "6a7becc0-bb9a-4d70-8e63-44958ca37244",
+      "email": "tspe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:17.282216+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.327763+00:00",
+      "user_metadata": {
+        "assigned_state": "TELANGANA",
+        "email_verified": true,
+        "full_name": "Telangana - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "22b7c82b-8710-4ed8-a10f-b6cb49a7275e",
+      "email": "tnch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:17.079920+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.182770+00:00",
+      "user_metadata": {
+        "assigned_state": "TAMIL NADU",
+        "email_verified": true,
+        "full_name": "Tamil Nadu - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "39429909-879b-4241-a19e-76d125315685",
+      "email": "tnpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:16.875268+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:39.032088+00:00",
+      "user_metadata": {
+        "assigned_state": "TAMIL NADU",
+        "email_verified": true,
+        "full_name": "Tamil Nadu - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "ecd51b29-cdaa-4e85-bfd1-ce3e233740bc",
+      "email": "rjch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:16.668770+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:38.890005+00:00",
+      "user_metadata": {
+        "assigned_state": "RAJASTHAN",
+        "email_verified": true,
+        "full_name": "Rajasthan - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "6f321f76-aafa-4811-8e9a-8c65758a4ee9",
+      "email": "rjpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:16.462885+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:38.746764+00:00",
+      "user_metadata": {
+        "assigned_state": "RAJASTHAN",
+        "email_verified": true,
+        "full_name": "Rajasthan - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "de15d422-fb1a-4ce1-a8c4-e8c656740962",
+      "email": "pbch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:16.258251+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:38.602155+00:00",
+      "user_metadata": {
+        "assigned_state": "PUNJAB",
+        "email_verified": true,
+        "full_name": "Punjab - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "b0c96110-8639-4ab0-bb42-dfb23fbb12f1",
+      "email": "pbpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:16.049567+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:38.459971+00:00",
+      "user_metadata": {
+        "assigned_state": "PUNJAB",
+        "email_verified": true,
+        "full_name": "Punjab - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "ccaa7a4e-76e2-489e-9401-1bb1a51ef726",
+      "email": "pych@synchroserve.com",
+      "created_at": "2026-10-26 07:12:15.844692+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:38.278748+00:00",
+      "user_metadata": {
+        "assigned_state": "PUDUCHERRY",
+        "email_verified": true,
+        "full_name": "Puducherry - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "3a0496ff-c10b-4fcf-bce3-be19c0040ac8",
+      "email": "pype@synchroserve.com",
+      "created_at": "2026-10-26 07:12:15.635795+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:38.076202+00:00",
+      "user_metadata": {
+        "assigned_state": "PUDUCHERRY",
+        "email_verified": true,
+        "full_name": "Puducherry - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "c23bcc77-c652-4f59-8401-2c0583ff1869",
+      "email": "odch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:15.437667+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:37.849725+00:00",
+      "user_metadata": {
+        "assigned_state": "ODISHA",
+        "email_verified": true,
+        "full_name": "Odisha - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "42aacb00-a6db-469f-a526-27f487b73744",
+      "email": "odpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:15.231223+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:37.646323+00:00",
+      "user_metadata": {
+        "assigned_state": "ODISHA",
+        "email_verified": true,
+        "full_name": "Odisha - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "3fa10a1c-be4c-4dd0-a7c4-73ab6e760abc",
+      "email": "mzch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:15.030565+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:37.441759+00:00",
+      "user_metadata": {
+        "assigned_state": "MIZORAM",
+        "email_verified": true,
+        "full_name": "Mizoram - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "3b8ed166-fe09-46c2-83ee-45179c0023e5",
+      "email": "mzpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:14.817908+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:37.234966+00:00",
+      "user_metadata": {
+        "assigned_state": "MIZORAM",
+        "email_verified": true,
+        "full_name": "Mizoram - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "2758cce8-5529-4d65-9f81-bf490a709aed",
+      "email": "klch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:14.616732+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:37.033101+00:00",
+      "user_metadata": {
+        "assigned_state": "KERALA",
+        "email_verified": true,
+        "full_name": "Kerala - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "19bba62f-7d54-4d46-9f87-ee39c82e7d12",
+      "email": "klpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:14.407142+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:36.830455+00:00",
+      "user_metadata": {
+        "assigned_state": "KERALA",
+        "email_verified": true,
+        "full_name": "Kerala - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "089e2af0-2f1d-4095-8b55-486240824ea0",
+      "email": "gjch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:14.197822+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:36.619751+00:00",
+      "user_metadata": {
+        "assigned_state": "GUJARAT",
+        "email_verified": true,
+        "full_name": "Gujarat - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "3c84f59f-5a58-44b4-bde5-f799df3bcef2",
+      "email": "gjpe@synchroserve.com",
+      "created_at": "2026-10-26 07:12:13.987125+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:36.388860+00:00",
+      "user_metadata": {
+        "assigned_state": "GUJARAT",
+        "email_verified": true,
+        "full_name": "Gujarat - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "dd650ecc-95c8-4569-ac39-b5e255f93c48",
+      "email": "apch@synchroserve.com",
+      "created_at": "2026-10-26 07:12:13.781941+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:36.240579+00:00",
+      "user_metadata": {
+        "assigned_state": "ANDHRA PRADESH",
+        "email_verified": true,
+        "full_name": "Andhra Pradesh - Centre Head",
+        "role": "L2_MANAGER"
+      }
+    },
+    {
+      "id": "3c161ed8-83c9-4e4d-bc12-0343d77b85bd",
+      "email": "appe@synchroserve.com",
+      "created_at": "2026-10-26 07:11:35.502757+00:00",
+      "last_sign_in_at": "2026-10-26 07:12:36.020805+00:00",
+      "user_metadata": {
+        "assigned_state": "ANDHRA PRADESH",
+        "email_verified": true,
+        "full_name": "Andhra Pradesh - Placement Executive",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "49d0d1fc-6db2-4615-9e13-2c5701b433bf",
+      "email": "tn.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:13:51.744402+00:00",
+      "last_sign_in_at": "2026-10-24 07:09:28.727856+00:00",
+      "user_metadata": {
+        "assigned_state": "TAMIL NADU",
+        "email_verified": true,
+        "full_name": "Tamil Nadu Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "eb49c010-0ea3-45d8-a688-b215ec66508a",
+      "email": "wb.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:12:11.519220+00:00",
+      "last_sign_in_at": "2026-10-24 07:24:35.375121+00:00",
+      "user_metadata": {
+        "assigned_state": "WEST BENGAL",
+        "email_verified": true,
+        "full_name": "West Bengal Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "a1507089-5841-4e78-b534-bc3313dbe257",
+      "email": "py.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:04:26.187282+00:00",
+      "last_sign_in_at": "2026-10-24 07:23:49.325324+00:00",
+      "user_metadata": {
+        "assigned_state": "PUDUCHERRY",
+        "email_verified": true,
+        "full_name": "Puducherry Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "7450639f-ec7d-4793-9bb3-4d2e2a024133",
+      "email": "mz.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:04:18.919647+00:00",
+      "last_sign_in_at": "2026-10-24 07:21:10.605900+00:00",
+      "user_metadata": {
+        "assigned_state": "MIZORAM",
+        "email_verified": true,
+        "full_name": "Mizoram Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "8c198656-8e3e-405d-89d2-86a5900c4d6a",
+      "email": "up.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:04:12.368410+00:00",
+      "last_sign_in_at": "2026-10-24 07:19:27.908536+00:00",
+      "user_metadata": {
+        "assigned_state": "UTTAR PRADESH",
+        "email_verified": true,
+        "full_name": "Uttar Pradesh Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "414da3a8-cab1-4025-ba82-b381e543157a",
+      "email": "pb.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:04:03.575502+00:00",
+      "last_sign_in_at": "2026-10-24 07:18:37.830946+00:00",
+      "user_metadata": {
+        "assigned_state": "PUNJAB",
+        "email_verified": true,
+        "full_name": "Punjab Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "ecd7cdee-50fc-4488-8882-a2745a341497",
+      "email": "gj.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:03:54.769296+00:00",
+      "last_sign_in_at": "2026-10-24 07:07:00.240262+00:00",
+      "user_metadata": {
+        "assigned_state": "GUJARAT",
+        "email_verified": true,
+        "full_name": "Gujarat Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "ad741c2b-274b-4040-980a-69e326e9b3e6",
+      "email": "od.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:03:48.239965+00:00",
+      "last_sign_in_at": "2026-10-24 07:22:44.528834+00:00",
+      "user_metadata": {
+        "assigned_state": "ODISHA",
+        "email_verified": true,
+        "full_name": "Odisha Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "8f011bca-25b1-48ae-bcbd-3e46d11c208d",
+      "email": "rj.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:03:42.572776+00:00",
+      "last_sign_in_at": "2026-10-24 07:16:12.280203+00:00",
+      "user_metadata": {
+        "assigned_state": "RAJASTHAN",
+        "email_verified": true,
+        "full_name": "Rajasthan Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "c5817e3d-15f2-482e-a3e8-4a9be0d8e94d",
+      "email": "kl.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:03:37.450818+00:00",
+      "last_sign_in_at": "2026-10-24 07:15:19.897380+00:00",
+      "user_metadata": {
+        "assigned_state": "KERALA",
+        "email_verified": true,
+        "full_name": "Kerala Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "2f1db93b-c1a8-47f9-9588-ab22759c1eb7",
+      "email": "ap.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:03:32.226024+00:00",
+      "last_sign_in_at": "2026-10-26 05:23:26.598927+00:00",
+      "user_metadata": {
+        "assigned_state": "ANDHRA PRADESH",
+        "email_verified": true,
+        "full_name": "Andhra Pradesh Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "b9f36866-aa12-4d73-8459-46e7a9dbf82c",
+      "email": "ts.cpass@synchroserve.in",
+      "created_at": "2026-10-23 11:03:26.537607+00:00",
+      "last_sign_in_at": "2026-10-26 05:24:13.223247+00:00",
+      "user_metadata": {
+        "assigned_state": "TELANGANA",
+        "email_verified": true,
+        "full_name": "Telangana Placement Coordinator",
+        "role": "L1_COORDINATOR"
+      }
+    },
+    {
+      "id": "a54ff9f6-0e39-4090-840d-bc8b02000521",
+      "email": "l2_manager@cpass.org",
+      "created_at": "2026-10-22 11:04:34.882496+00:00",
+      "last_sign_in_at": "2026-10-26 05:28:53.687179+00:00",
+      "user_metadata": {
+        "email_verified": true,
+        "full_name": "Suresh Kumar (Centre Manager)"
+      }
+    },
+    {
+      "id": "9f6c8c9e-85be-4d64-8f73-bb8542b546f2",
+      "email": "l1_coordinator@cpass.org",
+      "created_at": "2026-10-21 14:07:33.143626+00:00",
+      "last_sign_in_at": "2026-10-24 04:36:49.835478+00:00",
+      "user_metadata": {
+        "email_verified": true,
+        "full_name": "Ananya Sharma (L1 Coordinator)"
+      }
+    },
+    {
+      "id": "d532416b-9151-4073-93bc-739e560cbe46",
+      "email": "manumansoor2000@gmail.com",
+      "created_at": "2026-10-21 11:38:54.800368+00:00",
+      "last_sign_in_at": "2026-10-22 04:50:13.218825+00:00",
+      "user_metadata": {
+        "email_verified": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,634 @@
+/* ==========================================================================
+   C-PASS Candidate Placement Audit & Sign-off Statement Component Styles
+   ========================================================================== */
+
+.cpass-statement-sheet {
+  background: #ffffff;
+  padding: clamp(16px, 2.5vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.45;
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  min-height: min-content;
+  overflow: visible;
+}
+
+/* -----------------------------------------------------------------------------
+   1. Compact, Professional Document Header
+   ----------------------------------------------------------------------------- */
+.cpass-statement-sheet .cpass-statement-header,
+.cpass-statement-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 2px solid #0b4fb8;
+  padding-bottom: 12px;
+  gap: 16px;
+  width: 100%;
+}
+
+.cpass-statement-sheet .cpass-header-logo,
+.cpass-header-logo {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.cpass-statement-sheet .cpass-header-logo img,
+.cpass-header-logo img {
+  height: 44px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.cpass-statement-sheet .cpass-header-title,
+.cpass-header-title {
+  text-align: center;
+  flex: 1;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.cpass-statement-sheet .cpass-header-title h2,
+.cpass-header-title h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  color: #0a2a7a;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.cpass-statement-sheet .cpass-header-title h4,
+.cpass-header-title h4 {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #0b4fb8;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.25;
+}
+
+.cpass-statement-sheet .cpass-header-title p,
+.cpass-header-title p {
+  margin: 3px 0 0;
+  font-size: 10px;
+  color: #64748b;
+  line-height: 1.35;
+  font-weight: 500;
+}
+
+.cpass-statement-sheet .cpass-header-meta,
+.cpass-header-meta {
+  flex-shrink: 0;
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #475569;
+  min-width: 175px;
+}
+
+.cpass-statement-sheet .cpass-header-meta div,
+.cpass-header-meta div {
+  white-space: nowrap;
+}
+
+.cpass-statement-sheet .cpass-header-meta strong,
+.cpass-header-meta strong {
+  color: #1e293b;
+  font-weight: 600;
+}
+
+/* -----------------------------------------------------------------------------
+   Approval Status Badge
+   ----------------------------------------------------------------------------- */
+.cpass-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1.25;
+}
+
+.cpass-status-badge.approved,
+.cpass-status-badge.l2_approved {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.cpass-status-badge.submitted,
+.cpass-status-badge.verified {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.cpass-status-badge.pending {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.cpass-status-badge.returned {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+}
+
+.cpass-status-badge.draft {
+  background: #f8fafc;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+
+.cpass-status-badge.rejected {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+/* -----------------------------------------------------------------------------
+   2. Standardized Section Headings
+   ----------------------------------------------------------------------------- */
+.cpass-statement-sheet .cpass-statement-section-title,
+.cpass-statement-section-title {
+  background: #eef3fc;
+  border-left: 3px solid #0b4fb8;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0a2a7a;
+  margin: 0 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border-radius: 0 4px 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* -----------------------------------------------------------------------------
+   3. Candidate Dossier Grid (4 columns wide, 2 columns tablet, 1 column mobile)
+   ----------------------------------------------------------------------------- */
+.cpass-statement-sheet .cpass-dossier-grid,
+.cpass-dossier-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 14px;
+  box-sizing: border-box;
+}
+
+.cpass-statement-sheet .cpass-dossier-item,
+.cpass-dossier-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cpass-dossier-item .k {
+  font-size: 10.5px;
+  color: #64748b;
+  font-weight: 500;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cpass-dossier-item .v {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+/* -----------------------------------------------------------------------------
+   4. Tables (Clear headers, subtle borders, no clipping)
+   ----------------------------------------------------------------------------- */
+.cpass-table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  box-sizing: border-box;
+}
+
+.cpass-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  background: #ffffff;
+}
+
+.cpass-doc-table th {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 6px 8px;
+  font-weight: 600;
+  text-align: left;
+  color: #334155;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.cpass-doc-table td {
+  border: 1px solid #e2e8f0;
+  padding: 5px 8px;
+  color: #1e293b;
+  vertical-align: middle;
+}
+
+.cpass-doc-table tr:nth-child(even) td {
+  background: #fafcfe;
+}
+
+.cpass-doc-table tfoot td {
+  background: #f8fafc;
+  font-weight: 700;
+  border-top: 2px solid #cbd5e1;
+  color: #0f172a;
+}
+
+/* -----------------------------------------------------------------------------
+   5. Multi-Level Sign-off Trio
+   ----------------------------------------------------------------------------- */
+.cpass-signoff-trio {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.cpass-signoff-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 125px;
+  font-size: 11px;
+}
+
+.cpass-signoff-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px dashed #cbd5e1;
+  padding-bottom: 5px;
+  margin-bottom: 7px;
+  gap: 6px;
+}
+
+.cpass-signoff-box-title {
+  font-weight: 700;
+  font-size: 11.5px;
+  color: #0a2a7a;
+  border-bottom: 1px dashed #cbd5e1;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.cpass-signoff-box-header .cpass-signoff-box-title {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+
+.cpass-signoff-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #334155;
+}
+
+.cpass-signoff-line {
+  border-top: 1px dashed #94a3b8;
+  margin-top: 8px;
+  padding-top: 4px;
+  font-size: 10px;
+  color: #64748b;
+  text-align: center;
+}
+
+/* -----------------------------------------------------------------------------
+   6. Statement Footer
+   ----------------------------------------------------------------------------- */
+.cpass-statement-footer {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: #64748b;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* -----------------------------------------------------------------------------
+   7. Statement Preview Modal Improvements
+   ----------------------------------------------------------------------------- */
+.l1-statement-modal-card {
+  background: #ffffff;
+  border-radius: 14px;
+  width: min(980px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.25);
+  border: 1px solid #e2e8f0;
+}
+
+.l1-statement-modal-header {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.l1-statement-modal-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: clamp(12px, 2vw, 24px);
+  background: #f1f5f9;
+  display: block;
+  box-sizing: border-box;
+}
+
+.l1-statement-modal-scroll .cpass-statement-sheet {
+  max-width: 900px;
+  width: 100%;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin: 0 auto;
+  height: auto;
+  min-height: min-content;
+  box-sizing: border-box;
+  overflow: visible;
+  background: #ffffff;
+}
+
+.l1-statement-modal-footer {
+  padding: 10px 20px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* -----------------------------------------------------------------------------
+   8. Responsive Layouts (Tablet & Mobile)
+   ----------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+  .cpass-statement-header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .cpass-header-title {
+    order: 3;
+    width: 100%;
+    text-align: left;
+    padding: 0;
+  }
+
+  .cpass-header-meta {
+    text-align: right;
+    min-width: auto;
+  }
+
+  .cpass-dossier-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 12px;
+  }
+
+  .cpass-signoff-trio {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .cpass-statement-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cpass-header-meta {
+    text-align: left;
+    width: 100%;
+  }
+
+  .cpass-dossier-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -----------------------------------------------------------------------------
+   9. Print & PDF Export Rules
+   ----------------------------------------------------------------------------- */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm 10mm 10mm 10mm;
+  }
+
+  /* Hide application chrome, navigation, headers, footers, and interactive controls */
+  .l1-no-print,
+  .l1-statement-modal-header,
+  .l1-statement-modal-footer,
+  .l1-modal-header,
+  .l1-modal-footer,
+  header.top,
+  .top,
+  .l2-workspace-selector,
+  .l2-audit-actions-bar,
+  .l1-hero-banner,
+  .l1-selector-panel,
+  .l1-cand-summary-card,
+  .l1-audit-workflow-container,
+  .l1-doc-workspace,
+  .l1-submit-dock,
+  button {
+    display: none !important;
+  }
+
+  body, html {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .l1-modal-backdrop {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+    height: auto !important;
+    width: 100% !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .l1-statement-modal-card,
+  .l1-statement-modal-scroll {
+    position: static !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+  }
+
+  .cpass-statement-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    font-size: 9.5pt !important;
+    line-height: 1.35 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .cpass-statement-header {
+    border-bottom: 2px solid #0a2a7a !important;
+    padding-bottom: 8px !important;
+    margin-bottom: 10px !important;
+  }
+
+  .cpass-header-logo img {
+    height: 38px !important;
+  }
+
+  .cpass-header-title h2 {
+    font-size: 11pt !important;
+    color: #0a2a7a !important;
+  }
+
+  .cpass-header-title h4 {
+    font-size: 9.5pt !important;
+    color: #0b4fb8 !important;
+  }
+
+  .cpass-statement-section-title {
+    background: #eef3fc !important;
+    color: #0a2a7a !important;
+    border-left: 3px solid #0b4fb8 !important;
+    font-size: 9.5pt !important;
+    padding: 3px 6px !important;
+    margin-top: 10px !important;
+    margin-bottom: 6px !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .cpass-dossier-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 6px 10px !important;
+    background: #f8fafc !important;
+    border: 1px solid #cbd5e1 !important;
+    padding: 8px 10px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .cpass-table-responsive {
+    overflow: visible !important;
+    border: none !important;
+  }
+
+  .cpass-doc-table {
+    font-size: 8.5pt !important;
+    width: 100% !important;
+  }
+
+  .cpass-doc-table thead {
+    display: table-header-group !important;
+  }
+
+  .cpass-doc-table th,
+  .cpass-doc-table tfoot td {
+    background: #f1f5f9 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .cpass-doc-table tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .cpass-signoff-trio {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 10px !important;
+  }
+
+  .cpass-signoff-box {
+    min-height: 100px !important;
+    border: 1px solid #cbd5e1 !important;
+  }
+
+  .cpass-statement-footer {
+    border-top: 1px solid #cbd5e1 !important;
+    font-size: 8pt !important;
+    color: #64748b !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

@@ -1,11 +1,8 @@
-"""Create or update dedicated state-specific L1 Placement Coordinator accounts in Supabase Auth & public.profiles.
+"""[LEGACY / DEPRECATED] Use scripts/provision_state_accounts.py instead.
 
-Ensures:
-1. Supabase Auth user is created with confirmed email and assigned state metadata.
-2. Corresponding profile in public.profiles is created/updated with matching UUID, role, and assigned_state.
-3. Role is set to L1_COORDINATOR and is_active is True.
-4. Conforms to the meeting specification (e.g. tn.cpass@synchroserve.in for Tamil Nadu).
-5. Idempotent: safe to run multiple times.
+This script previously created ad-hoc L1 accounts under the obsolete *.cpass@synchroserve.in scheme.
+The canonical CPASS standard provisions all 24 state accounts (PE and CH) using:
+    python scripts/provision_state_accounts.py --provision
 """
 
 from __future__ import annotations
@@ -22,7 +19,7 @@ from app.auth import ALL_12_STATES, resolve_state
 from app.db import supabase
 
 DEFAULT_L1_EMAIL = "l1_coordinator@cpass.org"
-DEFAULT_L1_NAME = "Ananya Sharma (L1 Coordinator)"
+DEFAULT_L1_NAME = "Ananya Sharma (Placement Executive)"
 DEFAULT_L1_PASS = "l1@cpass"
 
 STATE_PRESETS: dict[str, dict[str, str]] = {

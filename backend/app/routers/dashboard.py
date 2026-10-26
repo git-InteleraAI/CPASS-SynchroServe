@@ -30,12 +30,56 @@ from ..auth import (
     resolve_state,
 )
 from ..db import retry_read_query, supabase
+from .audits import extract_review_stages
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 # Standardized status variants recognized across CPASS placement audit workflow
 APPROVED_STATUSES = {"APPROVED", "L2_APPROVED", "CPASS_APPROVED", "VERIFIED"}
 REJECTED_STATUSES = {"REJECTED", "L2_REJECTED", "CPASS_REJECTED"}
+
+
+def is_candidate_rejected(audit: dict | None) -> bool:
+    """Return True if candidate's current workflow state indicates rejection or return by any review level (CH, COPS, BL)."""
+    if not audit:
+        return False
+    st = (audit.get("cpass_status") or "").upper()
+    ast = (audit.get("audit_status") or "").upper()
+
+    if st in REJECTED_STATUSES or ast in REJECTED_STATUSES:
+        return True
+    if st == "RETURNED_TO_L1" or ast == "RETURNED_TO_L1":
+        return True
+    if st in {"L3_REJECTED", "L4_REJECTED"} or ast in {"L3_REJECTED", "L4_REJECTED"}:
+        return True
+
+    stages = extract_review_stages(audit)
+    ch_st = (stages.get("ch_status") or "").lower()
+    cops_st = (stages.get("cops_status") or "").lower()
+    bl_st = (stages.get("bl_status") or "").lower()
+
+    if ch_st in ("rejected", "returned to l1", "returned"):
+        return True
+    if cops_st == "rejected":
+        return True
+    if bl_st == "rejected":
+        return True
+
+    return False
+
+
+def is_candidate_approved(audit: dict | None) -> bool:
+    """Return True if candidate is approved under CPASS and not currently rejected/returned."""
+    if not audit or is_candidate_rejected(audit):
+        return False
+    st = (audit.get("cpass_status") or "").upper()
+    ast = (audit.get("audit_status") or "").upper()
+    stages = extract_review_stages(audit)
+    return (
+        st in APPROVED_STATUSES
+        or ast in {"APPROVED", "L2_APPROVED"}
+        or stages.get("bl_status") == "Approved"
+    )
 
 
 class PayslipAvailabilityRequest(BaseModel):
@@ -103,6 +147,13 @@ def get_dashboard_summary(
             "in_progress": 0,
             "cpass_in_progress": 0,
             "pending_remaining": 0,
+            "l2_received": 0,
+            "received": 0,
+            "l2_recommended": 0,
+            "recommended": 0,
+            "l2_rejected": 0,
+            "ch_rejected": 0,
+            "l2_pending": 0,
         }
 
     # 1. Total Candidates in state (Authoritative source of truth: tc_state_name)
@@ -126,7 +177,7 @@ def get_dashboard_summary(
 
     aud_res = retry_read_query(
         lambda: supabase.table("placement_audits")
-        .select("candidate_id,cpass_status,audit_status")
+        .select("candidate_id,cpass_status,audit_status,signoff_details")
         .execute()
     )
     aud_rows = aud_res.data or []
@@ -153,28 +204,41 @@ def get_dashboard_summary(
     pending_count = max(0, total_count - uploaded_count)
 
     # 4. CPASS Approved Candidates in state
-    approved_count = 0
-    for cid in uploaded_in_state:
-        audit = audit_map.get(cid)
-        if audit:
-            st = (audit.get("cpass_status") or "").upper()
-            ast = (audit.get("audit_status") or "").upper()
-            if st in APPROVED_STATUSES or ast in {"APPROVED", "L2_APPROVED"}:
-                approved_count += 1
+    approved_cids = {cid for cid in uploaded_in_state if is_candidate_approved(audit_map.get(cid))}
+    approved_count = len(approved_cids)
 
-    # 5. CPASS Rejected Candidates in state
-    rejected_count = 0
-    for cid in uploaded_in_state:
-        audit = audit_map.get(cid)
-        if audit:
-            st = (audit.get("cpass_status") or "").upper()
-            ast = (audit.get("audit_status") or "").upper()
-            if st in REJECTED_STATUSES or ast in REJECTED_STATUSES:
-                rejected_count += 1
+    # 5. CPASS Rejected Candidates in state (inclusive of CH, COPS, and BL rejection/return)
+    rejected_cids = {cid for cid in uploaded_in_state if is_candidate_rejected(audit_map.get(cid))}
+    rejected_count = len(rejected_cids)
 
     # 6. In Progress Candidates in state:
     # Verification process started (uploaded) but neither approved nor rejected yet
     in_progress_count = max(0, uploaded_count - approved_count - rejected_count)
+
+    # 7. L2 CH Multi-Level Review Metrics:
+    # Received: unique candidates in assigned state submitted by L1 and available for CH review
+    l2_received_cids = {
+        cid for cid in uploaded_in_state
+        if audit_map.get(cid)
+        and (audit_map[cid].get("audit_status") or "").upper() in {
+            "SUBMITTED", "APPROVED", "L2_APPROVED", "VERIFIED", "REJECTED", "RETURNED_TO_L1"
+        }
+    }
+
+    l2_recommended_cids: set[int] = set()
+    l2_rejected_cids: set[int] = set()
+
+    for cid in l2_received_cids:
+        audit = audit_map.get(cid)
+        stages = extract_review_stages(audit)
+        ch_st = stages["ch_status"]
+        if ch_st == "Recommended":
+            l2_recommended_cids.add(cid)
+        elif ch_st in ("Rejected", "Returned to L1", "Returned") or (audit and (audit.get("audit_status") or "").upper() == "RETURNED_TO_L1"):
+            l2_rejected_cids.add(cid)
+
+    # Formula: Pending = max(0, Received - Recommended - Rejected)
+    l2_pending_count = max(0, len(l2_received_cids) - len(l2_recommended_cids) - len(l2_rejected_cids))
 
     return {
         "state": target_state,
@@ -185,12 +249,20 @@ def get_dashboard_summary(
         "in_progress": in_progress_count,
         "cpass_in_progress": in_progress_count,
         "pending_remaining": pending_count,
+        # L2 Center Head summary metrics
+        "l2_received": len(l2_received_cids),
+        "received": len(l2_received_cids),
+        "l2_recommended": len(l2_recommended_cids),
+        "recommended": len(l2_recommended_cids),
+        "l2_rejected": len(l2_rejected_cids),
+        "ch_rejected": len(l2_rejected_cids),
+        "l2_pending": l2_pending_count,
     }
 
 
 @router.get("/candidates")
 def get_dashboard_candidates(
-    filter: str | None = Query(None, description="Category filter (total, cpass_approved, cpass_rejected, cpass_uploaded, pending_remaining)"),
+    filter: str | None = Query(None, description="Category filter (total, cpass_approved, cpass_rejected, cpass_uploaded, pending_remaining, received, recommended, rejected, pending)"),
     filter_type: str | None = Query(None, description="Category filter alias"),
     state: str | None = None,
     page: int = Query(1, ge=1),
@@ -205,10 +277,21 @@ def get_dashboard_candidates(
     - cpass_rejected: Candidates rejected under CPASS.
     - cpass_uploaded: Candidates uploaded by Placement Coordinator.
     - pending_remaining: Candidates who have not yet been uploaded (Total - Uploaded).
+    - received / l2_received: Candidates submitted by L1 and available for CH review.
+    - recommended / l2_recommended: Candidates recommended by CH.
+    - rejected / l2_rejected / ch_rejected: Candidates rejected or returned by CH.
+    - pending / l2_pending: Received candidates awaiting CH review.
     """
     raw_filter = filter or filter_type or "total"
     norm_filter = raw_filter.strip().lower()
-    valid_filters = {"total", "cpass_approved", "cpass_rejected", "cpass_uploaded", "in_progress", "cpass_in_progress", "pending_remaining"}
+    valid_filters = {
+        "total", "cpass_approved", "cpass_rejected", "cpass_uploaded",
+        "in_progress", "cpass_in_progress", "pending_remaining",
+        "received", "l2_received",
+        "recommended", "l2_recommended",
+        "rejected", "l2_rejected", "ch_rejected",
+        "pending", "l2_pending",
+    }
     if norm_filter not in valid_filters:
         raise HTTPException(
             400,
@@ -242,7 +325,7 @@ def get_dashboard_candidates(
 
     aud_res = retry_read_query(
         lambda: supabase.table("placement_audits")
-        .select("candidate_id,cpass_status,audit_status")
+        .select("candidate_id,cpass_status,audit_status,signoff_details")
         .execute()
     )
     aud_rows = aud_res.data or []
@@ -263,19 +346,33 @@ def get_dashboard_candidates(
                 uploaded_in_state.add(r["candidate_id"])
 
     # Compute candidate ID sets for specific filters
-    approved_in_state = {
-        cid for cid in uploaded_in_state
-        if (audit_map.get(cid, {}).get("cpass_status") or "").upper() in APPROVED_STATUSES
-        or (audit_map.get(cid, {}).get("audit_status") or "").upper() in {"APPROVED", "L2_APPROVED"}
-    }
-
-    rejected_in_state = {
-        cid for cid in uploaded_in_state
-        if (audit_map.get(cid, {}).get("cpass_status") or "").upper() in REJECTED_STATUSES
-        or (audit_map.get(cid, {}).get("audit_status") or "").upper() in REJECTED_STATUSES
-    }
-
+    approved_in_state = {cid for cid in uploaded_in_state if is_candidate_approved(audit_map.get(cid))}
+    rejected_in_state = {cid for cid in uploaded_in_state if is_candidate_rejected(audit_map.get(cid))}
     in_progress_in_state = uploaded_in_state - approved_in_state - rejected_in_state
+
+    # L2 Multi-Level Review candidate ID sets
+    l2_received_in_state = {
+        cid for cid in uploaded_in_state
+        if audit_map.get(cid)
+        and (audit_map[cid].get("audit_status") or "").upper() in {
+            "SUBMITTED", "APPROVED", "L2_APPROVED", "VERIFIED", "REJECTED", "RETURNED_TO_L1"
+        }
+    }
+
+    l2_recommended_in_state: set[int] = set()
+    l2_rejected_in_state: set[int] = set()
+    l2_pending_in_state: set[int] = set()
+
+    for cid in l2_received_in_state:
+        audit = audit_map.get(cid)
+        stages = extract_review_stages(audit)
+        ch_st = stages["ch_status"]
+        if ch_st == "Recommended":
+            l2_recommended_in_state.add(cid)
+        elif ch_st in ("Rejected", "Returned to L1", "Returned") or (audit and (audit.get("audit_status") or "").upper() == "RETURNED_TO_L1"):
+            l2_rejected_in_state.add(cid)
+        else:
+            l2_pending_in_state.add(cid)
 
     # Build base candidate query
     columns = (
@@ -333,6 +430,54 @@ def get_dashboard_candidates(
             "candidates": [],
         }
 
+    if norm_filter in {"received", "l2_received"} and not l2_received_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"recommended", "l2_recommended"} and not l2_recommended_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"rejected", "l2_rejected", "ch_rejected"} and not l2_rejected_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"pending", "l2_pending"} and not l2_pending_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
     q = (
         supabase.table("ddugky_candidates")
         .select(columns, count="exact")
@@ -350,6 +495,14 @@ def get_dashboard_candidates(
     elif norm_filter == "pending_remaining":
         if uploaded_in_state:
             q = q.not_.in_("candidate_id", list(uploaded_in_state))
+    elif norm_filter in {"received", "l2_received"}:
+        q = q.in_("candidate_id", list(l2_received_in_state))
+    elif norm_filter in {"recommended", "l2_recommended"}:
+        q = q.in_("candidate_id", list(l2_recommended_in_state))
+    elif norm_filter in {"rejected", "l2_rejected", "ch_rejected"}:
+        q = q.in_("candidate_id", list(l2_rejected_in_state))
+    elif norm_filter in {"pending", "l2_pending"}:
+        q = q.in_("candidate_id", list(l2_pending_in_state))
 
     # Apply search filter if provided
     if search and search.strip():
@@ -364,7 +517,8 @@ def get_dashboard_candidates(
     q = q.order("candidate_id", desc=False).range(offset, offset + actual_page_size - 1)
 
     res = retry_read_query(lambda: q.execute())
-    total_count = res.count or 0
+    raw_count = getattr(res, "count", None)
+    total_count = raw_count if isinstance(raw_count, int) else (len(res.data or []) if getattr(res, "data", None) else 0)
     rows = res.data or []
 
     candidates_out: list[dict[str, Any]] = []
@@ -376,16 +530,25 @@ def get_dashboard_candidates(
 
         raw_status = (audit and audit.get("cpass_status") or "").upper()
         raw_audit_status = (audit and audit.get("audit_status") or "").upper()
-        if raw_status in APPROVED_STATUSES or raw_audit_status in {"APPROVED", "L2_APPROVED"}:
-            normalized_cpass = "APPROVED"
-        elif raw_status in REJECTED_STATUSES or raw_audit_status in REJECTED_STATUSES:
+        stages = extract_review_stages(audit)
+
+        if raw_status == "RETURNED_TO_L1" or raw_audit_status == "RETURNED_TO_L1" or stages["ch_status"] == "Returned to L1":
+            normalized_cpass = "RETURNED_TO_L1"
+        elif is_candidate_rejected(audit):
             normalized_cpass = "REJECTED"
+        elif is_candidate_approved(audit):
+            normalized_cpass = "APPROVED"
         elif is_uploaded:
             normalized_cpass = "IN_PROGRESS"
         else:
             normalized_cpass = "PENDING"
 
         audit_status = (audit and audit.get("audit_status")) or ("DRAFT" if is_uploaded else "NOT_STARTED")
+        signoff = (audit and audit.get("signoff_details")) or {}
+        return_to_l1 = signoff.get("return_to_l1") or {}
+        ret_reason = return_to_l1.get("return_reason") or return_to_l1.get("reason")
+        rej_reason = signoff.get("rejection_reason") or ret_reason
+        rej_stage = signoff.get("rejected_stage") or ("ch" if normalized_cpass == "RETURNED_TO_L1" else None)
 
         candidates_out.append({
             "candidate_id": cid,
@@ -407,6 +570,13 @@ def get_dashboard_candidates(
             "has_documents": has_docs,
             "cpass_status": normalized_cpass,
             "audit_status": audit_status,
+            "ch_status": stages["ch_status"],
+            "cops_status": stages["cops_status"],
+            "bl_status": stages["bl_status"],
+            "review_stages": stages,
+            "return_reason": ret_reason,
+            "rejection_reason": rej_reason,
+            "rejected_stage": rej_stage,
         })
 
     total_pages = math.ceil(total_count / actual_page_size) if total_count > 0 else 0

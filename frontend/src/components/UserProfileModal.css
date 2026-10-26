@@ -1,0 +1,252 @@
+/* User Profile Modal Styling */
+.cpass-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+  animation: cpassFadeIn 0.15s ease-out;
+}
+
+@keyframes cpassFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.cpass-profile-card {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  width: 100%;
+  max-width: 500px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: cpassScaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes cpassScaleIn {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.cpass-profile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.cpass-profile-avatar-large {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0b4fb8, #2563eb);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 6px rgba(11, 79, 184, 0.3);
+}
+
+.cpass-profile-close-btn {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  color: #64748b;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.cpass-profile-close-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.cpass-profile-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cpass-profile-alert {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cpass-profile-alert.error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+
+.cpass-profile-alert.success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.cpass-profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cpass-profile-field label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cpass-profile-lock-tag {
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.cpass-profile-input {
+  width: 100%;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  transition: all 0.15s ease;
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.cpass-profile-input.editable:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.cpass-profile-input.readonly {
+  background: #f8fafc;
+  color: #64748b;
+  border-color: #e2e8f0;
+  cursor: not-allowed;
+  user-select: all;
+}
+
+.cpass-profile-hint {
+  font-size: 11.5px;
+  color: #64748b;
+}
+
+.cpass-profile-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.cpass-profile-pill {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.cpass-profile-pill.role {
+  color: #0b4fb8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.cpass-profile-pill.state {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+.cpass-profile-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2563eb;
+}
+
+.cpass-profile-notice {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.cpass-profile-notice strong {
+  display: block;
+  color: #1e293b;
+  margin-bottom: 2px;
+}
+
+.cpass-profile-notice p {
+  margin: 0;
+}
+
+.cpass-profile-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.cpass-profile-save-btn {
+  background: #0b4fb8;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cpass-profile-save-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.cpass-profile-save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .cpass-profile-grid {
+    grid-template-columns: 1fr;
+  }
+}

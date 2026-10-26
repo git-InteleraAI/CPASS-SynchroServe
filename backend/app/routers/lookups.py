@@ -19,7 +19,7 @@ from ..auth import (
     resolve_state,
 )
 from ..config import settings
-from ..db import retry_read_query, supabase
+from ..db import TRANSIENT_ERRORS, retry_read_query, supabase
 
 router = APIRouter(prefix="/lookups", tags=["lookups"])
 
@@ -50,6 +50,14 @@ def _check_centre(user: CurrentUser, tc_id: int) -> None:
                 raise HTTPException(404, "Training centre not found.")
         except HTTPException:
             raise
+        except TRANSIENT_ERRORS as exc:
+            import logging
+            logging.getLogger("cpass.lookups").warning("Transient error during centre check for tc_id %s: %s", tc_id, exc)
+            raise HTTPException(
+                503,
+                "Training centre verification service temporarily unreachable. Please retry.",
+                headers={"Retry-After": "1"},
+            )
         except Exception:
             raise HTTPException(403, "Authorization check failed for this training centre.")
 
@@ -151,6 +159,10 @@ def centres(state: str, user: CurrentUser = Depends(get_current_user)):
         )
     except HTTPException:
         raise
+    except TRANSIENT_ERRORS as exc:
+        import logging
+        logging.getLogger("cpass.lookups").warning("Transient error querying training centres: %s", exc)
+        raise HTTPException(503, "Training centres service temporarily unreachable. Please retry.", headers={"Retry-After": "1"})
     except Exception as exc:
         import logging
         logging.getLogger("cpass.lookups").exception("Failed to query training centres: %s", exc)
@@ -172,6 +184,10 @@ def sanction_orders(tc_id: int, user: CurrentUser = Depends(get_current_user)):
         return sorted(orders)
     except HTTPException:
         raise
+    except TRANSIENT_ERRORS as exc:
+        import logging
+        logging.getLogger("cpass.lookups").warning("Transient error querying sanction orders: %s", exc)
+        raise HTTPException(503, "Sanction orders service temporarily unreachable. Please retry.", headers={"Retry-After": "1"})
     except Exception as exc:
         import logging
         logging.getLogger("cpass.lookups").exception("Failed to query sanction orders: %s", exc)
@@ -203,6 +219,10 @@ def batches(tc_id: int, sanction_order: str, user: CurrentUser = Depends(get_cur
         return sorted(list(b_dict.values()), key=lambda b: str(b["batch_code"]))
     except HTTPException:
         raise
+    except TRANSIENT_ERRORS as exc:
+        import logging
+        logging.getLogger("cpass.lookups").warning("Transient error querying batches: %s", exc)
+        raise HTTPException(503, "Batches service temporarily unreachable. Please retry.", headers={"Retry-After": "1"})
     except Exception as exc:
         import logging
         logging.getLogger("cpass.lookups").exception("Failed to query batches: %s", exc)
@@ -246,6 +266,10 @@ def candidates(kb_batch_id: int, user: CurrentUser = Depends(get_current_user)):
         return sorted(cands, key=lambda c: (c["first_name"] or "").lower())
     except HTTPException:
         raise
+    except TRANSIENT_ERRORS as exc:
+        import logging
+        logging.getLogger("cpass.lookups").warning("Transient error querying candidates: %s", exc)
+        raise HTTPException(503, "Candidates service temporarily unreachable. Please retry.", headers={"Retry-After": "1"})
     except Exception as exc:
         import logging
         logging.getLogger("cpass.lookups").exception("Failed to query candidates: %s", exc)
@@ -317,8 +341,8 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
         active_holds = []
 
         try:
-            member_res = (
-                supabase.table("duplicate_case_members")
+            member_res = retry_read_query(
+                lambda: supabase.table("duplicate_case_members")
                 .select("case_id,duplicate_cases!inner(id,rule_code,rule_description,status,severity)")
                 .eq("candidate_id", candidate_id)
                 .in_("duplicate_cases.status", ["PENDING", "UNDER_REVIEW", "UNRESOLVED"])
@@ -332,8 +356,8 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
             pass
 
         try:
-            hold_res = (
-                supabase.table("candidate_holds")
+            hold_res = retry_read_query(
+                lambda: supabase.table("candidate_holds")
                 .select("id,hold_reason,placed_by,placed_at")
                 .eq("candidate_id", candidate_id)
                 .eq("is_active", True)
@@ -355,6 +379,10 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
         }
     except HTTPException:
         raise
+    except TRANSIENT_ERRORS as exc:
+        import logging
+        logging.getLogger("cpass.lookups").warning("Transient error querying candidate detail: %s", exc)
+        raise HTTPException(503, "Candidate details service temporarily unreachable. Please retry.", headers={"Retry-After": "1"})
     except Exception as exc:
         import logging
         logging.getLogger("cpass.lookups").exception("Failed to query candidate detail: %s", exc)

@@ -5,10 +5,10 @@ from typing import Any
 from fastapi import Depends, Header, HTTPException, Request
 import httpx
 
-from .db import supabase
+from .db import TRANSIENT_ERRORS, retry_read_query, supabase
 
-ALL_CENTRE_ROLES = {"ADMIN", "L3_LEADER", "L4_LEADER", "L5_CEO"}
-ALL_STATE_ROLES = {"ADMIN", "L3_LEADER", "L4_LEADER", "L5_CEO"}
+ALL_CENTRE_ROLES = {"ADMIN", "L3_LEADER", "L3_COPS", "L4_LEADER", "L4_CEO", "L5_CEO"}
+ALL_STATE_ROLES = {"ADMIN", "L3_LEADER", "L3_COPS", "L4_LEADER", "L4_CEO", "L5_CEO"}
 
 # The canonical 12 CPASS master states
 ALL_12_STATES: tuple[str, ...] = (
@@ -77,6 +77,31 @@ STATE_ALIASES: dict[str, str] = {
     "westbengal": "WEST BENGAL",
     "west bengal": "WEST BENGAL",
     "west_bengal": "WEST BENGAL",
+    # 24 State-Specific PE and CH Account Prefixes
+    "appe": "ANDHRA PRADESH",
+    "apch": "ANDHRA PRADESH",
+    "gjpe": "GUJARAT",
+    "gjch": "GUJARAT",
+    "klpe": "KERALA",
+    "klch": "KERALA",
+    "mzpe": "MIZORAM",
+    "mzch": "MIZORAM",
+    "odpe": "ODISHA",
+    "odch": "ODISHA",
+    "pype": "PUDUCHERRY",
+    "pych": "PUDUCHERRY",
+    "pbpe": "PUNJAB",
+    "pbch": "PUNJAB",
+    "rjpe": "RAJASTHAN",
+    "rjch": "RAJASTHAN",
+    "tnpe": "TAMIL NADU",
+    "tnch": "TAMIL NADU",
+    "tspe": "TELANGANA",
+    "tsch": "TELANGANA",
+    "uppe": "UTTAR PRADESH",
+    "upch": "UTTAR PRADESH",
+    "wbpe": "WEST BENGAL",
+    "wbch": "WEST BENGAL",
 }
 
 
@@ -97,6 +122,11 @@ def resolve_state(val: Any) -> str | None:
     clean = s.lower().replace(" ", "").replace("_", "").replace("-", "")
     if clean in STATE_ALIASES:
         return STATE_ALIASES[clean]
+    # Handle role suffixes like appe -> ap, apch -> ap, etc.
+    if len(clean) > 2 and (clean.endswith("pe") or clean.endswith("ch")):
+        base = clean[:-2]
+        if base in STATE_ALIASES:
+            return STATE_ALIASES[base]
     for canon in ALL_12_STATES:
         if canon.lower().replace(" ", "") == clean:
             return canon
@@ -175,25 +205,36 @@ def get_current_user(
         try:
             auth_user = supabase.auth.get_user(token).user
             break
-        except (httpx.TransportError, BlockingIOError, OSError):
+        except TRANSIENT_ERRORS as exc:
             if attempt == 2:
-                raise
-            time.sleep(0.05 * (attempt + 1))
+                import logging
+                logging.getLogger("cpass.auth").warning("Supabase auth transport failed after 3 attempts: %s", exc)
+                raise HTTPException(
+                    503,
+                    "Authentication service temporarily unreachable. Please retry.",
+                    headers={"Retry-After": "1"},
+                )
+            time.sleep(0.1 * (attempt + 1))
         except Exception:
             raise HTTPException(401, "Invalid or expired token")
 
     if auth_user is None:
         raise HTTPException(401, "Invalid or expired token")
 
-    rows = None
-    for attempt in range(3):
-        try:
-            rows = supabase.table("profiles").select("*").eq("id", auth_user.id).limit(1).execute().data
-            break
-        except (httpx.TransportError, BlockingIOError, OSError):
-            if attempt == 2:
-                raise
-            time.sleep(0.05 * (attempt + 1))
+    try:
+        res = retry_read_query(
+            lambda: supabase.table("profiles").select("*").eq("id", auth_user.id).limit(1).execute()
+        )
+        rows = res.data or []
+    except TRANSIENT_ERRORS as exc:
+        import logging
+        logging.getLogger("cpass.auth").warning("Supabase profile lookup transport failed: %s", exc)
+        raise HTTPException(
+            503,
+            "User profile service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
+
     if not rows:
         raise HTTPException(403, "No CPASS profile for this user. Ask an admin to create one.")
     p = rows[0]
@@ -235,14 +276,14 @@ def require_roles(*roles: str):
 def allowed_states(user: CurrentUser) -> list[str] | None:
     """None = unrestricted (sees all states).
     Otherwise returns list of permitted canonical state names.
-    For L1_COORDINATOR: strictly limited to [user.assigned_state] if assigned, else [] (fails closed).
+    For L1_COORDINATOR and L2_MANAGER: strictly limited to [user.assigned_state] if assigned, else [] (fails closed).
     """
     if user.sees_all_states:
         return None
-    if user.role == "L1_COORDINATOR":
+    if user.role in ("L1_COORDINATOR", "L2_MANAGER"):
         if user.assigned_state:
             return [user.assigned_state]
-        return []  # Fail-closed: unassigned L1 coordinator sees zero states
+        return []  # Fail-closed: unassigned coordinator or manager sees zero states
     if user.assigned_state:
         return [user.assigned_state]
     return None

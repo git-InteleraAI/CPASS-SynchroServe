@@ -10,15 +10,19 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from ..auth import CurrentUser, extract_token, get_current_user, resolve_state
+import logging
+
+from ..auth import CurrentUser, clear_user_cache, extract_token, get_current_user, resolve_state
 from ..config import settings
-from ..db import get_auth_client, supabase
+from ..db import TRANSIENT_ERRORS, get_auth_client, retry_read_query, supabase
+
+logger = logging.getLogger("cpass.routers.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(..., description="User email address or username (e.g. tn.cpass)")
+    email: str = Field(..., description="User email address or username (e.g. tn.cpass, appe, apch)")
     password: str = Field(..., description="User password")
     expected_role: str | None = Field(None, description="Role selected on the client for validation")
 
@@ -33,6 +37,14 @@ class UserProfileResponse(BaseModel):
     full_name: str
     role: str
     assigned_state: str | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str = Field(..., min_length=2, max_length=100, description="User display name")
+
+    model_config = {
+        "extra": "forbid",  # Strictly reject attempts to inject email, role, assigned_state, id, etc.
+    }
 
 
 class LoginResponse(BaseModel):
@@ -87,13 +99,26 @@ def login(payload: LoginRequest, response: Response):
     raw_ident = payload.email.strip()
     login_email = raw_ident
     if "@" not in login_email:
-        login_email = f"{login_email}@synchroserve.in"
+        clean_ident = raw_ident.lower()
+        if clean_ident.endswith("pe") or clean_ident.endswith("ch"):
+            login_email = f"{login_email}@synchroserve.com"
+        else:
+            login_email = f"{login_email}@synchroserve.in"
 
     try:
         auth_res = auth_client.auth.sign_in_with_password({
             "email": login_email,
             "password": payload.password,
         })
+    except HTTPException:
+        raise
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error signing in user: %s", exc)
+        raise HTTPException(
+            503,
+            "Authentication service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     except Exception:
         raise HTTPException(401, "Email or password is incorrect.")
 
@@ -104,14 +129,22 @@ def login(payload: LoginRequest, response: Response):
     session = auth_res.session
 
     # Verify CPASS profile in database using server service-role client
-    profile_rows = (
-        supabase.table("profiles")
-        .select("*")
-        .eq("id", auth_user.id)
-        .limit(1)
-        .execute()
-        .data
-    )
+    try:
+        res = retry_read_query(
+            lambda: supabase.table("profiles")
+            .select("*")
+            .eq("id", auth_user.id)
+            .limit(1)
+            .execute()
+        )
+        profile_rows = res.data or []
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error fetching profile for user %s: %s", auth_user.id, exc)
+        raise HTTPException(
+            503,
+            "User profile service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     if not profile_rows:
         raise HTTPException(403, "No CPASS profile for this user. Ask an admin to create one.")
 
@@ -168,6 +201,45 @@ def me(user: CurrentUser = Depends(get_current_user)):
     )
 
 
+@router.patch("/profile", response_model=UserProfileResponse)
+def update_profile(
+    payload: UpdateProfileRequest,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Update only the display name (full_name) of the authenticated user.
+    Email, role, assigned_state, and authorization permissions are strictly read-only and immutable.
+    """
+    clean_name = payload.full_name.strip()
+    if not clean_name:
+        raise HTTPException(400, "Display name cannot be empty.")
+    if len(clean_name) < 2:
+        raise HTTPException(400, "Display name must be at least 2 characters.")
+    if len(clean_name) > 100:
+        raise HTTPException(400, "Display name must not exceed 100 characters.")
+
+    # Update in database table public.profiles
+    res = supabase.table("profiles").update({"full_name": clean_name}).eq("id", user.id).execute()
+    if not res.data:
+        raise HTTPException(404, "Profile not found.")
+
+    # Synchronize Supabase Auth user_metadata
+    try:
+        supabase.auth.admin.update_user_by_id(user.id, {"user_metadata": {"full_name": clean_name}})
+    except Exception as exc:
+        logger.warning("Could not update auth user_metadata for %s: %s", user.id, exc)
+
+    # Invalidate fast in-memory session cache so subsequent requests immediately reflect the updated name
+    clear_user_cache()
+
+    return UserProfileResponse(
+        id=user.id,
+        email=user.email,
+        full_name=clean_name,
+        role=user.role,
+        assigned_state=user.assigned_state,
+    )
+
+
 
 @router.post("/refresh", response_model=LoginResponse)
 def refresh(request: Request, response: Response, payload: RefreshRequest | None = None):
@@ -179,6 +251,15 @@ def refresh(request: Request, response: Response, payload: RefreshRequest | None
     auth_client = get_auth_client()
     try:
         auth_res = auth_client.auth.refresh_session(refresh_token)
+    except HTTPException:
+        raise
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error refreshing token: %s", exc)
+        raise HTTPException(
+            503,
+            "Authentication service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     except Exception:
         raise HTTPException(401, "Invalid or expired refresh token.")
 
@@ -188,14 +269,22 @@ def refresh(request: Request, response: Response, payload: RefreshRequest | None
     auth_user = auth_res.user
     session = auth_res.session
 
-    profile_rows = (
-        supabase.table("profiles")
-        .select("*")
-        .eq("id", auth_user.id)
-        .limit(1)
-        .execute()
-        .data
-    )
+    try:
+        res = retry_read_query(
+            lambda: supabase.table("profiles")
+            .select("*")
+            .eq("id", auth_user.id)
+            .limit(1)
+            .execute()
+        )
+        profile_rows = res.data or []
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error fetching profile on refresh: %s", exc)
+        raise HTTPException(
+            503,
+            "User profile service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     if not profile_rows:
         raise HTTPException(403, "No CPASS profile for this user.")
     profile = profile_rows[0]

@@ -13,10 +13,11 @@ from datetime import datetime, timezone
 import logging
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles
-from ..db import supabase
+from ..db import TRANSIENT_ERRORS, retry_read_query, supabase
 
 logger = logging.getLogger("cpass.audits")
 
@@ -128,24 +129,146 @@ class L2ApproveRequest(BaseModel):
     corrections: L2CorrectionsRequest | None = None
 
 
+class StageRejectRequest(BaseModel):
+    rejection_reason: str = Field(..., min_length=1, description="Mandatory reason for rejection")
+    remarks: str | None = None
+
+
+class StageReturnRequest(BaseModel):
+    return_reason: str = Field(..., min_length=1, description="Mandatory reason for returning candidate to L1 for corrections")
+    remarks: str | None = None
+
+
+class StageApproveRequest(BaseModel):
+    remarks: str | None = None
+
+
+def extract_review_stages(audit: dict | None) -> dict[str, Any]:
+    """Extract and normalize persisted multi-level review stages (CH - L2, COPS - L3, BL - L4).
+
+    If explicit `review_stages` are stored in signoff_details, return them.
+    Otherwise, derive backwards-compatible stage statuses from existing cpass_status and audit_status.
+    """
+    if not audit:
+        return {
+            "ch": {"status": "Pending"},
+            "cops": {"status": "Pending"},
+            "bl": {"status": "Pending"},
+            "ch_status": "Pending",
+            "cops_status": "Pending",
+            "bl_status": "Pending",
+        }
+
+    signoff = audit.get("signoff_details") or {}
+    stages = signoff.get("review_stages")
+
+    raw_status = (audit.get("cpass_status") or "").upper()
+    raw_audit = (audit.get("audit_status") or "").upper()
+
+    if isinstance(stages, dict) and ("ch" in stages or "cops" in stages or "bl" in stages):
+        ch_raw = stages.get("ch")
+        cops_raw = stages.get("cops")
+        bl_raw = stages.get("bl")
+
+        ch_obj = ch_raw if isinstance(ch_raw, dict) else {"status": str(ch_raw or "Pending")}
+        cops_obj = cops_raw if isinstance(cops_raw, dict) else {"status": str(cops_raw or "Pending")}
+        bl_obj = bl_raw if isinstance(bl_raw, dict) else {"status": str(bl_raw or "Pending")}
+
+        ch_st = ch_obj.get("status") or "Pending"
+        if ch_st in ("Returned", "Returned to L1") or raw_audit == "RETURNED_TO_L1" or raw_status == "RETURNED_TO_L1":
+            ch_st = "Returned to L1"
+            ch_obj["status"] = "Returned to L1"
+
+        return {
+            "ch": ch_obj,
+            "cops": cops_obj,
+            "bl": bl_obj,
+            "ch_status": ch_st,
+            "cops_status": cops_obj.get("status") or "Pending",
+            "bl_status": bl_obj.get("status") or "Pending",
+        }
+
+    # Derive from legacy status or returned status
+    if raw_status == "RETURNED_TO_L1" or raw_audit == "RETURNED_TO_L1":
+        return {
+            "ch": {"status": "Returned to L1"},
+            "cops": {"status": "Pending"},
+            "bl": {"status": "Pending"},
+            "ch_status": "Returned to L1",
+            "cops_status": "Pending",
+            "bl_status": "Pending",
+        }
+
+    l2_app = signoff.get("l2_approval") or {}
+
+    ch_status = "Pending"
+    cops_status = "Pending"
+    bl_status = "Pending"
+
+    if raw_status in {"APPROVED", "CPASS_APPROVED"}:
+        ch_status = "Recommended"
+        cops_status = "Verified"
+        bl_status = "Approved"
+    elif raw_status == "VERIFIED":
+        ch_status = "Recommended"
+        cops_status = "Verified"
+        bl_status = "Pending"
+    elif raw_status == "L2_APPROVED" or l2_app.get("approved"):
+        ch_status = "Recommended"
+        cops_status = "Pending"
+        bl_status = "Pending"
+    elif raw_status in {"REJECTED", "L2_REJECTED", "CPASS_REJECTED"} or raw_audit == "REJECTED":
+        rej_stage = signoff.get("rejected_stage") or ""
+        if rej_stage == "bl" or raw_status == "L4_REJECTED":
+            ch_status = "Recommended"
+            cops_status = "Verified"
+            bl_status = "Rejected"
+        elif rej_stage == "cops" or raw_status == "L3_REJECTED":
+            ch_status = "Recommended"
+            cops_status = "Rejected"
+            bl_status = "Pending"
+        else:
+            ch_status = "Rejected"
+            cops_status = "Pending"
+            bl_status = "Pending"
+
+    return {
+        "ch": {"status": ch_status},
+        "cops": {"status": cops_status},
+        "bl": {"status": bl_status},
+        "ch_status": ch_status,
+        "cops_status": cops_status,
+        "bl_status": bl_status,
+    }
+
+
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
 
 def _check_candidate_centre(user: CurrentUser, candidate_id: int) -> dict[str, Any]:
     """Retrieve candidate and verify user state and centre authorization."""
-    res = (
-        supabase.table("ddugky_candidates")
-        .select("*")
-        .eq("candidate_id", candidate_id)
-        .limit(1)
-        .execute()
-    )
+    try:
+        res = retry_read_query(
+            lambda: supabase.table("ddugky_candidates")
+            .select("*")
+            .eq("candidate_id", candidate_id)
+            .limit(1)
+            .execute()
+        )
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error fetching candidate %s: %s", candidate_id, exc)
+        raise HTTPException(
+            503,
+            "Candidate verification service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
+
     if not res.data:
         # Fallback to legacy candidates table if present
         try:
-            cand_fallback = (
-                supabase.table("candidates")
+            cand_fallback = retry_read_query(
+                lambda: supabase.table("candidates")
                 .select("*, batches!inner(tc_id, batch_code, sanction_order)")
                 .eq("candidate_id", candidate_id)
                 .limit(1)
@@ -159,6 +282,13 @@ def _check_candidate_centre(user: CurrentUser, candidate_id: int) -> dict[str, A
                 raise HTTPException(404, f"Candidate {candidate_id} not found.")
         except HTTPException:
             raise
+        except TRANSIENT_ERRORS as exc:
+            logger.warning("Transient error on fallback fetching candidate %s: %s", candidate_id, exc)
+            raise HTTPException(
+                503,
+                "Candidate verification service temporarily unreachable. Please retry.",
+                headers={"Retry-After": "1"},
+            )
         except Exception:
             raise HTTPException(404, f"Candidate {candidate_id} not found.")
     else:
@@ -166,6 +296,39 @@ def _check_candidate_centre(user: CurrentUser, candidate_id: int) -> dict[str, A
 
     check_candidate_access(user, c)
     return c
+
+
+def _execute_audit_update(query: Any, candidate_id: int, action_desc: str) -> Any:
+    """Execute a database update/insert query atomically with clean error translation."""
+    try:
+        return query.execute()
+    except APIError as exc:
+        code = getattr(exc, "code", None)
+        msg = getattr(exc, "message", None) or str(exc)
+        logger.error(
+            "PostgREST database error during %s for candidate %s: code=%s message=%s",
+            action_desc,
+            candidate_id,
+            code,
+            msg,
+        )
+        if code == "23514":
+            raise HTTPException(
+                400,
+                f"Database constraint violation during {action_desc}: One or more audit status values are not permitted.",
+            )
+        raise HTTPException(
+            400,
+            f"Database error during {action_desc}: {msg or 'Request could not be saved.'}",
+        )
+    except TRANSIENT_ERRORS as exc:
+        logger.error("Network transport error during %s for candidate %s: %s", action_desc, candidate_id, exc)
+        raise HTTPException(503, "Database service temporarily unreachable. Please retry.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error during %s for candidate %s: %s", action_desc, candidate_id, exc)
+        raise HTTPException(500, "An unexpected error occurred while saving the placement audit.")
 
 
 # -----------------------------------------------------------------------------
@@ -181,8 +344,8 @@ def get_audit(
     _check_candidate_centre(user, candidate_id)
 
     try:
-        res = (
-            supabase.table("placement_audits")
+        res = retry_read_query(
+            lambda: supabase.table("placement_audits")
             .select("*")
             .eq("candidate_id", candidate_id)
             .limit(1)
@@ -194,6 +357,13 @@ def get_audit(
         return {"exists": True, "audit": res.data[0]}
     except HTTPException:
         raise
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient transport error querying placement_audits for candidate %s: %s", candidate_id, exc)
+        raise HTTPException(
+            503,
+            "Placement audit service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     except Exception as exc:
         logger.exception("Failed to query placement_audits for candidate %s: %s", candidate_id, exc)
         raise HTTPException(status_code=500, detail=f"Database error while querying audit: {str(exc)}") from exc
@@ -332,6 +502,15 @@ def save_audit_draft(
         "updated_at": now_iso,
     }
 
+    signoff_dict = audit_payload.get("signoff_details") or {}
+    if "review_stages" not in signoff_dict:
+        signoff_dict["review_stages"] = {
+            "ch": {"status": "Pending"},
+            "cops": {"status": "Pending"},
+            "bl": {"status": "Pending"},
+        }
+    audit_payload["signoff_details"] = signoff_dict
+
     if existing_res.data:
         existing = existing_res.data[0]
         if existing.get("audit_status") == "SUBMITTED" and user.role != "ADMIN":
@@ -351,12 +530,8 @@ def save_audit_draft(
             audit_payload["remarks"] = existing["remarks"]
 
         # Update existing record
-        update_res = (
-            supabase.table("placement_audits")
-            .update(audit_payload)
-            .eq("id", existing["id"])
-            .execute()
-        )
+        update_q = supabase.table("placement_audits").update(audit_payload).eq("id", existing["id"])
+        update_res = _execute_audit_update(update_q, candidate_id, "save draft")
         record = update_res.data[0] if update_res.data else {**existing, **audit_payload}
     else:
         # Insert new draft record
@@ -370,11 +545,8 @@ def save_audit_draft(
         audit_payload["created_by"] = user.id
         audit_payload["created_at"] = now_iso
 
-        insert_res = (
-            supabase.table("placement_audits")
-            .insert(audit_payload)
-            .execute()
-        )
+        insert_q = supabase.table("placement_audits").insert(audit_payload)
+        insert_res = _execute_audit_update(insert_q, candidate_id, "create draft")
         record = insert_res.data[0] if insert_res.data else audit_payload
 
     return {"message": "Draft audit saved successfully", "audit": record}
@@ -462,43 +634,61 @@ def submit_audit(
     }
 
     # Section 5 read-only enforcement: Retain existing corporate signoff endorsements from database
+    existing_review_stages = None
     if existing_res.data and existing_res.data[0].get("signoff_details"):
         existing_signoff = existing_res.data[0]["signoff_details"]
         for key in ("centre_head", "cops_team", "business_leader"):
             if key in existing_signoff and existing_signoff[key]:
                 signoff_dict[key] = existing_signoff[key]
+        existing_review_stages = existing_signoff.get("review_stages")
     else:
         for key in ("centre_head", "cops_team", "business_leader"):
             if key in signoff_dict and isinstance(signoff_dict[key], dict):
                 signoff_dict[key]["confirmed"] = False
 
+    existing_record = existing_res.data[0] if existing_res.data else None
+    existing_signoff = existing_record.get("signoff_details") or {} if existing_record else {}
+    is_resubmission = existing_record and (
+        existing_record.get("audit_status") == "RETURNED_TO_L1"
+        or existing_record.get("cpass_status") == "RETURNED_TO_L1"
+    )
+
+    if is_resubmission:
+        # Reset CH and subsequent stages to Pending for fresh review upon coordinator resubmission
+        signoff_dict["review_stages"] = {
+            "ch": {"status": "Pending"},
+            "cops": {"status": "Pending"},
+            "bl": {"status": "Pending"},
+        }
+        # Preserve previous return-to-L1 metadata and return history
+        if "return_to_l1" in existing_signoff:
+            signoff_dict["return_to_l1"] = existing_signoff["return_to_l1"]
+        if "return_history" in existing_signoff:
+            signoff_dict["return_history"] = existing_signoff["return_history"]
+        rev_history = list(existing_signoff.get("revision_history") or [])
+        rev_history.append({
+            "action": "RESUBMITTED_BY_L1",
+            "stage": "L1",
+            "resubmitted_at": now_iso,
+            "resubmitted_by": user.full_name,
+            "user_id": user.id,
+            "role": user.role,
+        })
+        signoff_dict["revision_history"] = rev_history
+    elif existing_review_stages:
+        signoff_dict["review_stages"] = existing_review_stages
+    else:
+        signoff_dict["review_stages"] = {
+            "ch": {"status": "Pending"},
+            "cops": {"status": "Pending"},
+            "bl": {"status": "Pending"},
+        }
+
     doc_audit_data = payload.document_audit.model_dump()
 
-    # Determine compliance status
-    # If any document is explicitly marked unavailable (No / Pending) or not compliant (Non-Compliant / Under Verification), cpass_status is PENDING.
-    # Placement is only VERIFIED when all required documents are available, compliant, and verified.
-    has_pending_or_uncompliant = False
-    for req_key in [
-        "appointment_letter",
-        "salary_slip_1",
-        "salary_slip_2",
-        "salary_slip_3",
-        "bank_statement_1",
-        "bank_statement_2",
-        "bank_statement_3",
-    ]:
-        row = doc_audit_data.get(req_key)
-        if isinstance(row, dict):
-            if row.get("available") in ("No", "Pending") or row.get("compliance") in ("Non-Compliant", "Under Verification"):
-                has_pending_or_uncompliant = True
-                break
+    # Submission by L1 coordinator makes candidate eligible for L2/CH review while keeping review stages Pending
+    computed_cpass_status = "PENDING"
 
-    if has_pending_or_uncompliant or doc_audit_data.get("overall_compliance") is False:
-        computed_cpass_status = "PENDING"
-    else:
-        computed_cpass_status = "VERIFIED"
-
-    existing_record = existing_res.data[0] if existing_res.data else None
     audit_remarks = payload.remarks if payload.remarks is not None else (existing_record.get("remarks") if existing_record else None)
 
     audit_payload = {
@@ -517,25 +707,24 @@ def submit_audit(
 
     if existing_res.data:
         existing = existing_res.data[0]
+        if existing.get("cpass_status") == "APPROVED":
+            raise HTTPException(400, "Cannot submit: This placement audit has already received final approval.")
         if existing.get("audit_status") == "SUBMITTED":
             raise HTTPException(400, "This placement audit has already been submitted.")
 
-        update_res = (
-            supabase.table("placement_audits")
-            .update(audit_payload)
-            .eq("id", existing["id"])
-            .execute()
-        )
+        update_q = supabase.table("placement_audits").update(audit_payload)
+        if existing.get("id"):
+            update_q = update_q.eq("id", existing["id"])
+        else:
+            update_q = update_q.eq("candidate_id", candidate_id)
+        update_res = _execute_audit_update(update_q, candidate_id, "submit placement audit")
         record = update_res.data[0] if update_res.data else {**existing, **audit_payload}
     else:
         audit_payload["created_by"] = user.id
         audit_payload["created_at"] = now_iso
 
-        insert_res = (
-            supabase.table("placement_audits")
-            .insert(audit_payload)
-            .execute()
-        )
+        insert_q = supabase.table("placement_audits").insert(audit_payload)
+        insert_res = _execute_audit_update(insert_q, candidate_id, "submit placement audit")
         record = insert_res.data[0] if insert_res.data else audit_payload
 
     return {
@@ -554,24 +743,40 @@ def get_audit_statement(
     cand = _check_candidate_centre(user, candidate_id)
 
     # 1. Fetch audit record
-    audit_res = (
-        supabase.table("placement_audits")
-        .select("*")
-        .eq("candidate_id", candidate_id)
-        .limit(1)
-        .execute()
-    )
+    try:
+        audit_res = retry_read_query(
+            lambda: supabase.table("placement_audits")
+            .select("*")
+            .eq("candidate_id", candidate_id)
+            .limit(1)
+            .execute()
+        )
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error fetching placement_audits for statement %s: %s", candidate_id, exc)
+        raise HTTPException(
+            503,
+            "Placement audit service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     audit = audit_res.data[0] if audit_res.data else None
 
     # 2. Fetch persisted documents (exclude FAILED status)
-    docs_res = (
-        supabase.table("candidate_documents")
-        .select("id,document_type,reporting_month,reporting_year,file_name,file_size_bytes,upload_status,drive_file_id,document_title,created_at")
-        .eq("candidate_id", candidate_id)
-        .neq("upload_status", "FAILED")
-        .order("created_at")
-        .execute()
-    )
+    try:
+        docs_res = retry_read_query(
+            lambda: supabase.table("candidate_documents")
+            .select("id,document_type,reporting_month,reporting_year,file_name,file_size_bytes,upload_status,drive_file_id,document_title,created_at")
+            .eq("candidate_id", candidate_id)
+            .neq("upload_status", "FAILED")
+            .order("created_at")
+            .execute()
+        )
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error fetching candidate_documents for statement %s: %s", candidate_id, exc)
+        raise HTTPException(
+            503,
+            "Document service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
     docs = docs_res.data or []
 
     # 3. Normalized candidate snapshot
@@ -821,6 +1026,9 @@ def get_audit_statement(
         "submitter": ((audit and audit.get("signoff_details")) or {}).get("submitter") or None,
         "placement_executive": ((audit and audit.get("signoff_details")) or {}).get("placement_executive") or None,
         "revision_history": ((audit and audit.get("signoff_details")) or {}).get("revision_history") or [],
+        "return_to_l1": ((audit and audit.get("signoff_details")) or {}).get("return_to_l1") or None,
+        "return_history": ((audit and audit.get("signoff_details")) or {}).get("return_history") or [],
+        "review_stages": extract_review_stages(audit),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "verified_by_user": user.full_name,
     }
@@ -1025,8 +1233,17 @@ def approve_placement_audit(
         raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
     audit = res.data[0]
 
+    # Rejection gate: cannot approve if candidate has been rejected
+    current_stages = extract_review_stages(audit)
+    if (
+        audit.get("cpass_status") in ("REJECTED", "L2_REJECTED", "CPASS_REJECTED")
+        or audit.get("audit_status") == "REJECTED"
+        or current_stages["ch_status"] == "Rejected"
+    ):
+        raise HTTPException(400, "Approval blocked: Candidate has been rejected and cannot progress.")
+
     # 3. Idempotency check: Already approved by L2
-    if audit.get("cpass_status") == "L2_APPROVED":
+    if audit.get("cpass_status") == "L2_APPROVED" and current_stages["ch_status"] == "Recommended":
         return {
             "status": "already_approved",
             "message": "Placement audit has already been approved by L2 Center Manager.",
@@ -1114,6 +1331,20 @@ def approve_placement_audit(
         signoff["revision_history"] = history
 
     # 7. Update Centre Head Signoff and L2 Approval Metadata
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = {
+        "status": "Recommended",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "remarks": payload.remarks,
+    }
+    if "cops" not in review_stages:
+        review_stages["cops"] = {"status": "Pending"}
+    if "bl" not in review_stages:
+        review_stages["bl"] = {"status": "Pending"}
+    signoff["review_stages"] = review_stages
+
     signoff["centre_head"] = {
         "name": user.full_name,
         "designation": "Centre Manager",
@@ -1144,12 +1375,8 @@ def approve_placement_audit(
         "updated_at": now_iso,
     }
 
-    up_res = (
-        supabase.table("placement_audits")
-        .update(update_payload)
-        .eq("id", audit["id"])
-        .execute()
-    )
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "CH approval")
     updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
 
     return {
@@ -1159,5 +1386,591 @@ def approve_placement_audit(
         "audit": updated_record,
         "approved_at": now_iso,
         "approved_by": user.full_name,
+    }
+
+
+@router.post("/l2-review/reject")
+def reject_l2_placement_audit(
+    candidate_id: int,
+    payload: StageRejectRequest,
+    user: CurrentUser = Depends(require_roles("L2_MANAGER", "ADMIN")),
+):
+    """Record L2 Center Manager rejection and stop review progression."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    # Cannot reject if already given final approval
+    if audit.get("cpass_status") == "APPROVED":
+        raise HTTPException(400, "Cannot reject: Candidate has already received final approval.")
+
+    signoff = audit.get("signoff_details") or {}
+    current_stages = extract_review_stages(audit)
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+
+    # Idempotent check
+    if current_stages["ch_status"] == "Rejected":
+        return {
+            "status": "already_rejected",
+            "message": "Placement audit has already been rejected at L2 CH stage.",
+            "cpass_status": "REJECTED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    review_stages["ch"] = {
+        "status": "Rejected",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "rejection_reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    }
+    if "cops" not in review_stages:
+        review_stages["cops"] = {"status": "Pending"}
+    if "bl" not in review_stages:
+        review_stages["bl"] = {"status": "Pending"}
+
+    signoff["review_stages"] = review_stages
+    signoff["rejected_stage"] = "ch"
+    signoff["rejection_reason"] = payload.rejection_reason
+
+    history = signoff.get("revision_history") or []
+    history.append({
+        "action": "REJECTED_L2",
+        "stage": "CH",
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    })
+    signoff["revision_history"] = history
+
+    update_payload = {
+        "cpass_status": "REJECTED",
+        "audit_status": "REJECTED",
+        "signoff_details": signoff,
+        "remarks": payload.remarks or audit.get("remarks") or payload.rejection_reason,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "CH rejection")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement rejected by L2 Center Manager.",
+        "cpass_status": "REJECTED",
+        "audit": updated_record,
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+    }
+
+
+@router.post("/l2-review/return-to-l1")
+def return_l2_placement_audit(
+    candidate_id: int,
+    payload: StageReturnRequest,
+    user: CurrentUser = Depends(require_roles("L2_MANAGER", "ADMIN")),
+):
+    """Return candidate placement audit to L1 Coordinator for corrections.
+
+    - Requires explicit correction reason.
+    - Preserves all uploaded documents, statement fields, and audit history.
+    - Updates audit_status and cpass_status to RETURNED_TO_L1.
+    - Sets review_stages.ch.status to 'Returned'.
+    - Disallows L3 COPS or L4 BL progression until resubmitted and recommended by CH.
+    """
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    # Cannot return if already given final approval
+    if audit.get("cpass_status") == "APPROVED":
+        raise HTTPException(400, "Cannot return: Candidate has already received final approval.")
+
+    current_stages = extract_review_stages(audit)
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+
+    # Idempotent check: candidate is already in RETURNED_TO_L1 state
+    if audit.get("audit_status") == "RETURNED_TO_L1" and current_stages["ch_status"] == "Returned to L1":
+        return {
+            "status": "already_returned",
+            "message": "Candidate has already been returned to L1 for corrections.",
+            "cpass_status": "RETURNED_TO_L1",
+            "audit": audit,
+        }
+
+    reason_clean = (payload.return_reason or "").strip()
+    if not reason_clean:
+        raise HTTPException(422, "Rejection/correction reason cannot be empty.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    previous_cpass = audit.get("cpass_status")
+    previous_audit = audit.get("audit_status")
+
+    review_stages["ch"] = {
+        "status": "Returned to L1",
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "user_id": user.id,
+        "reason": reason_clean,
+        "return_reason": reason_clean,
+        "remarks": payload.remarks,
+    }
+    review_stages["cops"] = {"status": "Pending"}
+    review_stages["bl"] = {"status": "Pending"}
+    signoff["review_stages"] = review_stages
+
+    return_entry = {
+        "reason": reason_clean,
+        "return_reason": reason_clean,
+        "remarks": payload.remarks,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "returned_by_name": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    }
+    signoff["return_to_l1"] = return_entry
+
+    return_hist = list(signoff.get("return_history") or [])
+    return_hist.append(return_entry)
+    signoff["return_history"] = return_hist
+
+    history = list(signoff.get("revision_history") or [])
+    history.append({
+        "action": "RETURNED_TO_L1",
+        "stage": "CH",
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": reason_clean,
+        "remarks": payload.remarks,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    })
+    signoff["revision_history"] = history
+
+    update_payload = {
+        "cpass_status": "RETURNED_TO_L1",
+        "audit_status": "RETURNED_TO_L1",
+        "signoff_details": signoff,
+        "remarks": payload.remarks or audit.get("remarks") or reason_clean,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload)
+    if audit.get("id"):
+        up_q = up_q.eq("id", audit["id"])
+    else:
+        up_q = up_q.eq("candidate_id", candidate_id)
+    up_res = _execute_audit_update(up_q, candidate_id, "CH return to L1")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement audit successfully returned to L1 coordinator for corrections.",
+        "cpass_status": "RETURNED_TO_L1",
+        "audit": updated_record,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+    }
+
+
+@router.post("/l3-review/approve")
+def approve_l3_cops_audit(
+    candidate_id: int,
+    payload: StageApproveRequest,
+    user: CurrentUser = Depends(require_roles("L3_COPS", "L3_LEADER", "ADMIN")),
+):
+    """Validate CH recommendation and record L3 COPS verification."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    # Blocked if candidate has been returned for corrections
+    current_stages = extract_review_stages(audit)
+    if (
+        audit.get("cpass_status") == "RETURNED_TO_L1"
+        or audit.get("audit_status") == "RETURNED_TO_L1"
+        or current_stages["ch_status"] == "Returned to L1"
+    ):
+        raise HTTPException(400, "COPS review blocked: Candidate has been returned to L1 for corrections and cannot progress until resubmitted and recommended by CH.")
+
+    # Blocked if rejected at any stage
+    if (
+        audit.get("cpass_status") in ("REJECTED", "L2_REJECTED", "CPASS_REJECTED")
+        or audit.get("audit_status") == "REJECTED"
+        or current_stages["ch_status"] == "Rejected"
+        or current_stages["cops_status"] == "Rejected"
+        or current_stages["bl_status"] == "Rejected"
+    ):
+        raise HTTPException(400, "Review blocked: Candidate has already been rejected and cannot progress.")
+
+    # Sequencing check: Candidate must first be recommended by CH (L2)
+    if current_stages["ch_status"] != "Recommended":
+        raise HTTPException(400, "COPS review blocked: Candidate must first be recommended by L2 Center Head.")
+
+    # Idempotency check: Already verified by COPS
+    if current_stages["cops_status"] == "Verified":
+        return {
+            "status": "already_approved",
+            "message": "Placement audit has already been verified by L3 COPS.",
+            "cpass_status": "VERIFIED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = current_stages["ch"]
+    review_stages["cops"] = {
+        "status": "Verified",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "remarks": payload.remarks,
+    }
+    if "bl" not in review_stages:
+        review_stages["bl"] = {"status": "Pending"}
+
+    signoff["review_stages"] = review_stages
+    signoff["cops_team"] = {
+        "name": user.full_name,
+        "designation": "COPS Auditor",
+        "date": today_str,
+        "remarks": payload.remarks or "Verified and endorsed by COPS team.",
+        "confirmed": True,
+        "verified_by_id": user.id,
+    }
+
+    update_payload = {
+        "cpass_status": "VERIFIED",
+        "signoff_details": signoff,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "COPS approval")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement verified by L3 COPS.",
+        "cpass_status": "VERIFIED",
+        "audit": updated_record,
+        "verified_at": now_iso,
+        "verified_by": user.full_name,
+    }
+
+
+@router.post("/l3-review/reject")
+def reject_l3_cops_audit(
+    candidate_id: int,
+    payload: StageRejectRequest,
+    user: CurrentUser = Depends(require_roles("L3_COPS", "L3_LEADER", "ADMIN")),
+):
+    """Record L3 COPS rejection and stop review progression."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    current_stages = extract_review_stages(audit)
+
+    # Sequencing check: Must be recommended by CH before COPS can review
+    if current_stages["ch_status"] != "Recommended":
+        raise HTTPException(400, "COPS review blocked: Candidate must first be recommended by L2 Center Head.")
+
+    # Idempotent check
+    if current_stages["cops_status"] == "Rejected":
+        return {
+            "status": "already_rejected",
+            "message": "Placement audit has already been rejected at L3 COPS stage.",
+            "cpass_status": "REJECTED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = current_stages["ch"]
+    review_stages["cops"] = {
+        "status": "Rejected",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "rejection_reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    }
+    if "bl" not in review_stages:
+        review_stages["bl"] = {"status": "Pending"}
+
+    signoff["review_stages"] = review_stages
+    signoff["rejected_stage"] = "cops"
+    signoff["rejection_reason"] = payload.rejection_reason
+
+    history = signoff.get("revision_history") or []
+    history.append({
+        "action": "REJECTED_L3",
+        "stage": "COPS",
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    })
+    signoff["revision_history"] = history
+
+    update_payload = {
+        "cpass_status": "REJECTED",
+        "audit_status": "REJECTED",
+        "signoff_details": signoff,
+        "remarks": payload.remarks or audit.get("remarks") or payload.rejection_reason,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "COPS rejection")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement rejected by L3 COPS.",
+        "cpass_status": "REJECTED",
+        "audit": updated_record,
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+    }
+
+
+@router.post("/l4-review/approve")
+def approve_l4_bl_audit(
+    candidate_id: int,
+    payload: StageApproveRequest,
+    user: CurrentUser = Depends(require_roles("L4_LEADER", "ADMIN")),
+):
+    """Validate COPS verification and record L4 Business Leader final approval."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    # Blocked if candidate has been returned for corrections
+    current_stages = extract_review_stages(audit)
+    if (
+        audit.get("cpass_status") == "RETURNED_TO_L1"
+        or audit.get("audit_status") == "RETURNED_TO_L1"
+        or current_stages["ch_status"] == "Returned to L1"
+    ):
+        raise HTTPException(400, "BL review blocked: Candidate has been returned to L1 for corrections and cannot progress until resubmitted and recommended by CH.")
+
+    # Blocked if rejected at any stage
+    if (
+        audit.get("cpass_status") in ("REJECTED", "L2_REJECTED", "CPASS_REJECTED")
+        or audit.get("audit_status") == "REJECTED"
+        or current_stages["ch_status"] == "Rejected"
+        or current_stages["cops_status"] == "Rejected"
+        or current_stages["bl_status"] == "Rejected"
+    ):
+        raise HTTPException(400, "Review blocked: Candidate has already been rejected and cannot progress.")
+
+    # Sequencing check: Candidate must first be verified by COPS (L3)
+    if current_stages["cops_status"] != "Verified":
+        raise HTTPException(400, "BL review blocked: Candidate must first be verified by L3 COPS.")
+
+    # Idempotency check: Already approved by BL
+    if current_stages["bl_status"] == "Approved":
+        return {
+            "status": "already_approved",
+            "message": "Placement audit has already been approved by L4 Business Leader.",
+            "cpass_status": "APPROVED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = current_stages["ch"]
+    review_stages["cops"] = current_stages["cops"]
+    review_stages["bl"] = {
+        "status": "Approved",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "remarks": payload.remarks,
+    }
+
+    signoff["review_stages"] = review_stages
+    signoff["business_leader"] = {
+        "name": user.full_name,
+        "designation": "Business Leader",
+        "date": today_str,
+        "remarks": payload.remarks or "Approved and sanctioned by Business Leader.",
+        "confirmed": True,
+        "approved_by_id": user.id,
+    }
+
+    update_payload = {
+        "cpass_status": "APPROVED",
+        "signoff_details": signoff,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "BL approval")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement approved by L4 Business Leader.",
+        "cpass_status": "APPROVED",
+        "audit": updated_record,
+        "approved_at": now_iso,
+        "approved_by": user.full_name,
+    }
+
+
+@router.post("/l4-review/reject")
+def reject_l4_bl_audit(
+    candidate_id: int,
+    payload: StageRejectRequest,
+    user: CurrentUser = Depends(require_roles("L4_LEADER", "ADMIN")),
+):
+    """Record L4 Business Leader rejection and stop review progression."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    current_stages = extract_review_stages(audit)
+
+    # Sequencing check: Must be verified by COPS before BL can review
+    if current_stages["cops_status"] != "Verified":
+        raise HTTPException(400, "BL review blocked: Candidate must first be verified by L3 COPS.")
+
+    # Idempotent check
+    if current_stages["bl_status"] == "Rejected":
+        return {
+            "status": "already_rejected",
+            "message": "Placement audit has already been rejected at L4 BL stage.",
+            "cpass_status": "REJECTED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = current_stages["ch"]
+    review_stages["cops"] = current_stages["cops"]
+    review_stages["bl"] = {
+        "status": "Rejected",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "rejection_reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    }
+
+    signoff["review_stages"] = review_stages
+    signoff["rejected_stage"] = "bl"
+    signoff["rejection_reason"] = payload.rejection_reason
+
+    history = signoff.get("revision_history") or []
+    history.append({
+        "action": "REJECTED_L4",
+        "stage": "BL",
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    })
+    signoff["revision_history"] = history
+
+    update_payload = {
+        "cpass_status": "REJECTED",
+        "audit_status": "REJECTED",
+        "signoff_details": signoff,
+        "remarks": payload.remarks or audit.get("remarks") or payload.rejection_reason,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "BL rejection")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement rejected by L4 Business Leader.",
+        "cpass_status": "REJECTED",
+        "audit": updated_record,
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
     }
 

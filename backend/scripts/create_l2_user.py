@@ -1,10 +1,8 @@
-"""Create a dedicated L2 Center Manager test account in Supabase Auth & public.profiles.
+"""[LEGACY / DEPRECATED] Use scripts/provision_state_accounts.py instead.
 
-Ensures:
-1. Supabase Auth user is created with confirmed email.
-2. Corresponding profile in public.profiles is created/updated with matching UUID.
-3. Role is set to L2_MANAGER and is_active is True.
-4. Idempotent: safe to run multiple times without creating duplicate profiles.
+This script previously created a generic L2 Center Manager test account.
+The canonical CPASS standard provisions all 24 state accounts (PE and CH) using:
+    python scripts/provision_state_accounts.py --provision
 """
 
 from __future__ import annotations

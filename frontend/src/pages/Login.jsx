@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import logoSrc from '../../assets/SynchroServeLogo.png'
+import logoSrc from '../../assets/SynchroServeLogoHD.png'
 import './Login.css'
 
 const ROLE_TABS = [

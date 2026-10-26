@@ -849,3 +849,271 @@ def test_payslip_availability_invalid_status_returns_400(auth_l1_tn):
         })
         assert res.status_code == 400
         assert "Availability must be 'Yes', 'No', or 'Pending'" in res.json()["detail"]
+
+
+# -----------------------------------------------------------------------------
+# 8. L1 Dashboard Rejection, Return-to-L1, and Multi-Stage Review Tests
+# -----------------------------------------------------------------------------
+
+def test_l1_dashboard_summary_multi_stage_rejection_and_return_counting(auth_l1_tn):
+    """Verifies that:
+    1. A CH return with RETURNED_TO_L1 is counted as Rejected.
+    2. A CH rejection (status REJECTED) is counted as Rejected.
+    3. A COPS rejection (review_stages cops_status 'Rejected' or L3_REJECTED) is counted as Rejected.
+    4. A BL rejection (review_stages bl_status 'Rejected' or L4_REJECTED) is counted as Rejected.
+    5. A candidate rejected at multiple stages (e.g. CH returned AND later BL rejected) is counted ONLY ONCE.
+    6. Returned candidates are NOT counted as In Progress.
+    7. In Progress = Uploaded - Approved - Rejected and Pending = Total - Uploaded.
+    """
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=100)
+
+        # 7 distinct uploaded candidates in Tamil Nadu:
+        # cid 99010: Approved (L2_APPROVED)
+        # cid 99011: CH return with RETURNED_TO_L1 (like candidate 1076623)
+        # cid 99012: CH rejection (audit_status='REJECTED')
+        # cid 99013: COPS rejection (review_stages cops_status='Rejected')
+        # cid 99014: BL rejection (review_stages bl_status='Rejected')
+        # cid 99015: In Progress (DRAFT / PENDING)
+        # cid 99016: Multiple rejection stages recorded (CH 'Returned to L1' and BL 'Rejected') - MUST be counted ONCE
+        cids = [99010, 99011, 99012, 99013, 99014, 99015, 99016]
+        mock_docs_res = MagicMock(data=[{"candidate_id": c} for c in cids])
+
+        mock_aud_res = MagicMock(data=[
+            # 99010: Approved
+            {"candidate_id": 99010, "cpass_status": "APPROVED", "audit_status": "L2_APPROVED", "signoff_details": {}},
+            # 99011: CH Return (like 1076623)
+            {
+                "candidate_id": 99011,
+                "cpass_status": "RETURNED_TO_L1",
+                "audit_status": "RETURNED_TO_L1",
+                "signoff_details": {
+                    "review_stages": {
+                        "ch_status": "Returned to L1",
+                        "ch_remarks": "Fix salary slip",
+                        "cops_status": "Pending",
+                        "bl_status": "Pending",
+                    }
+                },
+            },
+            # 99012: CH Rejection
+            {"candidate_id": 99012, "cpass_status": "REJECTED", "audit_status": "REJECTED", "signoff_details": {}},
+            # 99013: COPS Rejection
+            {
+                "candidate_id": 99013,
+                "cpass_status": "L3_REJECTED",
+                "audit_status": "SUBMITTED",
+                "signoff_details": {
+                    "review_stages": {
+                        "ch_status": "Approved",
+                        "cops_status": "Rejected",
+                        "cops_remarks": "Bank statement invalid",
+                        "bl_status": "Pending",
+                    }
+                },
+            },
+            # 99014: BL Rejection
+            {
+                "candidate_id": 99014,
+                "cpass_status": "L4_REJECTED",
+                "audit_status": "SUBMITTED",
+                "signoff_details": {
+                    "review_stages": {
+                        "ch_status": "Approved",
+                        "cops_status": "Approved",
+                        "bl_status": "Rejected",
+                        "bl_remarks": "Appointment letter mismatch",
+                    }
+                },
+            },
+            # 99015: In Progress
+            {"candidate_id": 99015, "cpass_status": "PENDING", "audit_status": "DRAFT", "signoff_details": {}},
+            # 99016: Multiple rejection stages recorded
+            {
+                "candidate_id": 99016,
+                "cpass_status": "RETURNED_TO_L1",
+                "audit_status": "RETURNED_TO_L1",
+                "signoff_details": {
+                    "review_stages": {
+                        "ch_status": "Returned to L1",
+                        "cops_status": "Pending",
+                        "bl_status": "Rejected",
+                    }
+                },
+            },
+        ])
+
+        mock_cand_check = MagicMock(data=[
+            {"candidate_id": c, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}
+            for c in cids
+        ])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+
+        assert data["total"] == 100
+        assert data["cpass_uploaded"] == 7
+        # 1 Approved (99010)
+        assert data["cpass_approved"] == 1
+        # 5 Rejected unique candidates: 99011 (CH return), 99012 (CH reject), 99013 (COPS reject), 99014 (BL reject), 99016 (Multi-reject counted once)
+        assert data["cpass_rejected"] == 5
+        # 1 In Progress: 99015
+        assert data["in_progress"] == 1
+        assert data["cpass_in_progress"] == 1
+        # Consistency checks:
+        # Uploaded = Approved + Rejected + In Progress -> 7 = 1 + 5 + 1
+        assert data["cpass_uploaded"] == data["cpass_approved"] + data["cpass_rejected"] + data["in_progress"]
+        # Pending = Total - Uploaded -> 100 - 7 = 93
+        assert data["pending_remaining"] == 93
+
+
+def test_l1_dashboard_summary_state_isolation_rejection_scope(auth_l1_tn):
+    """Rejection and return records belonging to candidates in other states (e.g. AP) are not counted for TN."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=50)
+
+        # 99020 is in TN (In Progress), 1076623 is in AP (Returned to L1)
+        mock_docs_res = MagicMock(data=[
+            {"candidate_id": 99020},
+            {"candidate_id": 1076623},
+        ])
+        mock_aud_res = MagicMock(data=[
+            {"candidate_id": 99020, "cpass_status": "PENDING", "audit_status": "DRAFT"},
+            {"candidate_id": 1076623, "cpass_status": "RETURNED_TO_L1", "audit_status": "RETURNED_TO_L1"},
+        ])
+        # Only 99020 belongs to TN!
+        mock_cand_check = MagicMock(data=[
+            {"candidate_id": 99020, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}
+        ])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+
+        assert data["state"] == "TAMIL NADU"
+        assert data["cpass_uploaded"] == 1
+        assert data["cpass_approved"] == 0
+        assert data["cpass_rejected"] == 0
+        assert data["in_progress"] == 1
+
+
+def test_l1_dashboard_candidates_returned_candidate_in_rejected_filter(auth_l1_tn):
+    """Candidate with RETURNED_TO_L1 appears in /dashboard/candidates?filter=cpass_rejected with status RETURNED_TO_L1."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_docs = MagicMock(data=[{"candidate_id": 99030}])
+        mock_auds = MagicMock(data=[{
+            "candidate_id": 99030,
+            "cpass_status": "RETURNED_TO_L1",
+            "audit_status": "RETURNED_TO_L1",
+            "signoff_details": {
+                "review_stages": {
+                    "ch_status": "Returned to L1",
+                    "ch_remarks": "Missing appointment letter signature",
+                }
+            },
+        }])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99030, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
+
+        cand_row = {**TN_CANDIDATE, "candidate_id": 99030, "candidate_first_name": "Dommeti"}
+        mock_rej_res = MagicMock(count=1, data=[cand_row])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+                t.select.return_value.eq.return_value.in_.return_value.order.return_value.range.return_value.execute.return_value = mock_rej_res
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_auds
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/candidates?filter=cpass_rejected")
+        assert res.status_code == 200
+        data = res.json()
+
+        assert data["filter"] == "cpass_rejected"
+        assert data["total_count"] == 1
+        assert len(data["candidates"]) == 1
+        candidate = data["candidates"][0]
+        assert candidate["candidate_id"] == 99030
+        # Canonical database status preserved so L1 can edit/resubmit
+        assert candidate["cpass_status"] == "RETURNED_TO_L1"
+        assert candidate["is_uploaded"] is True
+        assert candidate["review_stages"]["ch_status"] == "Returned to L1"
+
+
+def test_l1_resubmission_resets_rejected_count(auth_l1_tn):
+    """Once L1 coordinator resubmits a returned candidate, status is SUBMITTED and candidate moves from Rejected to In Progress."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=50)
+
+        mock_docs_res = MagicMock(data=[{"candidate_id": 99030}])
+        # After resubmission, audit_status is SUBMITTED, cpass_status is SUBMITTED/PENDING, and review_stages are Pending
+        mock_aud_res = MagicMock(data=[{
+            "candidate_id": 99030,
+            "cpass_status": "SUBMITTED",
+            "audit_status": "SUBMITTED",
+            "signoff_details": {
+                "review_stages": {
+                    "ch_status": "Pending",
+                    "cops_status": "Pending",
+                    "bl_status": "Pending",
+                }
+            },
+        }])
+        mock_cand_check = MagicMock(data=[
+            {"candidate_id": 99030, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}
+        ])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+
+        assert data["cpass_uploaded"] == 1
+        assert data["cpass_approved"] == 0
+        assert data["cpass_rejected"] == 0
+        assert data["in_progress"] == 1
+

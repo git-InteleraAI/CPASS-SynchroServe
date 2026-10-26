@@ -1,5 +1,9 @@
 import { useMemo } from 'react'
-import synchroLogo from '../../assets/SynchroServeLogo.png'
+import synchroLogo from '../../assets/SynchroServeLogoHD.png'
+import './PlacementAuditStatement.css'
+
+import { getApprovalStatusDetails } from './approvalStatusHelper.js'
+export { getApprovalStatusDetails }
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -10,17 +14,17 @@ export default function PlacementAuditStatement({
   statementData,
   isEditMode = false,
   editedData = null,
-  onUpdateEmployer = () => {},
-  onAddEmployer = () => {},
-  onRemoveEmployer = () => {},
-  onUpdateSalary = () => {},
-  onAddSalary = () => {},
-  onRemoveSalary = () => {},
-  onUpdateSignoff = () => {},
-  onUpdateRemarks = () => {},
+  onUpdateEmployer = () => { },
+  onAddEmployer = () => { },
+  onRemoveEmployer = () => { },
+  onUpdateSalary = () => { },
+  onAddSalary = () => { },
+  onRemoveSalary = () => { },
+  onUpdateSignoff = () => { },
+  onUpdateRemarks = () => { },
   l1OriginalData = null,
   showModalWrapper = false,
-  onClose = () => {},
+  onClose = () => { },
   extraHeaderActions = null,
   extraFooterActions = null,
   hasUnsavedChanges = false,
@@ -46,6 +50,10 @@ export default function PlacementAuditStatement({
   const currentSignoffs = isEditMode && editedData?.signoff_details
     ? editedData.signoff_details
     : (statementData.signoff_details || statementData.audit?.signoff_details || {})
+
+  const statusInfo = useMemo(() => {
+    return getApprovalStatusDetails(statementData, currentSignoffs)
+  }, [statementData, currentSignoffs])
 
   // Calculate live salary summary totals
   const salarySummary = useMemo(() => {
@@ -167,21 +175,24 @@ export default function PlacementAuditStatement({
         </div>
         <div className="cpass-header-title">
           <h2>SYNCHROSERVE GLOBAL SOLUTIONS PRIVATE LIMITED</h2>
-          <h4>C-PASS CANDIDATE PLACEMENT AUDIT &amp; SIGN-OFF STATEMENT</h4>
-          <p>Deen Dayal Upadhyaya Grameen Kaushalya Yojana (DDU-GKY) Verification Record</p>
+          <h4>C-PASS STATEMENT</h4>
+          <p>
+            Deen Dayal Upadhyaya Grameen Kaushalya Yojana (DDU-GKY)<br />
+            Candidate Placement Audit &amp; Sign-off Verification Record
+          </p>
         </div>
         <div className="cpass-header-meta">
           <div><strong>Doc Ref:</strong> CPASS-AUD-{cand.candidate_id || cand.id || 'REF'}</div>
           <div><strong>Date:</strong> {statementData.generated_at ? new Date(statementData.generated_at).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN')}</div>
           {submitter && (
             <div>
-              <strong>Submitted By:</strong> {submitter.name || 'Placement Executive'} ({submitter.role_label || 'L1 (PE)'})
+              <strong>Submitted By:</strong> {submitter.name || 'Placement Executive'}
             </div>
           )}
           <div>
-            <strong>Status:</strong>{' '}
-            <span style={{ color: cpassStatus === 'L2_APPROVED' ? '#166534' : auditStatus === 'SUBMITTED' ? '#1E40AF' : '#D97706', fontWeight: 700 }}>
-              {cpassStatus === 'L2_APPROVED' ? 'L2 APPROVED' : auditStatus}
+            <strong>Overall Status:</strong>{' '}
+            <span className={`cpass-status-badge ${statusInfo.overallBadgeClass}`}>
+              {statusInfo.overallStatus}
             </span>
           </div>
         </div>
@@ -247,10 +258,8 @@ export default function PlacementAuditStatement({
             <span className="v">{cand.masked_bank_account || cand.bank_account || 'Not Available'}</span>
           </div>
           <div className="cpass-dossier-item">
-            <span className="k">CPASS Status</span>
-            <span className="v" style={{ fontWeight: 700, color: cpassStatus === 'L2_APPROVED' ? '#166534' : undefined }}>
-              {cpassStatus}
-            </span>
+            <span className="k">Review Status</span>
+            <span className="v">{statusInfo.reviewStatusDetail}</span>
           </div>
           <div className="cpass-dossier-item">
             <span className="k">Audit Finalized At</span>
@@ -274,124 +283,126 @@ export default function PlacementAuditStatement({
             </button>
           )}
         </div>
-        <table className="cpass-doc-table">
-          <thead>
-            <tr>
-              <th style={{ width: '36px' }}>#</th>
-              <th>Employer Name</th>
-              <th style={{ width: '100px' }}>Months Worked</th>
-              <th style={{ width: '120px' }}>Appointment Date</th>
-              <th>Designation</th>
-              <th>Place of Work</th>
-              <th style={{ width: '110px' }}>Monthly CTC (₹)</th>
-              <th style={{ width: '110px' }}>Minimum Wages (₹)</th>
-              {isEditMode && currentEmployers.length > 1 && <th className="l1-no-print" style={{ width: '40px' }}>Action</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {currentEmployers.map((emp, idx) => (
-              <tr key={emp.id || idx}>
-                <td>{idx + 1}</td>
-                {isEditMode ? (
-                  <>
-                    <td>
-                      <input
-                        type="text"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'employer_name', emp.employer_name) ? 'modified-field' : ''}`}
-                        placeholder="Employer Name *"
-                        value={emp.employer_name || ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'employer_name', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'months_worked', emp.months_worked) ? 'modified-field' : ''}`}
-                        value={emp.months_worked ?? ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'months_worked', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="date"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'appointment_date', emp.appointment_date) ? 'modified-field' : ''}`}
-                        value={emp.appointment_date || ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'appointment_date', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="text"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'designation', emp.designation) ? 'modified-field' : ''}`}
-                        placeholder="Designation"
-                        value={emp.designation || ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'designation', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="text"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'place_of_work', emp.place_of_work) ? 'modified-field' : ''}`}
-                        placeholder="Location"
-                        value={emp.place_of_work || ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'place_of_work', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'monthly_ctc', emp.monthly_ctc) ? 'modified-field' : ''}`}
-                        value={emp.monthly_ctc ?? ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'monthly_ctc', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'minimum_wages', emp.minimum_wages) ? 'modified-field' : ''}`}
-                        value={emp.minimum_wages ?? ''}
-                        onChange={(e) => onUpdateEmployer(emp.id || idx, 'minimum_wages', e.target.value)}
-                      />
-                    </td>
-                    {currentEmployers.length > 1 && (
-                      <td className="l1-no-print" style={{ textAlign: 'center' }}>
-                        <button
-                          type="button"
-                          onClick={() => onRemoveEmployer(emp.id || idx)}
-                          title="Remove Employer"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}
-                        >
-                          🗑️
-                        </button>
-                      </td>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <td><strong>{emp.employer_name || '—'}</strong></td>
-                    <td>{emp.months_worked ?? '—'}</td>
-                    <td>{emp.appointment_date || '—'}</td>
-                    <td>{emp.designation || '—'}</td>
-                    <td>{emp.place_of_work || '—'}</td>
-                    <td>{emp.monthly_ctc ? `₹${Number(emp.monthly_ctc).toLocaleString('en-IN')}` : '—'}</td>
-                    <td>{emp.minimum_wages ? `₹${Number(emp.minimum_wages).toLocaleString('en-IN')}` : '—'}</td>
-                  </>
-                )}
-              </tr>
-            ))}
-            {currentEmployers.length === 0 && (
+        <div className="cpass-table-responsive">
+          <table className="cpass-doc-table">
+            <thead>
               <tr>
-                <td colSpan={isEditMode ? 9 : 8} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
-                  No employer records recorded.
-                </td>
+                <th style={{ width: '36px' }}>#</th>
+                <th>Employer Name</th>
+                <th style={{ width: '100px' }}>Months Worked</th>
+                <th style={{ width: '120px' }}>Appointment Date</th>
+                <th>Designation</th>
+                <th>Place of Work</th>
+                <th style={{ width: '110px' }}>Monthly CTC (₹)</th>
+                <th style={{ width: '110px' }}>Minimum Wages (₹)</th>
+                {isEditMode && currentEmployers.length > 1 && <th className="l1-no-print" style={{ width: '40px' }}>Action</th>}
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {currentEmployers.map((emp, idx) => (
+                <tr key={emp.id || idx}>
+                  <td>{idx + 1}</td>
+                  {isEditMode ? (
+                    <>
+                      <td>
+                        <input
+                          type="text"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'employer_name', emp.employer_name) ? 'modified-field' : ''}`}
+                          placeholder="Employer Name *"
+                          value={emp.employer_name || ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'employer_name', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'months_worked', emp.months_worked) ? 'modified-field' : ''}`}
+                          value={emp.months_worked ?? ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'months_worked', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="date"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'appointment_date', emp.appointment_date) ? 'modified-field' : ''}`}
+                          value={emp.appointment_date || ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'appointment_date', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="text"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'designation', emp.designation) ? 'modified-field' : ''}`}
+                          placeholder="Designation"
+                          value={emp.designation || ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'designation', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="text"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'place_of_work', emp.place_of_work) ? 'modified-field' : ''}`}
+                          placeholder="Location"
+                          value={emp.place_of_work || ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'place_of_work', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'monthly_ctc', emp.monthly_ctc) ? 'modified-field' : ''}`}
+                          value={emp.monthly_ctc ?? ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'monthly_ctc', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'minimum_wages', emp.minimum_wages) ? 'modified-field' : ''}`}
+                          value={emp.minimum_wages ?? ''}
+                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'minimum_wages', e.target.value)}
+                        />
+                      </td>
+                      {currentEmployers.length > 1 && (
+                        <td className="l1-no-print" style={{ textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            onClick={() => onRemoveEmployer(emp.id || idx)}
+                            title="Remove Employer"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}
+                          >
+                            🗑️
+                          </button>
+                        </td>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <td><strong>{emp.employer_name || '—'}</strong></td>
+                      <td>{emp.months_worked ?? '—'}</td>
+                      <td>{emp.appointment_date || '—'}</td>
+                      <td>{emp.designation || '—'}</td>
+                      <td>{emp.place_of_work || '—'}</td>
+                      <td>{emp.monthly_ctc ? `₹${Number(emp.monthly_ctc).toLocaleString('en-IN')}` : '—'}</td>
+                      <td>{emp.minimum_wages ? `₹${Number(emp.minimum_wages).toLocaleString('en-IN')}` : '—'}</td>
+                    </>
+                  )}
+                </tr>
+              ))}
+              {currentEmployers.length === 0 && (
+                <tr>
+                  <td colSpan={isEditMode ? 9 : 8} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
+                    No employer records recorded.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Section 3: Salary Disbursement Record */}
@@ -409,278 +420,302 @@ export default function PlacementAuditStatement({
             </button>
           )}
         </div>
-        <table className="cpass-doc-table">
-          <thead>
-            <tr>
-              <th style={{ width: '130px' }}>Reporting Month</th>
-              <th style={{ width: '60px' }}>Work</th>
-              <th style={{ width: '60px' }}>Pay</th>
-              <th style={{ width: '60px' }}>Leave</th>
-              <th style={{ width: '110px' }}>Credit Date</th>
-              <th style={{ width: '90px' }}>Gross (₹)</th>
-              <th style={{ width: '85px' }}>Deductions</th>
-              <th style={{ width: '90px' }}>Net (₹)</th>
-              <th style={{ width: '90px' }}>Credited (₹)</th>
-              <th>Bank Name</th>
-              {isEditMode && currentSalaries.length > 3 && <th className="l1-no-print" style={{ width: '36px' }}>Action</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {currentSalaries.map((sal, idx) => (
-              <tr key={sal.id || idx}>
-                {isEditMode ? (
-                  <>
-                    <td>
-                      <div style={{ display: 'flex', gap: '4px' }}>
-                        <select
-                          className="l1-edit-cell"
-                          value={sal.month || 1}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'month', parseInt(e.target.value, 10))}
-                        >
-                          {MONTH_NAMES.map((m, mIdx) => (
-                            <option key={mIdx + 1} value={mIdx + 1}>{m.slice(0, 3)}</option>
-                          ))}
-                        </select>
+        <div className="cpass-table-responsive">
+          <table className="cpass-doc-table">
+            <thead>
+              <tr>
+                <th style={{ width: '130px' }}>Reporting Month</th>
+                <th style={{ width: '60px' }}>Work</th>
+                <th style={{ width: '60px' }}>Pay</th>
+                <th style={{ width: '60px' }}>Leave</th>
+                <th style={{ width: '110px' }}>Credit Date</th>
+                <th style={{ width: '90px' }}>Gross (₹)</th>
+                <th style={{ width: '85px' }}>Deductions</th>
+                <th style={{ width: '90px' }}>Net (₹)</th>
+                <th style={{ width: '90px' }}>Credited (₹)</th>
+                <th>Bank Name</th>
+                {isEditMode && currentSalaries.length > 3 && <th className="l1-no-print" style={{ width: '36px' }}>Action</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {currentSalaries.map((sal, idx) => (
+                <tr key={sal.id || idx}>
+                  {isEditMode ? (
+                    <>
+                      <td>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <select
+                            className="l1-edit-cell"
+                            value={sal.month || 1}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'month', parseInt(e.target.value, 10))}
+                          >
+                            {MONTH_NAMES.map((m, mIdx) => (
+                              <option key={mIdx + 1} value={mIdx + 1}>{m.slice(0, 3)}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            className="l1-edit-cell"
+                            style={{ width: '60px' }}
+                            value={sal.year || 2026}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'year', parseInt(e.target.value, 10))}
+                          />
+                        </div>
+                      </td>
+                      <td>
                         <input
                           type="number"
+                          min="0"
+                          max="31"
                           className="l1-edit-cell"
-                          style={{ width: '60px' }}
-                          value={sal.year || 2026}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'year', parseInt(e.target.value, 10))}
+                          value={sal.working_days ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'working_days', e.target.value ? parseInt(e.target.value, 10) : '')}
                         />
-                      </div>
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        max="31"
-                        className="l1-edit-cell"
-                        value={sal.working_days ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'working_days', e.target.value ? parseInt(e.target.value, 10) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        max="31"
-                        className="l1-edit-cell"
-                        value={sal.pay_days ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'pay_days', e.target.value ? parseInt(e.target.value, 10) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        max="31"
-                        className="l1-edit-cell"
-                        value={sal.leave_days ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'leave_days', e.target.value ? parseInt(e.target.value, 10) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="date"
-                        className="l1-edit-cell"
-                        value={sal.credit_date || ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'credit_date', e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        className="l1-edit-cell"
-                        value={sal.gross_salary ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'gross_salary', e.target.value ? parseFloat(e.target.value) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        className="l1-edit-cell"
-                        value={sal.deductions ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'deductions', e.target.value ? parseFloat(e.target.value) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        className="l1-edit-cell"
-                        value={sal.net_salary ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'net_salary', e.target.value ? parseFloat(e.target.value) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        className="l1-edit-cell"
-                        value={sal.amount_credited ?? ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'amount_credited', e.target.value ? parseFloat(e.target.value) : '')}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="text"
-                        className="l1-edit-cell"
-                        placeholder="Bank Name"
-                        value={sal.bank_name || ''}
-                        onChange={(e) => onUpdateSalary(sal.id || idx, 'bank_name', e.target.value)}
-                      />
-                    </td>
-                    {currentSalaries.length > 3 && (
-                      <td className="l1-no-print" style={{ textAlign: 'center' }}>
-                        <button
-                          type="button"
-                          onClick={() => onRemoveSalary(sal.id || idx)}
-                          title="Remove Month"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}
-                        >
-                          🗑️
-                        </button>
                       </td>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <td><strong>{sal.month ? `${MONTH_NAMES[sal.month - 1] || sal.month} ${sal.year || ''}` : sal.reporting_month || `Month ${idx + 1}`}</strong></td>
-                    <td>{sal.working_days ?? '—'}</td>
-                    <td>{sal.pay_days ?? '—'}</td>
-                    <td>{sal.leave_days ?? '—'}</td>
-                    <td>{sal.credit_date || '—'}</td>
-                    <td>{sal.gross_salary ? `₹${Number(sal.gross_salary).toLocaleString('en-IN')}` : '₹0'}</td>
-                    <td>{sal.deductions ? `₹${Number(sal.deductions).toLocaleString('en-IN')}` : '₹0'}</td>
-                    <td><strong>{sal.net_salary ? `₹${Number(sal.net_salary).toLocaleString('en-IN')}` : '₹0'}</strong></td>
-                    <td>{sal.amount_credited ? `₹${Number(sal.amount_credited).toLocaleString('en-IN')}` : '₹0'}</td>
-                    <td>{sal.bank_name || '—'}</td>
-                  </>
-                )}
-              </tr>
-            ))}
-            {currentSalaries.length === 0 && (
-              <tr>
-                <td colSpan={isEditMode ? 11 : 10} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
-                  No salary disbursement records recorded.
-                </td>
-              </tr>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          max="31"
+                          className="l1-edit-cell"
+                          value={sal.pay_days ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'pay_days', e.target.value ? parseInt(e.target.value, 10) : '')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          max="31"
+                          className="l1-edit-cell"
+                          value={sal.leave_days ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'leave_days', e.target.value ? parseInt(e.target.value, 10) : '')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="date"
+                          className="l1-edit-cell"
+                          value={sal.credit_date || ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'credit_date', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className="l1-edit-cell"
+                          value={sal.gross_salary ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'gross_salary', e.target.value ? parseFloat(e.target.value) : '')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className="l1-edit-cell"
+                          value={sal.deductions ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'deductions', e.target.value ? parseFloat(e.target.value) : '')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className="l1-edit-cell"
+                          value={sal.net_salary ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'net_salary', e.target.value ? parseFloat(e.target.value) : '')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className="l1-edit-cell"
+                          value={sal.amount_credited ?? ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'amount_credited', e.target.value ? parseFloat(e.target.value) : '')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="text"
+                          className="l1-edit-cell"
+                          placeholder="Bank Name"
+                          value={sal.bank_name || ''}
+                          onChange={(e) => onUpdateSalary(sal.id || idx, 'bank_name', e.target.value)}
+                        />
+                      </td>
+                      {currentSalaries.length > 3 && (
+                        <td className="l1-no-print" style={{ textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            onClick={() => onRemoveSalary(sal.id || idx)}
+                            title="Remove Month"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}
+                          >
+                            🗑️
+                          </button>
+                        </td>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <td><strong>{sal.month ? `${MONTH_NAMES[sal.month - 1] || sal.month} ${sal.year || ''}` : sal.reporting_month || `Month ${idx + 1}`}</strong></td>
+                      <td>{sal.working_days ?? '—'}</td>
+                      <td>{sal.pay_days ?? '—'}</td>
+                      <td>{sal.leave_days ?? '—'}</td>
+                      <td>{sal.credit_date || '—'}</td>
+                      <td>{sal.gross_salary ? `₹${Number(sal.gross_salary).toLocaleString('en-IN')}` : '₹0'}</td>
+                      <td>{sal.deductions ? `₹${Number(sal.deductions).toLocaleString('en-IN')}` : '₹0'}</td>
+                      <td><strong>{sal.net_salary ? `₹${Number(sal.net_salary).toLocaleString('en-IN')}` : '₹0'}</strong></td>
+                      <td>{sal.amount_credited ? `₹${Number(sal.amount_credited).toLocaleString('en-IN')}` : '₹0'}</td>
+                      <td>{sal.bank_name || '—'}</td>
+                    </>
+                  )}
+                </tr>
+              ))}
+              {currentSalaries.length === 0 && (
+                <tr>
+                  <td colSpan={isEditMode ? 11 : 10} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
+                    No salary disbursement records recorded.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {currentSalaries.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td colSpan={5} style={{ textAlign: 'right', fontWeight: 600 }}>
+                    Summary Totals ({salarySummary.month_count ?? currentSalaries.length} Months, Avg Gross: ₹{Number(salarySummary.average_gross || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}):
+                  </td>
+                  <td>₹{Number(salarySummary.total_gross || 0).toLocaleString('en-IN')}</td>
+                  <td>₹{Number(salarySummary.total_deductions || 0).toLocaleString('en-IN')}</td>
+                  <td>₹{Number(salarySummary.total_net || 0).toLocaleString('en-IN')}</td>
+                  <td>₹{Number(salarySummary.total_credited || 0).toLocaleString('en-IN')}</td>
+                  <td></td>
+                  {isEditMode && currentSalaries.length > 3 && <td></td>}
+                </tr>
+              </tfoot>
             )}
-          </tbody>
-          {currentSalaries.length > 0 && (
-            <tfoot>
-              <tr>
-                <td colSpan={5} style={{ textAlign: 'right', fontWeight: 600 }}>
-                  Summary Totals ({salarySummary.month_count ?? currentSalaries.length} Months, Avg Gross: ₹{Number(salarySummary.average_gross || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}):
-                </td>
-                <td>₹{Number(salarySummary.total_gross || 0).toLocaleString('en-IN')}</td>
-                <td>₹{Number(salarySummary.total_deductions || 0).toLocaleString('en-IN')}</td>
-                <td>₹{Number(salarySummary.total_net || 0).toLocaleString('en-IN')}</td>
-                <td>₹{Number(salarySummary.total_credited || 0).toLocaleString('en-IN')}</td>
-                <td></td>
-                {isEditMode && currentSalaries.length > 3 && <td></td>}
-              </tr>
-            </tfoot>
-          )}
-        </table>
+          </table>
+        </div>
       </div>
 
       {/* Section 4: Document Evidence Audit */}
       <div>
         <h5 className="cpass-statement-section-title">4. Document Evidence Audit</h5>
-        <table className="cpass-doc-table">
-          <thead>
-            <tr>
-              <th style={{ width: '60px' }}>Doc Code</th>
-              <th>Document Description</th>
-              <th style={{ width: '80px' }}>Availability</th>
-              <th>Repository Evidence Status</th>
-              <th>Auditor Observations</th>
-            </tr>
-          </thead>
-          <tbody>
-            {evidenceRows.map((docItem, idx) => (
-              <tr key={docItem.key || idx}>
-                <td><strong>{docItem.code}</strong></td>
-                <td>{docItem.label}</td>
-                <td>
-                  {docItem.available === 'Yes' || docItem.available === true ? (
-                    <span style={{ fontWeight: 700, color: '#166534' }}>✓ Yes</span>
-                  ) : docItem.available === 'Pending' ? (
-                    <span style={{ fontWeight: 700, color: '#D97706' }}>⏳ Pending</span>
-                  ) : (
-                    <span style={{ fontWeight: 700, color: '#DC2626' }}>✕ No</span>
-                  )}
-                </td>
-                <td style={{ fontSize: '11px', color: '#4B5563' }}>
-                  {docItem.repository_status}
-                </td>
-                <td>{docItem.observations || 'Verified during placement audit'}</td>
+        <div className="cpass-table-responsive">
+          <table className="cpass-doc-table">
+            <thead>
+              <tr>
+                <th style={{ width: '60px' }}>Doc Code</th>
+                <th>Document Description</th>
+                <th style={{ width: '80px' }}>Availability</th>
+                <th>Repository Evidence Status</th>
+                <th>Auditor Observations</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {evidenceRows.map((docItem, idx) => (
+                <tr key={docItem.key || idx}>
+                  <td><strong>{docItem.code}</strong></td>
+                  <td>{docItem.label}</td>
+                  <td>
+                    {docItem.available === 'Yes' || docItem.available === true ? (
+                      <span style={{ fontWeight: 700, color: '#166534' }}>✓ Yes</span>
+                    ) : docItem.available === 'Pending' ? (
+                      <span style={{ fontWeight: 700, color: '#D97706' }}>⏳ Pending</span>
+                    ) : (
+                      <span style={{ fontWeight: 700, color: '#DC2626' }}>✕ No</span>
+                    )}
+                  </td>
+                  <td style={{ fontSize: '11px', color: '#4B5563' }}>
+                    {docItem.repository_status}
+                  </td>
+                  <td>{docItem.observations || 'Verified during placement audit'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Section 5: Authorizations & Sign-off Endorsements */}
       <div>
-        <h5 className="cpass-statement-section-title">5. Authorizations &amp; Sign-off Endorsements</h5>
+        <h5 className="cpass-statement-section-title">5. Multi-Level Sign-Off &amp; Approvals</h5>
         <div className="cpass-signoff-trio">
-          {/* Centre Head */}
+          {/* Centre Head (CH) */}
           <div className="cpass-signoff-box">
-            <div className="cpass-signoff-box-title">Centre Head Verification</div>
+            <div className="cpass-signoff-box-header">
+              <div className="cpass-signoff-box-title">Centre Head (CH)</div>
+              <span className={`cpass-status-badge ${statusInfo.chStage.badgeClass}`}>
+                {statusInfo.chStage.label}
+              </span>
+            </div>
             <div className="cpass-signoff-details">
-              <div><strong>Name:</strong> {currentSignoffs.centre_head?.name || '—'}</div>
-              <div><strong>Date:</strong> {currentSignoffs.centre_head?.date || '—'}</div>
-              <div>
-                <strong>Status:</strong>{' '}
-                <span style={{ color: (currentSignoffs.centre_head?.confirmed || currentSignoffs.centre_head?.recommended) ? '#166534' : '#6B7280', fontWeight: 600 }}>
-                  {(currentSignoffs.centre_head?.confirmed || currentSignoffs.centre_head?.recommended) ? 'Recommended / Approved' : 'Pending'}
-                </span>
-              </div>
-              <div style={{ fontStyle: 'italic', color: '#6B7280', marginTop: '4px' }}>
-                "{currentSignoffs.centre_head?.remarks || 'Dossier and physical records verified.'}"
+              <div><strong>Decision:</strong> {statusInfo.chStage.decision}</div>
+              <div><strong>Reviewer:</strong> {statusInfo.chStage.reviewer}</div>
+              <div><strong>Date:</strong> {statusInfo.chStage.date}</div>
+              {statusInfo.chStage.return_reason && (
+                <div style={{ color: '#92400E', fontSize: '10.5px', marginTop: '2px' }}>
+                  <strong>Return Reason:</strong> "{statusInfo.chStage.return_reason}"
+                </div>
+              )}
+              {statusInfo.chStage.rejection_reason && (
+                <div style={{ color: '#B91C1C', fontSize: '10.5px', marginTop: '2px' }}>
+                  <strong>Rejection Reason:</strong> "{statusInfo.chStage.rejection_reason}"
+                </div>
+              )}
+              <div style={{ fontStyle: 'italic', color: '#64748B', marginTop: '4px' }}>
+                "{statusInfo.chStage.remarks}"
               </div>
             </div>
             <div className="cpass-signoff-line">Signature of Centre Head</div>
           </div>
 
-          {/* COPS Team */}
+          {/* COPS Audit (COPS) */}
           <div className="cpass-signoff-box">
-            <div className="cpass-signoff-box-title">COPS Team Audit</div>
+            <div className="cpass-signoff-box-header">
+              <div className="cpass-signoff-box-title">COPS Audit (COPS)</div>
+              <span className={`cpass-status-badge ${statusInfo.copsStage.badgeClass}`}>
+                {statusInfo.copsStage.label}
+              </span>
+            </div>
             <div className="cpass-signoff-details">
-              <div><strong>Name:</strong> {currentSignoffs.cops_team?.name || '—'}</div>
-              <div><strong>Date:</strong> {currentSignoffs.cops_team?.date || '—'}</div>
-              <div>
-                <strong>Status:</strong>{' '}
-                <span style={{ color: (currentSignoffs.cops_team?.confirmed || currentSignoffs.cops_team?.verified) ? '#166534' : '#6B7280', fontWeight: 600 }}>
-                  {(currentSignoffs.cops_team?.confirmed || currentSignoffs.cops_team?.verified) ? 'Verified & Validated' : 'Pending'}
-                </span>
-              </div>
-              <div style={{ fontStyle: 'italic', color: '#6B7280', marginTop: '4px' }}>
-                "{currentSignoffs.cops_team?.remarks || 'Document criteria and salary credits audited.'}"
+              <div><strong>Decision:</strong> {statusInfo.copsStage.decision}</div>
+              <div><strong>Reviewer:</strong> {statusInfo.copsStage.reviewer}</div>
+              <div><strong>Date:</strong> {statusInfo.copsStage.date}</div>
+              {statusInfo.copsStage.rejection_reason && (
+                <div style={{ color: '#B91C1C', fontSize: '10.5px', marginTop: '2px' }}>
+                  <strong>Rejection Reason:</strong> "{statusInfo.copsStage.rejection_reason}"
+                </div>
+              )}
+              <div style={{ fontStyle: 'italic', color: '#64748B', marginTop: '4px' }}>
+                "{statusInfo.copsStage.remarks}"
               </div>
             </div>
             <div className="cpass-signoff-line">Signature of COPS Auditor</div>
           </div>
 
-          {/* Business Leader */}
+          {/* Business Leader (BL) */}
           <div className="cpass-signoff-box">
-            <div className="cpass-signoff-box-title">Business Leader Approval</div>
+            <div className="cpass-signoff-box-header">
+              <div className="cpass-signoff-box-title">Business Leader (BL)</div>
+              <span className={`cpass-status-badge ${statusInfo.blStage.badgeClass}`}>
+                {statusInfo.blStage.label}
+              </span>
+            </div>
             <div className="cpass-signoff-details">
-              <div><strong>Name:</strong> {currentSignoffs.business_leader?.name || '—'}</div>
-              <div><strong>Date:</strong> {currentSignoffs.business_leader?.date || '—'}</div>
-              <div>
-                <strong>Status:</strong>{' '}
-                <span style={{ color: (currentSignoffs.business_leader?.confirmed || currentSignoffs.business_leader?.approved) ? '#166534' : '#6B7280', fontWeight: 600 }}>
-                  {(currentSignoffs.business_leader?.confirmed || currentSignoffs.business_leader?.approved) ? 'Approved for Compliance' : 'Pending'}
-                </span>
-              </div>
-              <div style={{ fontStyle: 'italic', color: '#6B7280', marginTop: '4px' }}>
-                "{currentSignoffs.business_leader?.remarks || 'Placement outcome approved.'}"
+              <div><strong>Decision:</strong> {statusInfo.blStage.decision}</div>
+              <div><strong>Reviewer:</strong> {statusInfo.blStage.reviewer}</div>
+              <div><strong>Date:</strong> {statusInfo.blStage.date}</div>
+              {statusInfo.blStage.rejection_reason && (
+                <div style={{ color: '#B91C1C', fontSize: '10.5px', marginTop: '2px' }}>
+                  <strong>Rejection Reason:</strong> "{statusInfo.blStage.rejection_reason}"
+                </div>
+              )}
+              <div style={{ fontStyle: 'italic', color: '#64748B', marginTop: '4px' }}>
+                "{statusInfo.blStage.remarks}"
               </div>
             </div>
             <div className="cpass-signoff-line">Signature of Business Leader</div>
@@ -703,23 +738,23 @@ export default function PlacementAuditStatement({
     return (
       <div className="l1-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="statement-modal-title">
         <div className="l1-statement-modal-card">
-          <div className="l1-modal-header l1-no-print" style={{ padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+          <div className="l1-statement-modal-header l1-no-print">
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span style={{ fontSize: '18px' }}>📄</span>
-              <strong id="statement-modal-title" style={{ fontSize: '15px', color: '#0A2A7A' }}>
-                C-PASS Candidate Placement Audit &amp; Sign-off Statement
+              <strong id="statement-modal-title" style={{ fontSize: '14.5px', color: '#0A2A7A', fontWeight: 700 }}>
+                C-PASS Statement Preview
               </strong>
-              <span className={`l1-status-pill ${cpassStatus === 'L2_APPROVED' ? 'success' : auditStatus === 'SUBMITTED' ? 'info' : 'warning'}`}>
-                {cpassStatus === 'L2_APPROVED' ? 'L2 APPROVED' : auditStatus}
+              <span className={`cpass-status-badge ${statusInfo.overallBadgeClass}`}>
+                {statusInfo.overallStatus}
               </span>
             </div>
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               {extraHeaderActions}
               <button
                 type="button"
                 className="l1-btn-primary-action"
                 onClick={() => window.print()}
-                style={{ padding: '7px 16px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                style={{ padding: '6px 14px', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
                 <span>🖨️</span> Print / Save as PDF
               </button>
@@ -728,17 +763,18 @@ export default function PlacementAuditStatement({
                 className="l1-btn-icon-close"
                 onClick={onClose}
                 title="Close Statement"
+                aria-label="Close"
               >
                 ✕
               </button>
             </div>
           </div>
 
-          <div className="l1-statement-modal-scroll" style={{ overflowY: 'auto', flex: 1, padding: '16px' }}>
+          <div className="l1-statement-modal-scroll">
             {sheetContent}
           </div>
 
-          <div className="l1-modal-footer l1-no-print" style={{ padding: '12px 20px', background: '#F8FAFC', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+          <div className="l1-statement-modal-footer l1-no-print">
             {extraFooterActions}
             <button
               type="button"
@@ -751,6 +787,7 @@ export default function PlacementAuditStatement({
               type="button"
               className="l1-btn-primary-action"
               onClick={() => window.print()}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
             >
               <span>🖨️</span> Print / Save as PDF
             </button>
