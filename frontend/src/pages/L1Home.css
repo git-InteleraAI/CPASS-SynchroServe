@@ -3461,10 +3461,10 @@
 
 /* Consolidated Multi-Month Bank Statement Box */
 .l1-consolidated-box {
-  background: #F8FAFC;
-  border: 1.5px dashed #0284C7;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
   border-radius: 10px;
-  padding: 16px;
+  padding: 14px 16px;
   margin-bottom: 16px;
   box-sizing: border-box;
 }
@@ -3475,7 +3475,7 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .l1-consolidated-title {
@@ -3490,9 +3490,9 @@
 
 .l1-consolidated-title strong {
   display: block;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 700;
-  color: #0369A1;
+  color: #0F172A;
   letter-spacing: 0.01em;
 }
 
@@ -3511,8 +3511,8 @@
   border: 1px solid #0284C7;
   color: #0284C7;
   border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12.5px;
+  padding: 5px 12px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -3534,15 +3534,15 @@
 .l1-consolidated-note {
   font-size: 12px;
   color: #64748B;
-  margin: 0 0 14px 0;
+  margin: 0 0 12px 0;
   line-height: 1.45;
 }
 
 .l1-consolidated-modal-panel {
-  background: #FFFFFF;
+  background: #F8FAFC;
   border: 1px solid #BAE6FD;
   border-radius: 8px;
-  padding: 16px;
+  padding: 14px;
   margin-bottom: 14px;
   box-shadow: 0 2px 6px rgba(2, 132, 199, 0.06);
 }
@@ -3552,8 +3552,8 @@
   flex-wrap: wrap;
   gap: 14px;
   align-items: flex-end;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
   border-bottom: 1px dashed #E2E8F0;
 }
 
@@ -3620,7 +3620,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-top: 10px;
+  margin-bottom: 10px;
 }
 
 .l1-consolidated-doc-group:last-child {
@@ -3628,19 +3629,153 @@
 }
 
 .l1-group-label {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
-  color: #0369A1;
+  color: #475569;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
 }
 
 .l1-badge-cluster {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   margin-top: 4px;
+}
+
+/* Compact Consolidated Statement Card */
+.l1-consolidated-card {
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+
+.l1-consolidated-card.persisted {
+  border-left: 3.5px solid #16A34A;
+  background: #FAFCFA;
+}
+
+.l1-consolidated-card.replacing {
+  border-left: 3.5px solid #F59E0B;
+  background: #FFFDF9;
+}
+
+.l1-consolidated-card.staged {
+  border-left: 3.5px solid #0284C7;
+  background: #F8FAFF;
+}
+
+.l1-consolidated-card-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.l1-file-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.l1-coverage-range-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #F0FDF4;
+  color: #166534;
+  border: 1px solid #BBF7D0;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.l1-file-size-badge {
+  font-size: 11px;
+  color: #64748B;
+  font-weight: 500;
+}
+
+.l1-status-pill.saved,
+.l1-status-pill.verified {
+  background: #DCFCE7;
+  color: #15803D;
+  border: 1px solid #86EFAC;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.l1-covered-months-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px dashed #E2E8F0;
+}
+
+.l1-covered-months-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #64748B;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.l1-covered-months-pills {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.l1-month-tag {
+  display: inline-flex;
+  align-items: center;
+  background: #F8FAFC;
+  color: #334155;
+  border: 1px solid #CBD5E1;
+  border-radius: 4px;
+  padding: 1.5px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.l1-all-covered-banner {
+  padding: 10px 14px;
+  background: #F0FDF4;
+  border: 1px solid #BBF7D0;
+  border-radius: 8px;
+  color: #166534;
+  font-size: 12.5px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.l1-inline-replace-panel {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed #CBD5E1;
 }
 
 /* Document Evidence Audit Table Inputs */

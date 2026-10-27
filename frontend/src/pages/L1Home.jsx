@@ -11,6 +11,13 @@ import {
   findPreviousSalaryRecordForEmployer,
   calculateNextSalaryPeriodForEmployer
 } from '../lib/salarySequenceHelper'
+import {
+  isDocConsolidated,
+  getDocCoveredMonths,
+  getBankDocumentStatus,
+  isBankSlotVisible as isBankSlotVisibleHelper,
+  getConsolidatedCoverage as getConsolidatedCoverageHelper
+} from '../lib/bankStatementHelper'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -819,6 +826,7 @@ export default function L1Home() {
                   id: existing?.id || `sal_slot_${idx + 1}`,
                   month: s.month,
                   year: s.year,
+                  employer_id: s.employer_id,
                   file: existing?.file || null,
                   fileName: existing?.fileName || '',
                   fileSize: existing?.fileSize || 0,
@@ -835,6 +843,7 @@ export default function L1Home() {
                   id: existing?.id || `bank_slot_${idx + 1}`,
                   month: s.month,
                   year: s.year,
+                  employer_id: s.employer_id,
                   file: existing?.file || null,
                   fileName: existing?.fileName || '',
                   fileSize: existing?.fileSize || 0,
@@ -999,6 +1008,7 @@ export default function L1Home() {
         id: `sal_${slotId}`,
         month: nextMonth,
         year: nextYear,
+        employer_id: defaultEmpId,
         file: null,
         fileName: '',
         fileSize: 0,
@@ -1013,6 +1023,7 @@ export default function L1Home() {
         id: `bank_${slotId}`,
         month: nextMonth,
         year: nextYear,
+        employer_id: defaultEmpId,
         file: null,
         fileName: '',
         fileSize: 0,
@@ -1584,14 +1595,6 @@ export default function L1Home() {
   const appointmentDoc = appointmentDocs[0] || null
   const salarySlips = safeDocs.filter((d) => d.document_type === 'SALARY_SLIP')
   const bankStatements = safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT')
-  const isDocConsolidated = (d) => Boolean(
-    d &&
-    d.document_type === 'BANK_STATEMENT' &&
-    (d.is_consolidated === true ||
-     d.is_consolidated === 'true' ||
-     d.is_consolidated === 1 ||
-     (d.coverage_start_month && d.coverage_end_month && Number(d.coverage_end_month) >= Number(d.coverage_start_month)))
-  )
   const consolidatedBankDocs = safeDocs.filter((d) => isDocConsolidated(d))
   const individualBankDocs = safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT' && !isDocConsolidated(d))
   const otherDoc = safeDocs.find((d) => d.document_type === 'OTHER_DOCUMENT')
@@ -1697,89 +1700,12 @@ export default function L1Home() {
 
   // --- Consolidated Bank Statement Coverage Check ---
   function getConsolidatedCoverage(month, year, empId) {
-    const targetM = Number(month)
-    const targetY = Number(year)
-    if (!targetM || !targetY) return null
-
-    // 1. Check persisted consolidated bank statements in Drive
-    const allBankDocs = [
-      ...safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT'),
-      ...(Array.isArray(docSummary?.bank_statements) ? docSummary.bank_statements : []).filter((d) => d.document_type === 'BANK_STATEMENT'),
-    ]
-
-    for (const d of allBankDocs) {
-      if (!isDocConsolidated(d)) continue
-
-      const statusUpper = String(d.upload_status || '').toUpperCase()
-      const uploadOk = statusUpper === 'SUCCESS' || !d.upload_status || Boolean(d.drive_file_id)
-      if (!uploadOk) continue
-
-      if (!matchesEmployer(d.employer_id, empId)) continue
-
-      let covered = false
-      let coveredList = d.covered_months
-      if (typeof coveredList === 'string') {
-        try {
-          coveredList = JSON.parse(coveredList)
-        } catch (_) {
-          coveredList = []
-        }
-      }
-      if (Array.isArray(coveredList) && coveredList.length > 0) {
-        covered = coveredList.some(
-          (cm) => Number(cm.month) === targetM && (!cm.year || Number(cm.year) === targetY)
-        )
-      }
-      if (!covered) {
-        const startM = Number(d.coverage_start_month || d.reporting_month || 1)
-        const startY = Number(d.coverage_start_year || d.reporting_year || targetY)
-        const endM = Number(d.coverage_end_month || d.reporting_month || startM)
-        const endY = Number(d.coverage_end_year || d.reporting_year || startY)
-        const sVal = startY * 12 + startM
-        const eVal = endY * 12 + endM
-        const cVal = targetY * 12 + targetM
-        covered = cVal >= sVal && cVal <= eVal
-      }
-
-      if (covered) {
-        const startM = Number(d.coverage_start_month || d.reporting_month || 1)
-        const startY = Number(d.coverage_start_year || d.reporting_year || targetY)
-        const endM = Number(d.coverage_end_month || d.reporting_month || startM)
-        const endY = Number(d.coverage_end_year || d.reporting_year || startY)
-        return {
-          persisted: true,
-          doc: d,
-          fileName: d.file_name,
-          periodText: `${MONTH_NAMES[startM - 1]} ${startY} – ${MONTH_NAMES[endM - 1]} ${endY}`,
-        }
-      }
-    }
-
-    // 2. Check locally staged consolidated bank statements
-    for (const c of stagedConsolidatedBankDocs) {
-      if (c.file && matchesEmployer(c.employer_id, empId)) {
-        let covered = false
-        if (c.covered_months && Array.isArray(c.covered_months) && c.covered_months.length > 0) {
-          covered = c.covered_months.some(
-            (cm) => Number(cm.month) === targetM && (!cm.year || Number(cm.year) === targetY)
-          )
-        }
-        if (!covered) {
-          const sVal = Number(c.coverage_start_year) * 12 + Number(c.coverage_start_month)
-          const eVal = Number(c.coverage_end_year) * 12 + Number(c.coverage_end_month)
-          const cVal = targetY * 12 + targetM
-          covered = cVal >= sVal && cVal <= eVal
-        }
-        if (covered) {
-          return {
-            persisted: false,
-            fileName: c.fileName,
-            periodText: `${MONTH_NAMES[Number(c.coverage_start_month) - 1]} ${c.coverage_start_year} – ${MONTH_NAMES[Number(c.coverage_end_month) - 1]} ${c.coverage_end_year}`,
-          }
-        }
-      }
-    }
-    return null
+    return getConsolidatedCoverageHelper(month, year, empId, {
+      safeDocs,
+      docSummary,
+      stagedConsolidatedBankDocs,
+      employerList,
+    })
   }
 
   // --- Unified Employer-Aware Evidence Resolver ---
@@ -2000,14 +1926,14 @@ export default function L1Home() {
   }
 
   function isBankSlotVisible(row, index) {
-    if (row.file) return true // Keep genuinely staged files visible
-    const matchedSal = salaryDetailList[index]
-    const sEmpId = matchedSal?.employer_id || employerList[0]?.id
-    const targetMonth = row.month || matchedSal?.month
-    const targetYear = row.year || matchedSal?.year
-    const ev = resolveEvidence('BANK_STATEMENT', targetMonth, targetYear, sEmpId)
-    // Redundant if already covered by persisted individual or consolidated statement
-    return ev.status !== 'PERSISTED'
+    return isBankSlotVisibleHelper(row, index, {
+      bankRows,
+      salaryDetailList,
+      employerList,
+      safeDocs,
+      stagedConsolidatedBankDocs,
+      docSummary,
+    })
   }
 
   function handleSelectOtherDoc(file) {
@@ -2101,13 +2027,21 @@ export default function L1Home() {
   function handleSelectReplacement(doc, file) {
     if (!file) return
     const err = validateFile(file)
+    const isConsol = Boolean(isDocConsolidated(doc))
     const payload = {
       file,
       fileName: file.name,
       fileSize: file.size,
-      month: doc.reporting_month,
-      year: doc.reporting_year,
+      month: doc.reporting_month || doc.coverage_start_month || 1,
+      year: doc.reporting_year || doc.coverage_start_year || currentYear,
       replaceId: doc.id,
+      employer_id: doc.employer_id,
+      is_consolidated: isConsol,
+      coverage_start_month: doc.coverage_start_month || doc.reporting_month || null,
+      coverage_start_year: doc.coverage_start_year || doc.reporting_year || null,
+      coverage_end_month: doc.coverage_end_month || doc.reporting_month || null,
+      coverage_end_year: doc.coverage_end_year || doc.reporting_year || null,
+      covered_months: doc.covered_months || null,
       error: err || '',
     }
     if (doc.document_type === 'SALARY_SLIP') {
@@ -2153,13 +2087,15 @@ export default function L1Home() {
     const stagedBankMonths = new Set()
     for (const item of stagedBankEntries) {
       if (item.error) {
-        return `Bank statement error for ${MONTH_NAMES[item.month - 1]} ${item.year}: ${item.error}`
+        return `Bank statement error for ${MONTH_NAMES[(item.month || 1) - 1]} ${item.year}: ${item.error}`
       }
-      const key = `${item.year}-${item.month}`
-      if (stagedBankMonths.has(key)) {
-        return `Duplicate reporting period selected for Bank Statements: ${MONTH_NAMES[item.month - 1]} ${item.year}.`
+      if (!item.replaceId && !item.is_consolidated) {
+        const key = `${item.year}-${item.month}`
+        if (stagedBankMonths.has(key)) {
+          return `Duplicate reporting period selected for Bank Statements: ${MONTH_NAMES[(item.month || 1) - 1]} ${item.year}.`
+        }
+        stagedBankMonths.add(key)
       }
-      stagedBankMonths.add(key)
     }
 
     const stagedApptEntries = Object.entries(stagedAppointments).filter(([_, v]) => v?.file)
@@ -2271,12 +2207,18 @@ export default function L1Home() {
       for (const [replaceId, repl] of Object.entries(stagedBankReplacements)) {
         if (repl.file) {
           const origDoc = bankStatements.find((d) => d.id === replaceId)
+          const isConsol = Boolean(repl.is_consolidated ?? isDocConsolidated(origDoc))
           formData.append('bank_statements', repl.file)
           bankMeta.push({
-            month: Number(repl.month),
-            year: Number(repl.year),
-            employer_id: origDoc?.employer_id || employerList[0]?.id || null,
-            is_consolidated: false,
+            month: Number(repl.month || origDoc?.coverage_start_month || origDoc?.reporting_month || 1),
+            year: Number(repl.year || origDoc?.coverage_start_year || origDoc?.reporting_year || currentYear),
+            employer_id: repl.employer_id || origDoc?.employer_id || employerList[0]?.id || null,
+            is_consolidated: isConsol,
+            coverage_start_month: isConsol ? Number(repl.coverage_start_month || origDoc?.coverage_start_month || origDoc?.reporting_month || repl.month) : null,
+            coverage_start_year: isConsol ? Number(repl.coverage_start_year || origDoc?.coverage_start_year || origDoc?.reporting_year || repl.year) : null,
+            coverage_end_month: isConsol ? Number(repl.coverage_end_month || origDoc?.coverage_end_month || origDoc?.reporting_month || repl.month) : null,
+            coverage_end_year: isConsol ? Number(repl.coverage_end_year || origDoc?.coverage_end_year || origDoc?.reporting_year || repl.year) : null,
+            covered_months: isConsol ? (repl.covered_months || origDoc?.covered_months || null) : null,
             replace_id: replaceId,
           })
         }
@@ -4346,9 +4288,9 @@ export default function L1Home() {
 
                     {/* Display Persisted Consolidated Statements */}
                     {consolidatedBankDocs.length > 0 && (
-                      <div className="l1-consolidated-doc-group">
-                        <span className="l1-group-label">
-                          Persisted Consolidated Statements ({consolidatedBankDocs.length})
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Consolidated Statement{consolidatedBankDocs.length > 1 ? `s (${consolidatedBankDocs.length})` : ''}
                         </span>
                         {consolidatedBankDocs.map((doc) => {
                           const empObj = employerList.find((e) => e.id === doc.employer_id)
@@ -4356,37 +4298,84 @@ export default function L1Home() {
                           const startY = doc.coverage_start_year || doc.reporting_year
                           const endM = doc.coverage_end_month || doc.reporting_month
                           const endY = doc.coverage_end_year || doc.reporting_year
+                          const statusObj = getBankDocumentStatus(doc)
+                          const coveredMonths = getDocCoveredMonths(doc)
+                          const isReplacing = activeReplaceIds.has(doc.id)
+                          const stagedRepl = stagedBankReplacements[doc.id]
+
                           return (
-                            <div key={doc.id} className="l1-doc-item-card persisted">
-                              <div className="l1-doc-item-row">
-                                <div className="l1-file-info">
-                                  <div className="l1-file-icon-box">📑</div>
-                                  <div className="l1-file-details">
-                                    <span className="title">{doc.file_name}</span>
-                                    <div className="l1-badge-cluster">
+                            <div key={doc.id} className={`l1-consolidated-card persisted ${isReplacing ? 'replacing' : ''}`}>
+                              <div className="l1-consolidated-header">
+                                <div className="l1-consolidated-file-info">
+                                  <div className="l1-consolidated-icon">📑</div>
+                                  <div className="l1-consolidated-meta">
+                                    <span className="l1-consolidated-filename" title={doc.file_name}>{doc.file_name}</span>
+                                    <div className="l1-consolidated-submeta">
                                       {empObj && (
                                         <span className="l1-emp-badge" title={empObj.employer_name}>
                                           🏢 {empObj.employer_name}
                                         </span>
                                       )}
-                                      <span className="l1-coverage-badge persisted">
-                                        📅 Covers {MONTH_NAMES[startM - 1]} {startY} – {MONTH_NAMES[endM - 1]} {endY}
+                                      {doc.file_size_bytes && (
+                                        <span>{formatFileSize(doc.file_size_bytes)}</span>
+                                      )}
+                                      <span>
+                                        📅 Coverage: {MONTH_NAMES[(startM || 1) - 1]} {startY} – {MONTH_NAMES[(endM || 1) - 1]} {endY}
                                       </span>
-                                      <span className="l1-status-pill success" style={{ fontSize: '11px', padding: '2px 8px' }}>
-                                        ✓ Verified in Drive
+                                      <span className={`l1-status-pill ${statusObj.className}`}>
+                                        ✓ {statusObj.label}
                                       </span>
                                     </div>
                                   </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  className="l1-btn-outline"
-                                  onClick={() => handleDownloadFile(doc.id, doc.file_name)}
-                                  disabled={downloadingDocId === doc.id}
-                                >
-                                  {downloadingDocId === doc.id ? 'Downloading…' : 'Download / Preview'}
-                                </button>
+
+                                <div className="l1-btn-group">
+                                  <button
+                                    type="button"
+                                    className="l1-btn-outline"
+                                    onClick={() => handleDownloadFile(doc.id, doc.file_name)}
+                                    disabled={downloadingDocId === doc.id}
+                                    title="Download or view statement"
+                                  >
+                                    {downloadingDocId === doc.id ? 'Downloading…' : 'View / Preview'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="l1-btn-secondary"
+                                    onClick={() => toggleReplaceMode(doc.id)}
+                                  >
+                                    {isReplacing ? 'Cancel' : 'Replace'}
+                                  </button>
+                                </div>
                               </div>
+
+                              {coveredMonths.length > 0 && (
+                                <div className="l1-month-tags-row">
+                                  <span className="l1-month-tags-label">Covered months:</span>
+                                  {coveredMonths.map((m) => (
+                                    <span key={`${m.year}-${m.month}`} className="l1-month-tag persisted">
+                                      ✓ {m.label}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Inline Staged Replacement for Consolidated Statement */}
+                              {isReplacing && (
+                                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed var(--line)' }}>
+                                  <FileUploadControl
+                                    file={stagedRepl?.file}
+                                    fileName={stagedRepl?.fileName}
+                                    fileSize={stagedRepl?.fileSize}
+                                    error={stagedRepl?.error}
+                                    label={`Attach Replacement Consolidated Statement (${MONTH_NAMES[(startM || 1) - 1]} ${startY} – ${MONTH_NAMES[(endM || 1) - 1]} ${endY})`}
+                                    stagedLabel="Staged Replacement"
+                                    helperText="Replacing preserves document ID, employer association, coverage metadata, and audit history."
+                                    onSelect={(file) => handleSelectReplacement(doc, file)}
+                                    onRemove={() => toggleReplaceMode(doc.id)}
+                                  />
+                                </div>
+                              )}
                             </div>
                           )
                         })}
@@ -4395,34 +4384,37 @@ export default function L1Home() {
 
                     {/* Display Locally Staged Consolidated Statements */}
                     {stagedConsolidatedBankDocs.length > 0 && (
-                      <div className="l1-consolidated-doc-group">
-                        <span className="l1-group-label">
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                           Staged Consolidated Statements ({stagedConsolidatedBankDocs.length})
                         </span>
                         {stagedConsolidatedBankDocs.map((c) => {
                           const empObj = employerList.find((e) => e.id === c.employer_id)
+                          const coveredMonths = getDocCoveredMonths(c)
                           return (
-                            <div key={c.id} className="l1-doc-item-card staged">
-                              <div className="l1-doc-item-row">
-                                <div className="l1-file-info">
-                                  <div className="l1-file-icon-box">📑</div>
-                                  <div className="l1-file-details">
-                                    <span className="title">{c.fileName}</span>
-                                    <div className="l1-badge-cluster">
+                            <div key={c.id} className="l1-consolidated-card staged">
+                              <div className="l1-consolidated-header">
+                                <div className="l1-consolidated-file-info">
+                                  <div className="l1-consolidated-icon" style={{ color: '#0284c7', background: '#e0f2fe' }}>📑</div>
+                                  <div className="l1-consolidated-meta">
+                                    <span className="l1-consolidated-filename" title={c.fileName}>{c.fileName}</span>
+                                    <div className="l1-consolidated-submeta">
                                       {empObj && (
                                         <span className="l1-emp-badge" title={empObj.employer_name}>
                                           🏢 {empObj.employer_name}
                                         </span>
                                       )}
-                                      <span className="l1-coverage-badge">
-                                        📅 Covers {MONTH_NAMES[c.coverage_start_month - 1]} {c.coverage_start_year} – {MONTH_NAMES[c.coverage_end_month - 1]} {c.coverage_end_year}
+                                      {c.fileSize && <span>{formatFileSize(c.fileSize)}</span>}
+                                      <span>
+                                        📅 Coverage: {MONTH_NAMES[(c.coverage_start_month || 1) - 1]} {c.coverage_start_year} – {MONTH_NAMES[(c.coverage_end_month || 1) - 1]} {c.coverage_end_year}
                                       </span>
-                                      <span className="l1-status-pill info" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                      <span className="l1-status-pill info">
                                         ⏳ Staged (Pending Submit)
                                       </span>
                                     </div>
                                   </div>
                                 </div>
+
                                 <button
                                   type="button"
                                   className="l1-btn-danger-ghost"
@@ -4431,6 +4423,17 @@ export default function L1Home() {
                                   ✕ Remove
                                 </button>
                               </div>
+
+                              {coveredMonths.length > 0 && (
+                                <div className="l1-month-tags-row">
+                                  <span className="l1-month-tags-label">Covered months:</span>
+                                  {coveredMonths.map((m) => (
+                                    <span key={`${m.year}-${m.month}`} className="l1-month-tag">
+                                      {m.label}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           )
                         })}
@@ -4440,7 +4443,7 @@ export default function L1Home() {
 
                   {/* Persisted Monthly Bank Statements */}
                   {individualBankDocs.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
                       <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                         Persisted Monthly Bank Statements ({individualBankDocs.length})
                       </span>
@@ -4448,6 +4451,7 @@ export default function L1Home() {
                         const isReplacing = activeReplaceIds.has(doc.id)
                         const stagedRepl = stagedBankReplacements[doc.id]
                         const empObj = employerList.find((e) => e.id === doc.employer_id)
+                        const statusObj = getBankDocumentStatus(doc)
 
                         return (
                           <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
@@ -4456,11 +4460,11 @@ export default function L1Home() {
                                 <div className="l1-file-icon-box">▤</div>
                                 <div className="l1-file-details">
                                   <span className="title">
-                                    {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
+                                    {MONTH_NAMES[(doc.reporting_month || 1) - 1]} {doc.reporting_year} — {doc.file_name}
                                   </span>
                                   <span className="meta">
                                     {empObj && <span className="l1-emp-badge" style={{ marginRight: '6px' }}>🏢 {empObj.employer_name}</span>}
-                                    Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
+                                    Size: {formatFileSize(doc.file_size_bytes)} · <span className={`l1-status-pill ${statusObj.className}`} style={{ fontSize: '11px', padding: '1px 6px' }}>✓ {statusObj.label}</span>
                                   </span>
                                 </div>
                               </div>
@@ -4471,14 +4475,14 @@ export default function L1Home() {
                                   onClick={() => handleDownloadFile(doc.id, doc.file_name)}
                                   disabled={downloadingDocId === doc.id}
                                 >
-                                  {downloadingDocId === doc.id ? 'Downloading…' : 'Download / Preview'}
+                                  {downloadingDocId === doc.id ? 'Downloading…' : 'View / Preview'}
                                 </button>
                                 <button
                                   type="button"
                                   className="l1-btn-secondary"
                                   onClick={() => toggleReplaceMode(doc.id)}
                                 >
-                                  {isReplacing ? 'Cancel Replacement' : 'Replace'}
+                                  {isReplacing ? 'Cancel' : 'Replace'}
                                 </button>
                               </div>
                             </div>
@@ -4491,7 +4495,7 @@ export default function L1Home() {
                                   fileName={stagedRepl?.fileName}
                                   fileSize={stagedRepl?.fileSize}
                                   error={stagedRepl?.error}
-                                  label={`Attach Replacement for ${MONTH_NAMES[doc.reporting_month - 1]} ${doc.reporting_year}`}
+                                  label={`Attach Replacement for ${MONTH_NAMES[(doc.reporting_month || 1) - 1]} ${doc.reporting_year}`}
                                   stagedLabel="Staged Replacement"
                                   onSelect={(file) => handleSelectReplacement(doc, file)}
                                   onRemove={() => toggleReplaceMode(doc.id)}
@@ -4509,9 +4513,11 @@ export default function L1Home() {
                     const visibleBankRows = bankRows.filter((r, idx) => isBankSlotVisible(r, idx))
                     return (
                       <div style={{ marginTop: '8px' }}>
-                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
-                          Pending / Staged Monthly Slots ({visibleBankRows.length})
-                        </span>
+                        {visibleBankRows.length > 0 && (
+                          <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                            Pending / Staged Monthly Slots ({visibleBankRows.length})
+                          </span>
+                        )}
 
                         {visibleBankRows.length > 0 ? (
                           visibleBankRows.map((row) => {
@@ -4519,7 +4525,6 @@ export default function L1Home() {
                             const matchedSal = salaryDetailList[index >= 0 ? index : 0]
                             const sEmpId = matchedSal?.employer_id || employerList[0]?.id
                             const matchedEmp = employerList.find((e) => e.id === sEmpId) || employerList[0]
-                            const coverageInfo = getConsolidatedCoverage(row.month, row.year, sEmpId)
                             const empSeq = matchedSal ? getEmployerSalarySequence(matchedSal, salaryDetailList) : (index + 1)
 
                             return (
@@ -4560,26 +4565,20 @@ export default function L1Home() {
                                     fileName={row.fileName}
                                     fileSize={row.fileSize}
                                     error={row.error}
-                                    label={`Attach Bank Statement (${MONTH_NAMES[row.month - 1]} ${row.year})`}
+                                    label={`Attach Bank Statement (${MONTH_NAMES[(row.month || 1) - 1]} ${row.year})`}
                                     helperText="PDF, PNG, JPG (up to 10MB)"
                                     stagedLabel="Staged (Pending Submit)"
                                     onSelect={(file) => updateRowField('BANK', row.id, 'file', file)}
                                     onRemove={() => updateRowField('BANK', row.id, 'file', null)}
                                   />
-
-                                  {coverageInfo && (
-                                    <div className={`l1-coverage-badge ${coverageInfo.persisted ? 'persisted' : ''}`}>
-                                      <span>✓ Covered by Consolidated Statement: <strong>{coverageInfo.fileName}</strong> ({coverageInfo.periodText})</span>
-                                    </div>
-                                  )}
                                 </div>
                               </div>
                             )
                           })
                         ) : (
-                          <div style={{ padding: '12px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', color: '#166534', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                          <div className="l1-all-covered-banner">
                             <span>✓</span>
-                            <span>All current reporting months have verified bank statement coverage persisted in Drive. Use the action below to add the next month if required.</span>
+                            <span>All current reporting months have bank statement coverage saved.</span>
                           </div>
                         )}
 
@@ -5249,7 +5248,7 @@ export default function L1Home() {
                     ))}
                     {Object.entries(stagedBankReplacements).filter(([, r]) => r.file).map(([id, r]) => (
                       <div key={id} style={{ padding: '6px 12px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '8px', fontSize: '13px' }}>
-                        🔄 Replacement for <strong>{MONTH_NAMES[r.month - 1]} {r.year}:</strong> {r.fileName} ({formatFileSize(r.fileSize)})
+                        🔄 Replacement {r.is_consolidated ? 'Consolidated Statement' : `for ${MONTH_NAMES[(r.month || 1) - 1]} ${r.year}`}: <strong>{r.fileName}</strong> ({formatFileSize(r.fileSize)})
                       </div>
                     ))}
                   </div>
