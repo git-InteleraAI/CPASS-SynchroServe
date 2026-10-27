@@ -4,11 +4,12 @@ import './PlacementAuditStatement.css'
 
 import { getApprovalStatusDetails } from './approvalStatusHelper.js'
 export { getApprovalStatusDetails }
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-]
+import {
+  MONTH_NAMES,
+  getEmployerSalarySequence,
+  formatEmployerSalaryLabel,
+  normalizeEmployerId
+} from '../lib/salarySequenceHelper'
 
 export default function PlacementAuditStatement({
   statementData,
@@ -79,64 +80,201 @@ export default function PlacementAuditStatement({
 
   // Document evidence rows
   const docList = statementData.documents || statementData.uploaded_documents || []
-  const evidenceRows = statementData.document_evidence || [
-    {
-      code: 'AL / OL',
-      label: 'Appointment / Offer Letter',
-      key: 'appointment_letter',
-      fallbackDoc: docList.find(d => d.document_type === 'APPOINTMENT_LETTER' && d.upload_status === 'SUCCESS'),
-    },
-    {
-      code: 'PS 1',
-      label: currentSalaries[0]?.month ? `Salary Pay Slip — ${MONTH_NAMES[currentSalaries[0].month - 1]} ${currentSalaries[0].year || ''}` : 'Salary Pay Slip — Month 1',
-      key: 'salary_slip_1',
-      fallbackDoc: docList.find(d => d.document_type === 'SALARY_SLIP' && d.upload_status === 'SUCCESS' && (currentSalaries[0] ? (d.reporting_year === currentSalaries[0].year && d.reporting_month === currentSalaries[0].month) : d.reporting_month === 1)),
-    },
-    {
-      code: 'PS 2',
-      label: currentSalaries[1]?.month ? `Salary Pay Slip — ${MONTH_NAMES[currentSalaries[1].month - 1]} ${currentSalaries[1].year || ''}` : 'Salary Pay Slip — Month 2',
-      key: 'salary_slip_2',
-      fallbackDoc: docList.find(d => d.document_type === 'SALARY_SLIP' && d.upload_status === 'SUCCESS' && (currentSalaries[1] ? (d.reporting_year === currentSalaries[1].year && d.reporting_month === currentSalaries[1].month) : d.reporting_month === 2)),
-    },
-    {
-      code: 'PS 3',
-      label: currentSalaries[2]?.month ? `Salary Pay Slip — ${MONTH_NAMES[currentSalaries[2].month - 1]} ${currentSalaries[2].year || ''}` : 'Salary Pay Slip — Month 3',
-      key: 'salary_slip_3',
-      fallbackDoc: docList.find(d => d.document_type === 'SALARY_SLIP' && d.upload_status === 'SUCCESS' && (currentSalaries[2] ? (d.reporting_year === currentSalaries[2].year && d.reporting_month === currentSalaries[2].month) : d.reporting_month === 3)),
-    },
-    {
-      code: 'BS 1',
-      label: currentSalaries[0]?.month ? `Bank Statement / Passbook — ${MONTH_NAMES[currentSalaries[0].month - 1]} ${currentSalaries[0].year || ''}` : 'Bank Statement / Passbook — Month 1',
-      key: 'bank_statement_1',
-      fallbackDoc: docList.find(d => d.document_type === 'BANK_STATEMENT' && d.upload_status === 'SUCCESS' && (currentSalaries[0] ? (d.reporting_year === currentSalaries[0].year && d.reporting_month === currentSalaries[0].month) : d.reporting_month === 1)),
-    },
-    {
-      code: 'BS 2',
-      label: currentSalaries[1]?.month ? `Bank Statement / Passbook — ${MONTH_NAMES[currentSalaries[1].month - 1]} ${currentSalaries[1].year || ''}` : 'Bank Statement / Passbook — Month 2',
-      key: 'bank_statement_2',
-      fallbackDoc: docList.find(d => d.document_type === 'BANK_STATEMENT' && d.upload_status === 'SUCCESS' && (currentSalaries[1] ? (d.reporting_year === currentSalaries[1].year && d.reporting_month === currentSalaries[1].month) : d.reporting_month === 2)),
-    },
-    {
-      code: 'BS 3',
-      label: currentSalaries[2]?.month ? `Bank Statement / Passbook — ${MONTH_NAMES[currentSalaries[2].month - 1]} ${currentSalaries[2].year || ''}` : 'Bank Statement / Passbook — Month 3',
-      key: 'bank_statement_3',
-      fallbackDoc: docList.find(d => d.document_type === 'BANK_STATEMENT' && d.upload_status === 'SUCCESS' && (currentSalaries[2] ? (d.reporting_year === currentSalaries[2].year && d.reporting_month === currentSalaries[2].month) : d.reporting_month === 3)),
-    },
-    {
-      code: 'OD',
-      label: 'Other Document (Optional)',
-      key: 'other_document',
-      fallbackDoc: docList.find(d => d.document_type === 'OTHER_DOCUMENT' && d.upload_status === 'SUCCESS'),
-    },
-  ].map(item => ({
-    code: item.code,
-    key: item.key,
-    label: item.fallbackDoc?.document_title ? `Other Document — ${item.fallbackDoc.document_title}` : item.label,
-    available: item.fallbackDoc ? 'Yes' : 'Pending',
-    compliance: item.fallbackDoc ? 'Compliant' : 'Under Verification',
-    repository_status: item.fallbackDoc ? `Stored in Drive: ${item.fallbackDoc.file_name}` : (item.code === 'OD' ? 'Optional document not provided' : 'No verified file in database'),
-    observations: item.fallbackDoc ? 'Verified during placement audit' : (item.code === 'OD' ? 'Optional supporting document' : 'Pending upload and verification'),
-  }))
+
+  const getCanonicalEmployerId = (empId) => {
+    if (!empId) return currentEmployers[0]?.id || ''
+    const s = String(empId).trim()
+    const direct = currentEmployers.find((e) => String(e.id).trim() === s)
+    if (direct) return String(direct.id).trim()
+    const norm = s.startsWith('emp_') ? s.slice(4) : s
+    const idx = parseInt(norm, 10)
+    if (!isNaN(idx) && idx >= 1 && idx <= currentEmployers.length) {
+      return String(currentEmployers[idx - 1]?.id).trim()
+    }
+    if (currentEmployers.length <= 1 && currentEmployers[0]) {
+      return String(currentEmployers[0].id).trim()
+    }
+    return s
+  }
+
+  const matchesEmployer = (docEmpId, targetEmpId) => {
+    if (currentEmployers.length <= 1) return true
+    if (!docEmpId || !targetEmpId) return true
+    const canDoc = getCanonicalEmployerId(docEmpId)
+    const canTarget = getCanonicalEmployerId(targetEmpId)
+    if (canDoc && canTarget) return canDoc === canTarget
+    return String(docEmpId).trim() === String(targetEmpId).trim()
+  }
+
+  const evidenceRows = statementData.document_evidence || (currentSalaries.length > 0
+    ? [
+        {
+          code: 'AL / OL',
+          label: 'Appointment / Offer Letter',
+          key: 'appointment_letter',
+          fallbackDoc: docList.find(d => d.document_type === 'APPOINTMENT_LETTER' && d.upload_status === 'SUCCESS'),
+        },
+        ...currentSalaries.map((sal, idx) => {
+          const empSeq = getEmployerSalarySequence(sal, currentSalaries)
+          const empObj = currentEmployers.find(e => e.id === sal.employer_id) || currentEmployers[0]
+          const empPrefix = currentEmployers.length > 1 ? `${empObj?.employer_name || 'Employer'} • ` : ''
+          const mName = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+          return {
+            code: `PS ${empSeq}`,
+            label: `Salary Pay Slip — ${empPrefix}Month ${empSeq} (${mName} ${sal.year || ''})`,
+            key: `salary_slip_${idx + 1}`,
+            fallbackDoc: docList.find(d =>
+              d.document_type === 'SALARY_SLIP' &&
+              d.upload_status === 'SUCCESS' &&
+              (Number(d.reporting_year) === Number(sal.year) && Number(d.reporting_month) === Number(sal.month)) &&
+              matchesEmployer(d.employer_id, sal.employer_id)
+            ),
+          }
+        }),
+        ...currentSalaries.map((sal, idx) => {
+          const empSeq = getEmployerSalarySequence(sal, currentSalaries)
+          const empObj = currentEmployers.find(e => e.id === sal.employer_id) || currentEmployers[0]
+          const empPrefix = currentEmployers.length > 1 ? `${empObj?.employer_name || 'Employer'} • ` : ''
+          const mName = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+          const sMonth = Number(sal.month)
+          const sYear = Number(sal.year)
+          const bankDoc = docList.find(d => {
+            if (d.document_type !== 'BANK_STATEMENT') return false
+            const stUpper = String(d.upload_status || '').toUpperCase()
+            if (stUpper !== 'SUCCESS' && d.upload_status && !d.drive_file_id) return false
+            if (!matchesEmployer(d.employer_id, sal.employer_id)) return false
+            const isConsol = Boolean(
+              d.is_consolidated === true ||
+              d.is_consolidated === 'true' ||
+              d.is_consolidated === 1 ||
+              (d.coverage_start_month && d.coverage_end_month && Number(d.coverage_end_month) >= Number(d.coverage_start_month))
+            )
+            if (isConsol) {
+              let covList = d.covered_months
+              if (typeof covList === 'string') {
+                try { covList = JSON.parse(covList) } catch (_) { covList = [] }
+              }
+              if (Array.isArray(covList) && covList.length > 0) {
+                return covList.some(cm => Number(cm.month) === sMonth && (!cm.year || Number(cm.year) === sYear))
+              }
+              const s = (Number(d.coverage_start_year || d.reporting_year || sYear) * 12) + Number(d.coverage_start_month || d.reporting_month || 1)
+              const e = (Number(d.coverage_end_year || d.reporting_year || sYear) * 12) + Number(d.coverage_end_month || d.reporting_month || 1)
+              const c = (sYear * 12) + sMonth
+              return c >= s && c <= e
+            }
+            return Number(d.reporting_year) === sYear && Number(d.reporting_month) === sMonth
+          })
+          const isConsol = Boolean(
+            bankDoc?.is_consolidated === true ||
+            bankDoc?.is_consolidated === 'true' ||
+            bankDoc?.is_consolidated === 1 ||
+            (bankDoc?.coverage_start_month && bankDoc?.coverage_end_month && Number(bankDoc.coverage_end_month) >= Number(bankDoc.coverage_start_month))
+          )
+          const startM = Number(bankDoc?.coverage_start_month || bankDoc?.reporting_month || 1)
+          const startY = Number(bankDoc?.coverage_start_year || bankDoc?.reporting_year || sYear)
+          const endM = Number(bankDoc?.coverage_end_month || bankDoc?.reporting_month || startM)
+          const endY = Number(bankDoc?.coverage_end_year || bankDoc?.reporting_year || startY)
+          const consolSuffix = isConsol ? ' (Consolidated Statement)' : ''
+          return {
+            code: `BS ${empSeq}`,
+            label: `Bank Statement / Passbook — ${empPrefix}Month ${empSeq} (${mName} ${sal.year || ''})${consolSuffix}`,
+            key: `bank_statement_${idx + 1}`,
+            fallbackDoc: bankDoc,
+            isConsolidated: isConsol,
+            coverageText: isConsol ? `${MONTH_NAMES[startM - 1]} ${startY} – ${MONTH_NAMES[endM - 1]} ${endY}` : '',
+          }
+        }),
+        {
+          code: 'OD',
+          label: 'Other Document (Optional)',
+          key: 'other_document',
+          fallbackDoc: docList.find(d => d.document_type === 'OTHER_DOCUMENT' && d.upload_status === 'SUCCESS'),
+        },
+      ]
+    : [
+        {
+          code: 'AL / OL',
+          label: 'Appointment / Offer Letter',
+          key: 'appointment_letter',
+          fallbackDoc: docList.find(d => d.document_type === 'APPOINTMENT_LETTER' && d.upload_status === 'SUCCESS'),
+        },
+        {
+          code: 'PS 1',
+          label: 'Salary Pay Slip — Month 1',
+          key: 'salary_slip_1',
+          fallbackDoc: docList.find(d => d.document_type === 'SALARY_SLIP' && d.upload_status === 'SUCCESS' && d.reporting_month === 1),
+        },
+        {
+          code: 'PS 2',
+          label: 'Salary Pay Slip — Month 2',
+          key: 'salary_slip_2',
+          fallbackDoc: docList.find(d => d.document_type === 'SALARY_SLIP' && d.upload_status === 'SUCCESS' && d.reporting_month === 2),
+        },
+        {
+          code: 'PS 3',
+          label: 'Salary Pay Slip — Month 3',
+          key: 'salary_slip_3',
+          fallbackDoc: docList.find(d => d.document_type === 'SALARY_SLIP' && d.upload_status === 'SUCCESS' && d.reporting_month === 3),
+        },
+        ...[1, 2, 3].map((mIdx) => {
+          const bankDoc = docList.find(d => {
+            if (d.document_type !== 'BANK_STATEMENT') return false
+            const stUpper = String(d.upload_status || '').toUpperCase()
+            if (stUpper !== 'SUCCESS' && d.upload_status && !d.drive_file_id) return false
+            const isConsol = Boolean(
+              d.is_consolidated === true ||
+              d.is_consolidated === 'true' ||
+              d.is_consolidated === 1 ||
+              (d.coverage_start_month && d.coverage_end_month && Number(d.coverage_end_month) >= Number(d.coverage_start_month))
+            )
+            if (isConsol) {
+              let covList = d.covered_months
+              if (typeof covList === 'string') {
+                try { covList = JSON.parse(covList) } catch (_) { covList = [] }
+              }
+              if (Array.isArray(covList) && covList.length > 0) {
+                return covList.some(cm => Number(cm.month) === mIdx)
+              }
+              const s = Number(d.coverage_start_month || d.reporting_month || 1)
+              const e = Number(d.coverage_end_month || d.reporting_month || 12)
+              return mIdx >= s && mIdx <= e
+            }
+            return Number(d.reporting_month) === mIdx
+          })
+          const isConsol = Boolean(
+            bankDoc?.is_consolidated === true ||
+            bankDoc?.is_consolidated === 'true' ||
+            bankDoc?.is_consolidated === 1 ||
+            (bankDoc?.coverage_start_month && bankDoc?.coverage_end_month && Number(bankDoc.coverage_end_month) >= Number(bankDoc.coverage_start_month))
+          )
+          return {
+            code: `BS ${mIdx}`,
+            label: `Bank Statement / Passbook — Month ${mIdx}${isConsol ? ' (Consolidated Statement)' : ''}`,
+            key: `bank_statement_${mIdx}`,
+            fallbackDoc: bankDoc,
+            isConsolidated: isConsol,
+          }
+        }),
+        {
+          code: 'OD',
+          label: 'Other Document (Optional)',
+          key: 'other_document',
+          fallbackDoc: docList.find(d => d.document_type === 'OTHER_DOCUMENT' && d.upload_status === 'SUCCESS'),
+        },
+      ]
+  ).map(item => {
+    const isConsol = item.isConsolidated
+    const consolNote = isConsol ? ' (Consolidated Statement)' : ''
+    return {
+      code: item.code,
+      key: item.key,
+      label: item.fallbackDoc?.document_title ? `Other Document — ${item.fallbackDoc.document_title}` : item.label,
+      available: item.fallbackDoc ? 'Yes' : 'Pending',
+      compliance: item.fallbackDoc ? 'Compliant' : 'Under Verification',
+      repository_status: item.fallbackDoc ? `Stored in Drive: ${item.fallbackDoc.file_name}${consolNote}` : (item.code === 'OD' ? 'Optional document not provided' : 'No verified file in database'),
+      observations: item.fallbackDoc ? `Verified during placement audit${consolNote}` : (item.code === 'OD' ? 'Optional supporting document' : 'Pending upload and verification'),
+    }
+  })
 
   // Helper to check if a field was changed relative to L1 original submission
   const isChangedFromL1 = (section, idx, field, currentVal) => {
@@ -425,6 +563,7 @@ export default function PlacementAuditStatement({
             <thead>
               <tr>
                 <th style={{ width: '130px' }}>Reporting Month</th>
+                {currentEmployers.length > 1 && <th style={{ width: '120px' }}>Employer</th>}
                 <th style={{ width: '60px' }}>Work</th>
                 <th style={{ width: '60px' }}>Pay</th>
                 <th style={{ width: '60px' }}>Leave</th>
@@ -438,145 +577,170 @@ export default function PlacementAuditStatement({
               </tr>
             </thead>
             <tbody>
-              {currentSalaries.map((sal, idx) => (
-                <tr key={sal.id || idx}>
-                  {isEditMode ? (
-                    <>
-                      <td>
-                        <div style={{ display: 'flex', gap: '4px' }}>
-                          <select
-                            className="l1-edit-cell"
-                            value={sal.month || 1}
-                            onChange={(e) => onUpdateSalary(sal.id || idx, 'month', parseInt(e.target.value, 10))}
-                          >
-                            {MONTH_NAMES.map((m, mIdx) => (
-                              <option key={mIdx + 1} value={mIdx + 1}>{m.slice(0, 3)}</option>
-                            ))}
-                          </select>
+              {currentSalaries.map((sal, idx) => {
+                const empObj = currentEmployers.find((e) => e.id === sal.employer_id) || currentEmployers[0]
+                return (
+                  <tr key={sal.id || idx}>
+                    {isEditMode ? (
+                      <>
+                        <td>
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            <select
+                              className="l1-edit-cell"
+                              value={sal.month || 1}
+                              onChange={(e) => onUpdateSalary(sal.id || idx, 'month', parseInt(e.target.value, 10))}
+                            >
+                              {MONTH_NAMES.map((m, mIdx) => (
+                                <option key={mIdx + 1} value={mIdx + 1}>{m.slice(0, 3)}</option>
+                              ))}
+                            </select>
+                            <input
+                              type="number"
+                              className="l1-edit-cell"
+                              style={{ width: '60px' }}
+                              value={sal.year || 2026}
+                              onChange={(e) => onUpdateSalary(sal.id || idx, 'year', parseInt(e.target.value, 10))}
+                            />
+                          </div>
+                        </td>
+                        {currentEmployers.length > 1 && (
+                          <td>
+                            <select
+                              className="l1-edit-cell"
+                              value={sal.employer_id || currentEmployers[0]?.id}
+                              onChange={(e) => onUpdateSalary(sal.id || idx, 'employer_id', e.target.value)}
+                            >
+                              {currentEmployers.map((emp, eIdx) => (
+                                <option key={emp.id || eIdx} value={emp.id}>
+                                  {emp.employer_name || `Employer ${eIdx + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        <td>
                           <input
                             type="number"
+                            min="0"
+                            max="31"
                             className="l1-edit-cell"
-                            style={{ width: '60px' }}
-                            value={sal.year || 2026}
-                            onChange={(e) => onUpdateSalary(sal.id || idx, 'year', parseInt(e.target.value, 10))}
+                            value={sal.working_days ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'working_days', e.target.value ? parseInt(e.target.value, 10) : '')}
                           />
-                        </div>
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          max="31"
-                          className="l1-edit-cell"
-                          value={sal.working_days ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'working_days', e.target.value ? parseInt(e.target.value, 10) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          max="31"
-                          className="l1-edit-cell"
-                          value={sal.pay_days ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'pay_days', e.target.value ? parseInt(e.target.value, 10) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          max="31"
-                          className="l1-edit-cell"
-                          value={sal.leave_days ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'leave_days', e.target.value ? parseInt(e.target.value, 10) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="date"
-                          className="l1-edit-cell"
-                          value={sal.credit_date || ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'credit_date', e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          className="l1-edit-cell"
-                          value={sal.gross_salary ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'gross_salary', e.target.value ? parseFloat(e.target.value) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          className="l1-edit-cell"
-                          value={sal.deductions ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'deductions', e.target.value ? parseFloat(e.target.value) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          className="l1-edit-cell"
-                          value={sal.net_salary ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'net_salary', e.target.value ? parseFloat(e.target.value) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          className="l1-edit-cell"
-                          value={sal.amount_credited ?? ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'amount_credited', e.target.value ? parseFloat(e.target.value) : '')}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="text"
-                          className="l1-edit-cell"
-                          placeholder="Bank Name"
-                          value={sal.bank_name || ''}
-                          onChange={(e) => onUpdateSalary(sal.id || idx, 'bank_name', e.target.value)}
-                        />
-                      </td>
-                      {currentSalaries.length > 3 && (
-                        <td className="l1-no-print" style={{ textAlign: 'center' }}>
-                          <button
-                            type="button"
-                            onClick={() => onRemoveSalary(sal.id || idx)}
-                            title="Remove Month"
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}
-                          >
-                            🗑️
-                          </button>
                         </td>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <td><strong>{sal.month ? `${MONTH_NAMES[sal.month - 1] || sal.month} ${sal.year || ''}` : sal.reporting_month || `Month ${idx + 1}`}</strong></td>
-                      <td>{sal.working_days ?? '—'}</td>
-                      <td>{sal.pay_days ?? '—'}</td>
-                      <td>{sal.leave_days ?? '—'}</td>
-                      <td>{sal.credit_date || '—'}</td>
-                      <td>{sal.gross_salary ? `₹${Number(sal.gross_salary).toLocaleString('en-IN')}` : '₹0'}</td>
-                      <td>{sal.deductions ? `₹${Number(sal.deductions).toLocaleString('en-IN')}` : '₹0'}</td>
-                      <td><strong>{sal.net_salary ? `₹${Number(sal.net_salary).toLocaleString('en-IN')}` : '₹0'}</strong></td>
-                      <td>{sal.amount_credited ? `₹${Number(sal.amount_credited).toLocaleString('en-IN')}` : '₹0'}</td>
-                      <td>{sal.bank_name || '—'}</td>
-                    </>
-                  )}
-                </tr>
-              ))}
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            max="31"
+                            className="l1-edit-cell"
+                            value={sal.pay_days ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'pay_days', e.target.value ? parseInt(e.target.value, 10) : '')}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            max="31"
+                            className="l1-edit-cell"
+                            value={sal.leave_days ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'leave_days', e.target.value ? parseInt(e.target.value, 10) : '')}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="date"
+                            className="l1-edit-cell"
+                            value={sal.credit_date || ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'credit_date', e.target.value)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            className="l1-edit-cell"
+                            value={sal.gross_salary ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'gross_salary', e.target.value ? parseFloat(e.target.value) : '')}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            className="l1-edit-cell"
+                            value={sal.deductions ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'deductions', e.target.value ? parseFloat(e.target.value) : '')}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            className="l1-edit-cell"
+                            value={sal.net_salary ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'net_salary', e.target.value ? parseFloat(e.target.value) : '')}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            className="l1-edit-cell"
+                            value={sal.amount_credited ?? ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'amount_credited', e.target.value ? parseFloat(e.target.value) : '')}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            className="l1-edit-cell"
+                            placeholder="Bank Name"
+                            value={sal.bank_name || ''}
+                            onChange={(e) => onUpdateSalary(sal.id || idx, 'bank_name', e.target.value)}
+                          />
+                        </td>
+                        {currentSalaries.length > 3 && (
+                          <td className="l1-no-print" style={{ textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => onRemoveSalary(sal.id || idx)}
+                              title="Remove Month"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}
+                            >
+                              🗑️
+                            </button>
+                          </td>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <td><strong>{formatEmployerSalaryLabel(sal, currentSalaries)}</strong></td>
+                        {currentEmployers.length > 1 && (
+                          <td>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#334155', background: '#F1F5F9', padding: '2px 6px', borderRadius: '4px' }}>
+                              {empObj?.employer_name || '—'}
+                            </span>
+                          </td>
+                        )}
+                        <td>{sal.working_days ?? '—'}</td>
+                        <td>{sal.pay_days ?? '—'}</td>
+                        <td>{sal.leave_days ?? '—'}</td>
+                        <td>{sal.credit_date || '—'}</td>
+                        <td>{sal.gross_salary ? `₹${Number(sal.gross_salary).toLocaleString('en-IN')}` : '₹0'}</td>
+                        <td>{sal.deductions ? `₹${Number(sal.deductions).toLocaleString('en-IN')}` : '₹0'}</td>
+                        <td><strong>{sal.net_salary ? `₹${Number(sal.net_salary).toLocaleString('en-IN')}` : '₹0'}</strong></td>
+                        <td>{sal.amount_credited ? `₹${Number(sal.amount_credited).toLocaleString('en-IN')}` : '₹0'}</td>
+                        <td>{sal.bank_name || '—'}</td>
+                      </>
+                    )}
+                  </tr>
+                )
+              })}
               {currentSalaries.length === 0 && (
                 <tr>
-                  <td colSpan={isEditMode ? 11 : 10} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
+                  <td colSpan={isEditMode ? (currentEmployers.length > 1 ? 12 : 11) : (currentEmployers.length > 1 ? 11 : 10)} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
                     No salary disbursement records recorded.
                   </td>
                 </tr>
@@ -585,7 +749,7 @@ export default function PlacementAuditStatement({
             {currentSalaries.length > 0 && (
               <tfoot>
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'right', fontWeight: 600 }}>
+                  <td colSpan={currentEmployers.length > 1 ? 6 : 5} style={{ textAlign: 'right', fontWeight: 600 }}>
                     Summary Totals ({salarySummary.month_count ?? currentSalaries.length} Months, Avg Gross: ₹{Number(salarySummary.average_gross || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}):
                   </td>
                   <td>₹{Number(salarySummary.total_gross || 0).toLocaleString('en-IN')}</td>
@@ -619,7 +783,19 @@ export default function PlacementAuditStatement({
               {evidenceRows.map((docItem, idx) => (
                 <tr key={docItem.key || idx}>
                   <td><strong>{docItem.code}</strong></td>
-                  <td>{docItem.label}</td>
+                  <td>
+                    {docItem.label}
+                    {docItem.employer_name && (
+                      <span style={{ marginLeft: '6px', fontSize: '10.5px', background: '#F1F5F9', color: '#334155', padding: '1px 5px', borderRadius: '3px', fontWeight: 600 }}>
+                        🏢 {docItem.employer_name}
+                      </span>
+                    )}
+                    {docItem.coverage_period && (
+                      <span style={{ marginLeft: '6px', fontSize: '10.5px', background: '#E0F2FE', color: '#0369A1', padding: '1px 5px', borderRadius: '3px', fontWeight: 600 }}>
+                        Coverage: {docItem.coverage_period}
+                      </span>
+                    )}
+                  </td>
                   <td>
                     {docItem.available === 'Yes' || docItem.available === true ? (
                       <span style={{ fontWeight: 700, color: '#166534' }}>✓ Yes</span>

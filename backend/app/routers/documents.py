@@ -91,7 +91,7 @@ def list_documents(
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,created_at,updated_at,document_title")
+        .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,created_at,updated_at,document_title,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .order("created_at")
@@ -110,13 +110,13 @@ def get_documents_summary(
     Computes:
     - Appointment letter status
     - Salary slips count (min 3, max 12)
-    - Bank statements count (min 3, max 12)
+    - Bank statements count (min 3, max 12, accounting for consolidated multi-month statements)
     - Whether all minimum placement requirements are satisfied.
     """
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,document_title,created_at")
+        .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,document_title,created_at,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .execute()
@@ -137,7 +137,38 @@ def get_documents_summary(
         [d for d in docs if d["document_type"] == "BANK_STATEMENT"],
         key=lambda d: (d.get("reporting_year") or 0, d.get("reporting_month") or 0),
     )
-    bank_statement_months = {(d["reporting_year"], d["reporting_month"]) for d in bank_statements if d.get("reporting_month") and d.get("reporting_year")}
+    bank_statement_months = set()
+    for d in bank_statements:
+        if d.get("is_consolidated"):
+            cov = d.get("covered_months") or []
+            if isinstance(cov, str):
+                try:
+                    cov = json.loads(cov)
+                except Exception:
+                    cov = []
+            if isinstance(cov, list) and cov:
+                for c in cov:
+                    if isinstance(c, dict) and c.get("year") and c.get("month"):
+                        bank_statement_months.add((c["year"], c["month"]))
+            else:
+                st_m = d.get("coverage_start_month")
+                st_y = d.get("coverage_start_year")
+                end_m = d.get("coverage_end_month")
+                end_y = d.get("coverage_end_year")
+                if st_m and st_y and end_m and end_y:
+                    cur = st_y * 12 + st_m
+                    fin = end_y * 12 + end_m
+                    while cur <= fin:
+                        y = cur // 12
+                        m = cur % 12
+                        if m == 0:
+                            y -= 1
+                            m = 12
+                        bank_statement_months.add((y, m))
+                        cur += 1
+        elif d.get("reporting_month") and d.get("reporting_year"):
+            bank_statement_months.add((d["reporting_year"], d["reporting_month"]))
+
     bank_count = len(bank_statement_months)
 
     other_document = next((d for d in docs if d["document_type"] == "OTHER_DOCUMENT"), None)
@@ -203,6 +234,13 @@ async def upload_document(
     reporting_year: int | None = Form(None),
     replace_id: str | None = Form(None),
     document_title: str | None = Form(None),
+    employer_id: str | None = Form(None),
+    is_consolidated: bool = Form(False),
+    coverage_start_month: int | None = Form(None),
+    coverage_start_year: int | None = Form(None),
+    coverage_end_month: int | None = Form(None),
+    coverage_end_year: int | None = Form(None),
+    covered_months: str | None = Form(None),
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
 ):
     """Upload a candidate document to Google Drive and persist metadata in candidate_documents."""
@@ -218,6 +256,8 @@ async def upload_document(
     content = await file.read()
     mime_type = _validate_file_upload(file.filename or "document.pdf", content, file.content_type)
 
+    parsed_covered_months = []
+
     # Document-specific business rules
     if doc_type == "OTHER_DOCUMENT":
         reporting_month = None
@@ -225,22 +265,56 @@ async def upload_document(
     elif doc_type == "APPOINTMENT_LETTER":
         reporting_month = None
         reporting_year = None
-        existing = (
+        q = (
             supabase.table("candidate_documents")
             .select("id,drive_file_id")
             .eq("candidate_id", candidate_id)
             .eq("document_type", "APPOINTMENT_LETTER")
             .neq("upload_status", "FAILED")
-            .execute()
-            .data
         )
+        if employer_id:
+            q = q.eq("employer_id", employer_id)
+        existing = q.execute().data
         if existing and not replace_id:
+            emp_note = f" for employer '{employer_id}'" if employer_id else " for this candidate"
             raise HTTPException(
                 400,
-                "An active appointment/offer letter already exists for this candidate. Use replacement to update it.",
+                f"An active appointment/offer letter already exists{emp_note}. Use replacement to update it.",
             )
         if existing and replace_id and existing[0]["id"] != replace_id:
             raise HTTPException(400, "Replacement target does not match existing appointment letter.")
+
+    elif doc_type == "BANK_STATEMENT" and is_consolidated:
+        if not coverage_start_month or coverage_start_month < 1 or coverage_start_month > 12:
+            raise HTTPException(400, "A valid coverage start month (1-12) is required for consolidated bank statement.")
+        if not coverage_start_year or coverage_start_year < 2000 or coverage_start_year > 2050:
+            raise HTTPException(400, "A valid coverage start year is required for consolidated bank statement.")
+        if not coverage_end_month or coverage_end_month < 1 or coverage_end_month > 12:
+            raise HTTPException(400, "A valid coverage end month (1-12) is required for consolidated bank statement.")
+        if not coverage_end_year or coverage_end_year < 2000 or coverage_end_year > 2050:
+            raise HTTPException(400, "A valid coverage end year is required for consolidated bank statement.")
+        if (coverage_start_year * 12 + coverage_start_month) > (coverage_end_year * 12 + coverage_end_month):
+            raise HTTPException(400, "Coverage start month/year cannot be after coverage end month/year.")
+
+        reporting_month = coverage_start_month
+        reporting_year = coverage_start_year
+
+        if covered_months:
+            try:
+                parsed_covered_months = json.loads(covered_months)
+            except Exception:
+                pass
+        if not parsed_covered_months:
+            cur = coverage_start_year * 12 + coverage_start_month
+            fin = coverage_end_year * 12 + coverage_end_month
+            while cur <= fin:
+                y = cur // 12
+                m = cur % 12
+                if m == 0:
+                    y -= 1
+                    m = 12
+                parsed_covered_months.append({"year": y, "month": m})
+                cur += 1
 
     elif doc_type in ("SALARY_SLIP", "BANK_STATEMENT"):
         if not reporting_month or reporting_month < 1 or reporting_month > 12:
@@ -248,7 +322,7 @@ async def upload_document(
         if not reporting_year or reporting_year < 2000 or reporting_year > 2050:
             raise HTTPException(400, "A valid reporting year (e.g. 2023) is required.")
 
-        existing_period = (
+        q_period = (
             supabase.table("candidate_documents")
             .select("id,drive_file_id")
             .eq("candidate_id", candidate_id)
@@ -256,14 +330,17 @@ async def upload_document(
             .eq("reporting_month", reporting_month)
             .eq("reporting_year", reporting_year)
             .neq("upload_status", "FAILED")
-            .execute()
-            .data
         )
+        if employer_id:
+            q_period = q_period.eq("employer_id", employer_id)
+        existing_period = q_period.execute().data
+
         if existing_period and not replace_id:
             doc_name = "Salary slip" if doc_type == "SALARY_SLIP" else "Bank statement"
+            emp_note = f" for employer '{employer_id}'" if employer_id else ""
             raise HTTPException(
                 400,
-                f"{doc_name} for month {reporting_month}/{reporting_year} already exists. Use replacement to update it.",
+                f"{doc_name} for month {reporting_month}/{reporting_year} already exists{emp_note}. Use replacement to update it.",
             )
 
         if not replace_id and not existing_period:
@@ -335,6 +412,13 @@ async def upload_document(
         "uploaded_by": user.id,
         "error_message": None,
         "document_title": document_title or (file.filename if file else "Other Document"),
+        "employer_id": employer_id,
+        "is_consolidated": is_consolidated,
+        "coverage_start_month": coverage_start_month,
+        "coverage_start_year": coverage_start_year,
+        "coverage_end_month": coverage_end_month,
+        "coverage_end_year": coverage_end_year,
+        "covered_months": parsed_covered_months,
     }
 
     try:
@@ -365,6 +449,9 @@ async def batch_submit_documents(
     candidate_id: int,
     appointment_letter: UploadFile | None = File(None),
     appointment_replace_id: str | None = Form(None),
+    appointment_employer_id: str | None = Form(None),
+    appointment_letters: list[UploadFile] = File(default=[]),
+    appointment_letters_meta: str = Form("[]"),
     salary_slips: list[UploadFile] = File(default=[]),
     salary_slips_meta: str = Form("[]"),
     bank_statements: list[UploadFile] = File(default=[]),
@@ -379,11 +466,16 @@ async def batch_submit_documents(
 
     Validates placement package requirements before any external uploads.
     Supports partial uploads when allow_partial is set or when updating a submitted audit.
+    Supports employer-specific documents and multi-month consolidated bank statements.
     Includes Google Drive upload rollback if database persistence fails.
     """
     cand_ctx = _get_candidate_context(candidate_id, user)
 
     # 1. Parse metadata
+    try:
+        app_meta = json.loads(appointment_letters_meta)
+    except Exception:
+        raise HTTPException(400, "Invalid appointment_letters_meta JSON format.")
     try:
         salary_meta = json.loads(salary_slips_meta)
     except Exception:
@@ -393,6 +485,11 @@ async def batch_submit_documents(
     except Exception:
         raise HTTPException(400, "Invalid bank_statements_meta JSON format.")
 
+    if len(appointment_letters) != len(app_meta):
+        raise HTTPException(
+            400,
+            f"Count mismatch: {len(appointment_letters)} appointment files provided for {len(app_meta)} metadata entries.",
+        )
     if len(salary_slips) != len(salary_meta):
         raise HTTPException(
             400,
@@ -420,60 +517,113 @@ async def batch_submit_documents(
     is_partial_allowed = bool(allow_partial)
 
     # 3. Validate Appointment Letter
-    if not is_partial_allowed and not existing_appointment and not appointment_letter:
+    if not is_partial_allowed and not existing_appointment and not appointment_letter and not appointment_letters:
         raise HTTPException(400, "An Appointment / Offer Letter is required for placement verification.")
-    if existing_appointment and appointment_letter and not appointment_replace_id:
+    if existing_appointment and appointment_letter and not appointment_replace_id and not appointment_employer_id:
         raise HTTPException(400, "An active appointment letter already exists. Specify replacement ID to update it.")
     if existing_appointment and appointment_letter and appointment_replace_id and existing_appointment["id"] != appointment_replace_id:
         raise HTTPException(400, "Replacement target does not match existing appointment letter.")
 
     # 4. Validate Salary Slips
     replaced_salary_ids = {m["replace_id"] for m in salary_meta if m.get("replace_id")}
-    retained_salary_months = {
-        (d["reporting_year"], d["reporting_month"])
+    retained_salary_periods = {
+        (d.get("employer_id") or "", d["reporting_year"], d["reporting_month"])
         for d in existing_docs
         if d["document_type"] == "SALARY_SLIP" and d["id"] not in replaced_salary_ids and d.get("reporting_month") and d.get("reporting_year")
     }
-    incoming_salary_months = set()
+    incoming_salary_periods = set()
     for m in salary_meta:
         month = m.get("month")
         year = m.get("year")
+        emp_id = m.get("employer_id") or ""
         if not month or month < 1 or month > 12:
             raise HTTPException(400, f"Invalid reporting month '{month}' for salary slip. Must be 1-12.")
         if not year or year < 2000 or year > 2050:
             raise HTTPException(400, f"Invalid reporting year '{year}' for salary slip. Must be 2000-2050.")
-        period = (year, month)
-        if period in incoming_salary_months or period in retained_salary_months:
+        period_key = (emp_id, year, month)
+        if period_key in incoming_salary_periods or period_key in retained_salary_periods:
             raise HTTPException(400, f"Duplicate salary slip for reporting period {month}/{year}.")
-        incoming_salary_months.add(period)
+        incoming_salary_periods.add(period_key)
 
-    total_salary_months = len(retained_salary_months | incoming_salary_months)
+    total_salary_months = len(retained_salary_periods | incoming_salary_periods)
     if not is_partial_allowed and total_salary_months < 3:
         raise HTTPException(400, f"At least 3 distinct salary slip months are required (current total: {total_salary_months}).")
     if total_salary_months > 12:
         raise HTTPException(400, f"Maximum of 12 distinct salary slip months allowed (current total: {total_salary_months}).")
 
-    # 5. Validate Bank Statements
+    # 5. Validate Bank Statements (accounting for consolidated statements)
     replaced_bank_ids = {m["replace_id"] for m in bank_meta if m.get("replace_id")}
-    retained_bank_months = {
-        (d["reporting_year"], d["reporting_month"])
-        for d in existing_docs
-        if d["document_type"] == "BANK_STATEMENT" and d["id"] not in replaced_bank_ids and d.get("reporting_month") and d.get("reporting_year")
-    }
-    incoming_bank_months = set()
-    for m in bank_meta:
-        month = m.get("month")
-        year = m.get("year")
-        if not month or month < 1 or month > 12:
-            raise HTTPException(400, f"Invalid reporting month '{month}' for bank statement. Must be 1-12.")
-        if not year or year < 2000 or year > 2050:
-            raise HTTPException(400, f"Invalid reporting year '{year}' for bank statement. Must be 2000-2050.")
-        period = (year, month)
-        if period in incoming_bank_months or period in retained_bank_months:
-            raise HTTPException(400, f"Duplicate bank statement for reporting period {month}/{year}.")
-        incoming_bank_months.add(period)
+    retained_bank_periods = set()
+    for d in existing_docs:
+        if d["document_type"] != "BANK_STATEMENT" or d["id"] in replaced_bank_ids:
+            continue
+        emp_key = d.get("employer_id") or ""
+        if d.get("is_consolidated"):
+            cov = d.get("covered_months") or []
+            if isinstance(cov, list) and cov:
+                for c in cov:
+                    if isinstance(c, dict) and c.get("year") and c.get("month"):
+                        retained_bank_periods.add((emp_key, c["year"], c["month"]))
+            else:
+                st_m = d.get("coverage_start_month")
+                st_y = d.get("coverage_start_year")
+                end_m = d.get("coverage_end_month")
+                end_y = d.get("coverage_end_year")
+                if st_m and st_y and end_m and end_y:
+                    cur = st_y * 12 + st_m
+                    fin = end_y * 12 + end_m
+                    while cur <= fin:
+                        y = cur // 12
+                        mo = cur % 12
+                        if mo == 0:
+                            y -= 1
+                            mo = 12
+                        retained_bank_periods.add((emp_key, y, mo))
+                        cur += 1
+        elif d.get("reporting_month") and d.get("reporting_year"):
+            retained_bank_periods.add((emp_key, d["reporting_year"], d["reporting_month"]))
 
-    total_bank_months = len(retained_bank_months | incoming_bank_months)
+    incoming_bank_periods = set()
+    for m in bank_meta:
+        emp_key = m.get("employer_id") or ""
+        is_consol = bool(m.get("is_consolidated"))
+        if is_consol:
+            st_m = m.get("coverage_start_month") or m.get("month")
+            st_y = m.get("coverage_start_year") or m.get("year")
+            end_m = m.get("coverage_end_month") or m.get("month")
+            end_y = m.get("coverage_end_year") or m.get("year")
+            if not st_m or not st_y or not end_m or not end_y:
+                raise HTTPException(400, "Consolidated bank statement requires coverage start and end month/year.")
+            if (st_y * 12 + st_m) > (end_y * 12 + end_m):
+                raise HTTPException(400, "Consolidated coverage start cannot be after coverage end.")
+            cur = st_y * 12 + st_m
+            fin = end_y * 12 + end_m
+            while cur <= fin:
+                y = cur // 12
+                mo = cur % 12
+                if mo == 0:
+                    y -= 1
+                    mo = 12
+                period_key = (emp_key, y, mo)
+                if period_key in incoming_bank_periods:
+                    raise HTTPException(400, f"Overlapping bank statement coverage detected for {mo}/{y}.")
+                if period_key in retained_bank_periods and not m.get("replace_id"):
+                    raise HTTPException(400, f"Duplicate or overlapping bank statement coverage detected for {mo}/{y}.")
+                incoming_bank_periods.add(period_key)
+                cur += 1
+        else:
+            month = m.get("month")
+            year = m.get("year")
+            if not month or month < 1 or month > 12:
+                raise HTTPException(400, f"Invalid reporting month '{month}' for bank statement. Must be 1-12.")
+            if not year or year < 2000 or year > 2050:
+                raise HTTPException(400, f"Invalid reporting year '{year}' for bank statement. Must be 2000-2050.")
+            period_key = (emp_key, year, month)
+            if period_key in incoming_bank_periods or period_key in retained_bank_periods:
+                raise HTTPException(400, f"Duplicate bank statement for reporting period {month}/{year}.")
+            incoming_bank_periods.add(period_key)
+
+    total_bank_months = len(retained_bank_periods | incoming_bank_periods)
     if not is_partial_allowed and total_bank_months < 3:
         raise HTTPException(400, f"At least 3 distinct bank statement months are required (current total: {total_bank_months}).")
     if total_bank_months > 12:
@@ -493,6 +643,21 @@ async def batch_submit_documents(
             "month": None,
             "year": None,
             "replace_id": appointment_replace_id,
+            "employer_id": appointment_employer_id,
+        })
+
+    for f, m in zip(appointment_letters, app_meta):
+        f_bytes = await f.read()
+        f_mime = _validate_file_upload(f.filename or "appointment.pdf", f_bytes, f.content_type)
+        staged_uploads.append({
+            "doc_type": "APPOINTMENT_LETTER",
+            "file_name": f.filename or f"appointment_{candidate_id}.pdf",
+            "bytes": f_bytes,
+            "mime_type": f_mime,
+            "month": None,
+            "year": None,
+            "replace_id": m.get("replace_id"),
+            "employer_id": m.get("employer_id"),
         })
 
     for f, m in zip(salary_slips, salary_meta):
@@ -506,19 +671,50 @@ async def batch_submit_documents(
             "month": m["month"],
             "year": m["year"],
             "replace_id": m.get("replace_id"),
+            "employer_id": m.get("employer_id"),
         })
 
     for f, m in zip(bank_statements, bank_meta):
         f_bytes = await f.read()
         f_mime = _validate_file_upload(f.filename or "bank_statement.pdf", f_bytes, f.content_type)
+        is_consol = bool(m.get("is_consolidated"))
+        st_m = m.get("coverage_start_month") or m.get("month")
+        st_y = m.get("coverage_start_year") or m.get("year")
+        end_m = m.get("coverage_end_month") or m.get("month")
+        end_y = m.get("coverage_end_year") or m.get("year")
+        cov_list = m.get("covered_months") or []
+        if isinstance(cov_list, str):
+            try:
+                cov_list = json.loads(cov_list)
+            except Exception:
+                cov_list = []
+        if is_consol and not cov_list and st_m and st_y and end_m and end_y:
+            cur = st_y * 12 + st_m
+            fin = end_y * 12 + end_m
+            while cur <= fin:
+                y = cur // 12
+                mo = cur % 12
+                if mo == 0:
+                    y -= 1
+                    mo = 12
+                cov_list.append({"year": y, "month": mo})
+                cur += 1
+
         staged_uploads.append({
             "doc_type": "BANK_STATEMENT",
-            "file_name": f.filename or f"bank_statement_{candidate_id}_{m['month']}_{m['year']}.pdf",
+            "file_name": f.filename or f"bank_statement_{candidate_id}_{m.get('month') or st_m}_{m.get('year') or st_y}.pdf",
             "bytes": f_bytes,
             "mime_type": f_mime,
-            "month": m["month"],
-            "year": m["year"],
+            "month": m.get("month") or st_m,
+            "year": m.get("year") or st_y,
             "replace_id": m.get("replace_id"),
+            "employer_id": m.get("employer_id"),
+            "is_consolidated": is_consol,
+            "coverage_start_month": st_m if is_consol else None,
+            "coverage_start_year": st_y if is_consol else None,
+            "coverage_end_month": end_m if is_consol else None,
+            "coverage_end_year": end_y if is_consol else None,
+            "covered_months": cov_list if is_consol else [],
         })
 
     if other_document:
@@ -545,7 +741,7 @@ async def batch_submit_documents(
 
     try:
         for item in staged_uploads:
-            if item["replace_id"]:
+            if item.get("replace_id"):
                 old_row = next((d for d in existing_docs if d["id"] == item["replace_id"]), None)
                 if old_row and old_row.get("drive_file_id"):
                     old_drive_files_to_delete.append(old_row["drive_file_id"])
@@ -568,7 +764,7 @@ async def batch_submit_documents(
             created_drive_file_ids.append(drive_res["file_id"])
 
             db_operations.append({
-                "replace_id": item["replace_id"],
+                "replace_id": item.get("replace_id"),
                 "payload": {
                     "candidate_id": candidate_id,
                     "document_type": item["doc_type"],
@@ -584,6 +780,13 @@ async def batch_submit_documents(
                     "uploaded_by": user.id,
                     "error_message": None,
                     "document_title": item.get("title"),
+                    "employer_id": item.get("employer_id"),
+                    "is_consolidated": item.get("is_consolidated", False),
+                    "coverage_start_month": item.get("coverage_start_month"),
+                    "coverage_start_year": item.get("coverage_start_year"),
+                    "coverage_end_month": item.get("coverage_end_month"),
+                    "coverage_end_year": item.get("coverage_end_year"),
+                    "covered_months": item.get("covered_months", []),
                 },
             })
     except GoogleDriveNotConfiguredError:
@@ -666,7 +869,7 @@ async def batch_submit_documents(
     try:
         audit_res = (
             supabase.table("placement_audits")
-            .select("id,document_audit")
+            .select("id,document_audit,salary_details,employer_details")
             .eq("candidate_id", candidate_id)
             .limit(1)
             .execute()
@@ -674,8 +877,36 @@ async def batch_submit_documents(
         if audit_res.data:
             audit_rec = audit_res.data[0]
             cur_doc_audit = audit_rec.get("document_audit") or {}
+            sal_list = audit_rec.get("salary_details") or []
             now_iso = datetime.now(timezone.utc).isoformat()
             dirty = False
+
+            emp_entries = audit_rec.get("employer_details") or []
+
+            def get_canonical_emp_id(val):
+                if not val:
+                    return ""
+                s = str(val).strip()
+                if emp_entries:
+                    if len(emp_entries) <= 1:
+                        return str(emp_entries[0].get("id") or "1")
+                    norm = s.lower().replace("emp_", "").replace("employer_", "").strip()
+                    if norm.isdigit():
+                        idx = int(norm) - 1
+                        if 0 <= idx < len(emp_entries):
+                            return str(emp_entries[idx].get("id") or str(idx + 1))
+                    for emp in emp_entries:
+                        e_id = str(emp.get("id") or "").strip()
+                        if e_id and (e_id == s or e_id.lower().replace("emp_", "") == norm):
+                            return e_id
+                return s
+
+            def emp_matches(doc_emp, target_emp):
+                if not doc_emp or not target_emp:
+                    return True
+                if len(emp_entries) <= 1:
+                    return True
+                return get_canonical_emp_id(doc_emp) == get_canonical_emp_id(target_emp)
 
             for up in staged_uploads:
                 dtype = up.get("doc_type")
@@ -691,6 +922,58 @@ async def batch_submit_documents(
                     row["title"] = up.get("title") or row.get("title") or "Other Document"
                     cur_doc_audit["other_document"] = row
                     dirty = True
+                elif dtype == "BANK_STATEMENT":
+                    is_consol = bool(up.get("is_consolidated"))
+                    up_emp = up.get("employer_id")
+                    st_m = up.get("coverage_start_month") or up.get("month")
+                    st_y = up.get("coverage_start_year") or up.get("year")
+                    end_m = up.get("coverage_end_month") or up.get("month")
+                    end_y = up.get("coverage_end_year") or up.get("year")
+                    cov_list = up.get("covered_months") or []
+
+                    check_salaries = sal_list if sal_list else [{"month": i, "year": st_y} for i in range(1, 4)]
+                    for s_idx, s_entry in enumerate(check_salaries):
+                        s_m = s_entry.get("month")
+                        s_y = s_entry.get("year") or st_y
+                        s_emp = s_entry.get("employer_id")
+                        if not emp_matches(up_emp, s_emp):
+                            continue
+                        covers = False
+                        if is_consol:
+                            if cov_list and any(isinstance(c, dict) and int(c.get("month", 0)) == int(s_m) and (not c.get("year") or int(c.get("year", 0)) == int(s_y)) for c in cov_list):
+                                covers = True
+                            elif st_m and st_y and end_m and end_y and s_m and s_y:
+                                try:
+                                    covers = (int(st_y) * 12 + int(st_m)) <= (int(s_y) * 12 + int(s_m)) <= (int(end_y) * 12 + int(end_m))
+                                except Exception:
+                                    covers = False
+                        else:
+                            try:
+                                covers = int(up.get("month") or 0) == int(s_m or 0) and (not up.get("year") or int(up.get("year") or 0) == int(s_y or 0))
+                            except Exception:
+                                covers = False
+
+                        if covers:
+                            slot_key = f"bank_statement_{s_idx + 1}"
+                            b_row = cur_doc_audit.get(slot_key) or {}
+                            b_row["available"] = "Yes"
+                            cur_doc_audit[slot_key] = b_row
+                            dirty = True
+                elif dtype == "SALARY_SLIP":
+                    up_emp = up.get("employer_id")
+                    up_m = up.get("month")
+                    up_y = up.get("year")
+                    check_salaries = sal_list if sal_list else [{"month": i, "year": up_y} for i in range(1, 4)]
+                    for s_idx, s_entry in enumerate(check_salaries):
+                        s_m = s_entry.get("month")
+                        s_y = s_entry.get("year") or up_y
+                        s_emp = s_entry.get("employer_id")
+                        if emp_matches(up_emp, s_emp) and int(up_m or 0) == int(s_m or 0) and (not up_y or int(up_y or 0) == int(s_y or 0)):
+                            slot_key = f"salary_slip_{s_idx + 1}"
+                            s_row = cur_doc_audit.get(slot_key) or {}
+                            s_row["available"] = "Yes"
+                            cur_doc_audit[slot_key] = s_row
+                            dirty = True
 
             if dirty:
                 supabase.table("placement_audits").update({
@@ -709,6 +992,7 @@ async def batch_submit_documents(
         "submitted_count": len(staged_uploads),
         "cleanup_warnings": cleanup_warnings,
         "summary": summary,
+        "documents": [op["payload"] for op in db_operations],
     }
 
 

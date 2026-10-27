@@ -2858,33 +2858,103 @@
   margin-bottom: 20px;
 }
 
+.l1-btn-add-employer,
+.l1-btn-add-month-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #FFFFFF;
+  border: 1.5px solid #0B4FB8;
+  color: #0B4FB8;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.l1-btn-add-employer:hover,
+.l1-btn-add-month-header:hover {
+  background: #EFF6FF;
+  border-color: #0A2A7A;
+  color: #0A2A7A;
+  box-shadow: 0 2px 6px rgba(11, 79, 184, 0.15);
+  transform: translateY(-0.5px);
+}
+
+.l1-btn-add-employer:focus-visible,
+.l1-btn-add-month-header:focus-visible {
+  outline: 2px solid #0B4FB8;
+  outline-offset: 2px;
+}
+
+.l1-btn-table-danger {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  color: #DC2626;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.l1-btn-table-danger:hover {
+  background: #FEE2E2;
+  border-color: #F87171;
+  color: #991B1B;
+  transform: scale(1.06);
+}
+
+.l1-btn-table-danger:focus-visible {
+  outline: 2px solid #DC2626;
+  outline-offset: 1px;
+}
+
 .l1-salary-month-card {
   background: #FFFFFF;
   border: 1px solid #E2E8F0;
   border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
   overflow: hidden;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .l1-salary-month-card:hover {
   border-color: #CBD5E1;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.07);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
 .l1-salary-month-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 10px 16px;
   background: #F8FAFC;
   border-bottom: 1px solid #E2E8F0;
+  min-height: 48px;
+  box-sizing: border-box;
 }
 
-.l1-salary-month-badge-wrap {
+.l1-salary-card-header-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.l1-salary-badge-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .l1-salary-month-badge {
@@ -2898,43 +2968,80 @@
   padding: 3px 10px;
   border-radius: 20px;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .l1-salary-month-period-title {
   font-size: 13.5px;
   font-weight: 700;
   color: #1E293B;
+  white-space: nowrap;
 }
 
-.l1-salary-month-sync-hint {
-  font-size: 11px;
-  color: #0B4FB8;
-  background: #EFF6FF;
-  border: 1px solid #BFDBFE;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-weight: 500;
+.l1-salary-card-header-mid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  max-width: 320px;
+  min-width: 0;
+  margin: 0 8px;
+}
+
+.l1-salary-card-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.l1-salary-sync-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0284C7;
+  background: #F0F9FF;
+  border: 1px solid #BAE6FD;
+  padding: 0 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.l1-salary-sync-chip .l1-sync-dot {
+  color: #0284C7;
+  font-size: 8px;
 }
 
 .l1-btn-remove-month {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  height: 30px;
   background: #FEF2F2;
   border: 1px solid #FECACA;
   color: #DC2626;
   border-radius: 6px;
-  padding: 4px 10px;
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
 }
 
 .l1-btn-remove-month:hover {
   background: #FEE2E2;
   border-color: #F87171;
   color: #B91C1C;
+}
+
+.l1-btn-remove-month:focus-visible {
+  outline: 2px solid #DC2626;
+  outline-offset: 1px;
 }
 
 .l1-salary-six-col-grid {
@@ -2947,7 +3054,7 @@
 .l1-salary-col {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -2956,6 +3063,9 @@
 }
 
 .l1-salary-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11.5px;
   font-weight: 600;
   color: #475569;
@@ -2963,6 +3073,17 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.l1-calc-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  background: #E2E8F0;
+  color: #475569;
+  padding: 1px 5px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .l1-salary-control {
@@ -2985,8 +3106,9 @@
 }
 
 .l1-salary-control:disabled {
-  background: #F1F5F9;
+  background: #F8FAFC;
   color: #64748B;
+  border-color: #E2E8F0;
   cursor: not-allowed;
 }
 
@@ -2994,6 +3116,24 @@
   background: #F8FAFC;
   font-weight: 600;
   color: #0F172A;
+  border-color: #CBD5E1;
+}
+
+/* Responsive Header Wrap */
+@media (max-width: 960px) {
+  .l1-salary-month-header {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .l1-salary-card-header-mid {
+    order: 3;
+    max-width: 100%;
+    flex: 1 1 100%;
+    margin: 4px 0 0 0;
+    justify-content: flex-start;
+  }
 }
 
 /* Tablet: 3 columns */
@@ -3006,18 +3146,32 @@
   }
 }
 
-/* Mobile: 1 column */
+/* Mobile: 1 column & Stacked Header */
 @media (max-width: 640px) {
   .l1-salary-six-col-grid {
     grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 12px;
   }
   .l1-salary-col-span-2 {
     grid-column: span 1;
   }
   .l1-salary-month-header {
     flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .l1-salary-card-header-left {
+    justify-content: space-between;
+  }
+  .l1-salary-card-header-right {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .l1-btn-copy-prev,
+  .l1-btn-remove-month {
+    flex: 1;
+    justify-content: center;
   }
 }
 
@@ -3198,5 +3352,344 @@
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   width: 100%;
+}
+
+/* ================================================================
+   Employer-Wise Placement & Consolidated Bank Statement Enhancements
+   ================================================================ */
+
+/* ================================================================
+   Employer-Wise Placement & Consolidated Bank Statement Enhancements
+   ================================================================ */
+
+.l1-btn-copy-prev {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  color: #334155;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.l1-btn-copy-prev:hover:not(:disabled):not(.is-disabled) {
+  background: #F8FAFC;
+  border-color: #94A3B8;
+  color: #0F172A;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.l1-btn-copy-prev:focus-visible {
+  outline: 2px solid #0B4FB8;
+  outline-offset: 1px;
+}
+
+.l1-btn-copy-prev:disabled,
+.l1-btn-copy-prev.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: #F1F5F9;
+  border-color: #E2E8F0;
+  color: #94A3B8;
+  box-shadow: none;
+}
+
+.l1-emp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #EFF6FF;
+  color: #1E40AF;
+  border: 1px solid #BFDBFE;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.l1-emp-picker-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  padding: 3px 8px;
+  max-width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.l1-emp-picker-wrap:focus-within {
+  border-color: #0B4FB8;
+  box-shadow: 0 0 0 2px rgba(11, 79, 184, 0.12);
+}
+
+.l1-emp-picker-wrap label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748B;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.l1-emp-picker-select {
+  border: none;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1E293B;
+  outline: none;
+  cursor: pointer;
+  max-width: 220px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Consolidated Multi-Month Bank Statement Box */
+.l1-consolidated-box {
+  background: #F8FAFC;
+  border: 1.5px dashed #0284C7;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-sizing: border-box;
+}
+
+.l1-consolidated-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.l1-consolidated-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.l1-consolidated-icon {
+  font-size: 20px;
+}
+
+.l1-consolidated-title strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0369A1;
+  letter-spacing: 0.01em;
+}
+
+.l1-consolidated-subtitle {
+  display: block;
+  font-size: 11.5px;
+  color: #64748B;
+  font-weight: 500;
+}
+
+.l1-btn-consolidated-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #FFFFFF;
+  border: 1px solid #0284C7;
+  color: #0284C7;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.l1-btn-consolidated-toggle:hover {
+  background: #F0F9FF;
+  border-color: #0369A1;
+  color: #0369A1;
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.15);
+}
+
+.l1-btn-consolidated-toggle:focus-visible {
+  outline: 2px solid #0284C7;
+  outline-offset: 1px;
+}
+
+.l1-consolidated-note {
+  font-size: 12px;
+  color: #64748B;
+  margin: 0 0 14px 0;
+  line-height: 1.45;
+}
+
+.l1-consolidated-modal-panel {
+  background: #FFFFFF;
+  border: 1px solid #BAE6FD;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.06);
+}
+
+.l1-consolidated-range-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed #E2E8F0;
+}
+
+.l1-consolidated-col-emp {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+  flex: 1;
+}
+
+.l1-consolidated-col-period {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 170px;
+}
+
+.l1-period-input-lockup {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.l1-year-short-input {
+  width: 80px !important;
+  flex-shrink: 0;
+}
+
+.l1-coverage-preview-lockup {
+  display: flex;
+  align-items: center;
+  padding-bottom: 2px;
+}
+
+.l1-coverage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #E0F2FE;
+  color: #0369A1;
+  border: 1px solid #BAE6FD;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.l1-coverage-badge.persisted {
+  background: #ECFDF5;
+  color: #065F46;
+  border-color: #A7F3D0;
+}
+
+.l1-consolidated-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.l1-consolidated-doc-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.l1-consolidated-doc-group:last-child {
+  margin-bottom: 0;
+}
+
+.l1-group-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #0369A1;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.l1-badge-cluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* Document Evidence Audit Table Inputs */
+.l1-audit-table-select {
+  height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #1E293B;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  min-width: 90px;
+}
+
+.l1-audit-table-select:focus {
+  border-color: #0B4FB8;
+  box-shadow: 0 0 0 2px rgba(11, 79, 184, 0.15);
+}
+
+.l1-audit-table-select:disabled {
+  background: #F8FAFC;
+  color: #64748B;
+  cursor: not-allowed;
+}
+
+.l1-audit-table-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #1E293B;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.l1-audit-table-input:focus {
+  border-color: #0B4FB8;
+  box-shadow: 0 0 0 2px rgba(11, 79, 184, 0.15);
+}
+
+.l1-audit-table-input:disabled {
+  background: #F8FAFC;
+  color: #64748B;
+  cursor: not-allowed;
 }
 

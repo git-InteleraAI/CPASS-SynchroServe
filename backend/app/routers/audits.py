@@ -29,6 +29,8 @@ router = APIRouter(prefix="/candidates/{candidate_id}/audit", tags=["audits"])
 # -----------------------------------------------------------------------------
 
 class EmployerEntry(BaseModel):
+    id: str | None = Field(None, description="Stable identifier for employer (e.g. emp_1)")
+    employer_id: str | None = Field(None, description="Alternative alias for employer ID")
     employer_name: str = Field(..., min_length=1, description="Company/Employer name")
     months_worked: float | int | None = Field(None, description="Duration worked in months")
     appointment_date: str | None = Field(None, description="Date of appointment / joining")
@@ -39,6 +41,8 @@ class EmployerEntry(BaseModel):
 
 
 class SalaryEntry(BaseModel):
+    id: str | None = Field(None, description="Unique row identifier")
+    employer_id: str | None = Field(None, description="ID of employer this salary slip belongs to")
     month: int = Field(..., ge=1, le=12, description="Reporting month (1-12)")
     year: int = Field(..., ge=2000, le=2050, description="Reporting year")
     working_days: int | None = Field(None, ge=0, le=31, description="Working days in month")
@@ -581,26 +585,130 @@ def submit_audit(
     except Exception:
         pass
 
-    # 2. Validation: At least one employer with employer_name
+    # 2. Validation: At least one employer with employer_name and stable ID
     if not payload.employer_details:
         raise HTTPException(400, "At least one employer entry is required for placement audit submission.")
 
     for i, emp in enumerate(payload.employer_details):
         if not emp.employer_name or not emp.employer_name.strip():
             raise HTTPException(400, f"Employer #{i + 1}: Employer Name is required.")
+        if not emp.id and not emp.employer_id:
+            emp.id = f"emp_{i + 1}"
+            emp.employer_id = f"emp_{i + 1}"
+        elif not emp.id:
+            emp.id = emp.employer_id
+        elif not emp.employer_id:
+            emp.employer_id = emp.id
 
     # 3. Validation: At least 3 distinct salary entries
     if len(payload.salary_details) < 3:
         raise HTTPException(400, f"At least 3 distinct reporting months of salary details are required (currently provided: {len(payload.salary_details)}).")
 
+    single_emp_id = payload.employer_details[0].id if len(payload.employer_details) == 1 else None
+
     salary_periods = set()
     for s in payload.salary_details:
-        key = f"{s.year}-{s.month}"
+        if not s.employer_id and single_emp_id:
+            s.employer_id = single_emp_id
+
+        # Scoped uniqueness per employer
+        key = f"{s.employer_id or ''}_{s.year}_{s.month}"
         if key in salary_periods:
-            raise HTTPException(400, f"Duplicate salary reporting period detected: {s.month}/{s.year}.")
+            emp_obj = next((e for e in payload.employer_details if (e.id == s.employer_id or e.employer_id == s.employer_id)), None)
+            emp_label = f" for employer '{emp_obj.employer_name}'" if emp_obj else ""
+            raise HTTPException(400, f"Duplicate salary reporting period detected{emp_label}: {s.month}/{s.year}.")
         salary_periods.add(key)
         if s.amount_credited is not None and s.amount_credited < 0:
             raise HTTPException(400, f"Salary amount credited for {s.month}/{s.year} cannot be negative.")
+
+    # 3b. Authoritative backend evidence validation per employer
+    try:
+        docs_res = (
+            supabase.table("candidate_documents")
+            .select("id,document_type,reporting_month,reporting_year,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months,upload_status")
+            .eq("candidate_id", candidate_id)
+            .neq("upload_status", "FAILED")
+            .execute()
+        )
+        persisted_docs = docs_res.data if (docs_res and isinstance(docs_res.data, list)) else []
+    except Exception:
+        persisted_docs = []
+
+    # Validate evidence per employer when documents are in DB or when multiple employers are specified
+    if persisted_docs or len(payload.employer_details) > 1:
+        for idx, emp in enumerate(payload.employer_details):
+            emp_id = emp.id or emp.employer_id or f"emp_{idx + 1}"
+            emp_name = emp.employer_name.strip()
+
+            # Offer Letter validation
+            has_offer = any(
+                d.get("document_type") == "APPOINTMENT_LETTER" and (
+                    d.get("employer_id") == emp_id or
+                    (len(payload.employer_details) == 1 and not d.get("employer_id"))
+                )
+                for d in persisted_docs
+            )
+            if not has_offer:
+                raise HTTPException(400, f"Missing required Appointment / Offer Letter for employer '{emp_name}'.")
+
+            # Salary Slips validation for this employer's salary entries
+            emp_salaries = [
+                s for s in payload.salary_details
+                if s.employer_id == emp_id or (len(payload.employer_details) == 1 and not s.employer_id)
+            ]
+            for s in emp_salaries:
+                has_slip = any(
+                    d.get("document_type") == "SALARY_SLIP" and (
+                        (d.get("reporting_month") == s.month and d.get("reporting_year") == s.year) or
+                        (len(payload.employer_details) == 1 and not d.get("reporting_month"))
+                    ) and (
+                        d.get("employer_id") == emp_id or
+                        (len(payload.employer_details) == 1 and not d.get("employer_id"))
+                    )
+                    for d in persisted_docs
+                )
+                if not has_slip:
+                    raise HTTPException(400, f"Missing salary slip for employer '{emp_name}' for reporting month {s.month}/{s.year}.")
+
+                # Bank Statement coverage validation (individual or consolidated)
+                covered_by_bank = False
+                for d in persisted_docs:
+                    if d.get("document_type") != "BANK_STATEMENT":
+                        continue
+                    doc_emp = d.get("employer_id")
+                    if doc_emp and doc_emp != emp_id:
+                        continue
+                    if not doc_emp and len(payload.employer_details) > 1:
+                        continue
+
+                    if d.get("is_consolidated") or (d.get("coverage_start_month") and d.get("coverage_end_month")):
+                        cov_list = d.get("covered_months") or []
+                        if isinstance(cov_list, str):
+                            try:
+                                cov_list = json.loads(cov_list)
+                            except Exception:
+                                cov_list = []
+                        if isinstance(cov_list, list) and any(c.get("month") == s.month and c.get("year") == s.year for c in cov_list if isinstance(c, dict)):
+                            covered_by_bank = True
+                            break
+                        start_m = d.get("coverage_start_month")
+                        start_y = d.get("coverage_start_year")
+                        end_m = d.get("coverage_end_month")
+                        end_y = d.get("coverage_end_year")
+                        if start_m and start_y and end_m and end_y:
+                            cur_val = s.year * 12 + s.month
+                            st_val = start_y * 12 + start_m
+                            end_val = end_y * 12 + end_m
+                            if st_val <= cur_val <= end_val:
+                                covered_by_bank = True
+                                break
+                    else:
+                        if (d.get("reporting_month") == s.month and d.get("reporting_year") == s.year) or (len(payload.employer_details) == 1 and not d.get("reporting_month")):
+                            covered_by_bank = True
+                            break
+
+                if not covered_by_bank:
+                    raise HTTPException(400, f"Missing bank statement coverage for employer '{emp_name}' for reporting month {s.month}/{s.year}.")
 
     # 4. Check existing audit state
     existing_res = (
@@ -764,7 +872,7 @@ def get_audit_statement(
     try:
         docs_res = retry_read_query(
             lambda: supabase.table("candidate_documents")
-            .select("id,document_type,reporting_month,reporting_year,file_name,file_size_bytes,upload_status,drive_file_id,document_title,created_at")
+            .select("id,document_type,reporting_month,reporting_year,file_name,file_size_bytes,upload_status,drive_file_id,document_title,created_at,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
             .eq("candidate_id", candidate_id)
             .neq("upload_status", "FAILED")
             .order("created_at")
@@ -811,57 +919,6 @@ def get_audit_statement(
     total_net = sum(float(s.get("net_salary") or 0) for s in salary_entries)
     avg_salary = (total_gross / len(salary_entries)) if salary_entries else 0
 
-    # 5. Build Document Evidence cross-verification against persisted records
-    al_doc = next(
-        (d for d in docs if d.get("document_type") == "APPOINTMENT_LETTER" and d.get("upload_status") == "SUCCESS"),
-        None,
-    )
-
-    successful_slips = sorted(
-        [d for d in docs if d.get("document_type") == "SALARY_SLIP" and d.get("upload_status") == "SUCCESS"],
-        key=lambda d: (d.get("reporting_year") or 0, d.get("reporting_month") or 0),
-    )
-    successful_banks = sorted(
-        [d for d in docs if d.get("document_type") == "BANK_STATEMENT" and d.get("upload_status") == "SUCCESS"],
-        key=lambda d: (d.get("reporting_year") or 0, d.get("reporting_month") or 0),
-    )
-
-    sorted_salaries = sorted(salary_entries, key=lambda s: (s.get("year") or 0, s.get("month") or 0))
-
-    def find_slip_doc(idx: int) -> dict[str, Any] | None:
-        if idx < len(sorted_salaries):
-            target_year = sorted_salaries[idx].get("year")
-            target_month = sorted_salaries[idx].get("month")
-            match = next((d for d in successful_slips if d.get("reporting_year") == target_year and d.get("reporting_month") == target_month), None)
-            if match:
-                return match
-        return successful_slips[idx] if idx < len(successful_slips) else None
-
-    def find_bank_doc(idx: int) -> dict[str, Any] | None:
-        if idx < len(sorted_salaries):
-            target_year = sorted_salaries[idx].get("year")
-            target_month = sorted_salaries[idx].get("month")
-            match = next((d for d in successful_banks if d.get("reporting_year") == target_year and d.get("reporting_month") == target_month), None)
-            if match:
-                return match
-        return successful_banks[idx] if idx < len(successful_banks) else None
-
-    def slip_label(idx: int) -> str:
-        if idx < len(sorted_salaries) and sorted_salaries[idx].get("month"):
-            m = sorted_salaries[idx]["month"]
-            y = sorted_salaries[idx].get("year")
-            m_str = MONTH_NAMES[m - 1] if 1 <= m <= 12 else f"Month {m}"
-            return f"Salary Pay Slip — {m_str} {y or ''}".strip()
-        return f"Salary Pay Slip — Month {idx + 1}"
-
-    def bank_label(idx: int) -> str:
-        if idx < len(sorted_salaries) and sorted_salaries[idx].get("month"):
-            m = sorted_salaries[idx]["month"]
-            y = sorted_salaries[idx].get("year")
-            m_str = MONTH_NAMES[m - 1] if 1 <= m <= 12 else f"Month {m}"
-            return f"Bank Statement / Passbook — {m_str} {y or ''}".strip()
-        return f"Bank Statement / Passbook — Month {idx + 1}"
-
     saved_doc_audit = (audit and audit.get("document_audit")) or {}
 
     def get_row_audit(key: str) -> dict[str, Any]:
@@ -870,31 +927,286 @@ def get_audit_statement(
             return val
         return {}
 
-    def map_avail_field(raw_val: Any, has_doc: bool) -> tuple[Any, str]:
-        if raw_val is None or raw_val == "":
-            return (bool(has_doc), "Yes" if has_doc else "Missing")
-        if raw_val in ("Yes", True):
+    def map_avail_field(audit_val_or_row: Any, has_doc: bool) -> tuple[Any, str]:
+        if isinstance(audit_val_or_row, dict):
+            raw_val = audit_val_or_row.get("available")
+            explicit = bool(audit_val_or_row.get("explicitlySet") or audit_val_or_row.get("explicitly_set"))
+        else:
+            raw_val = audit_val_or_row
+            explicit = False
+
+        if explicit and raw_val in ("No", False):
+            return (False, "No")
+        if explicit and raw_val == "Pending":
+            return ("Pending", "Pending")
+        if has_doc:
             return (True, "Yes")
+        if raw_val is None or raw_val == "":
+            return (False, "Missing")
         if raw_val in ("No", False):
             return (False, "No")
+        if raw_val in ("Yes", True):
+            return (True, "Yes")
         return ("Pending", "Pending")
 
-    # AL / OL
-    al_audit = get_row_audit("appointment_letter")
-    al_avail, al_avail_str = map_avail_field(al_audit.get("available"), bool(al_doc))
-    al_comp = al_audit.get("compliance")
-    if not al_comp:
-        al_comp = "Compliant" if al_doc else "Missing / Non-Compliant"
-    al_obs = al_audit.get("remarks")
-    if not al_obs:
-        al_obs = "Appointment letter verified against candidate placement record." if al_doc else "Mandatory appointment/offer letter is pending upload."
-    al_repo = f"Stored in Drive: {al_doc['file_name']}" if al_doc else ("Document marked unavailable by coordinator" if al_avail_str == "No" else ("Document pending upload" if al_avail_str == "Pending" else "No verified file in database"))
+    sorted_salaries = sorted(salary_entries, key=lambda s: (s.get("year") or 0, s.get("month") or 0))
 
-    evidence_list = [
-        {
+    evidence_list: list[dict[str, Any]] = []
+
+    def get_canonical_emp_id(emp_id: Any) -> str | None:
+        if not emp_id:
+            return str(employer_entries[0].get("id")).strip() if employer_entries else None
+        s = str(emp_id).strip()
+        for e in employer_entries:
+            if str(e.get("id", "")).strip() == s:
+                return str(e.get("id")).strip()
+        norm = s[4:] if s.startswith("emp_") else s
+        try:
+            idx = int(norm)
+            if 1 <= idx <= len(employer_entries):
+                return str(employer_entries[idx - 1].get("id")).strip()
+        except (ValueError, TypeError):
+            pass
+        if len(employer_entries) <= 1 and employer_entries:
+            return str(employer_entries[0].get("id")).strip()
+        return s
+
+    def emp_matches(doc_emp: Any, target_emp: Any) -> bool:
+        if len(employer_entries) <= 1:
+            return True
+        if not doc_emp or not target_emp:
+            return True
+        can_doc = get_canonical_emp_id(doc_emp)
+        can_target = get_canonical_emp_id(target_emp)
+        if can_doc and can_target:
+            return can_doc == can_target
+        return str(doc_emp).strip() == str(target_emp).strip()
+
+    # Helper to check if bank document covers a given month/year
+    def doc_covers_bank_month(doc: dict[str, Any], month: int, year: int) -> bool:
+        if not doc or doc.get("document_type") != "BANK_STATEMENT":
+            return False
+        st_upper = str(doc.get("upload_status") or "").upper()
+        if st_upper != "SUCCESS" and doc.get("upload_status") and not doc.get("drive_file_id"):
+            return False
+        try:
+            m_val = int(month)
+            y_val = int(year)
+        except (ValueError, TypeError):
+            return False
+        is_consol = bool(
+            doc.get("is_consolidated")
+            or (doc.get("coverage_start_month") and doc.get("coverage_end_month"))
+        )
+        if is_consol:
+            cov_list = doc.get("covered_months") or []
+            if isinstance(cov_list, str):
+                try:
+                    cov_list = json.loads(cov_list)
+                except Exception:
+                    cov_list = []
+            if isinstance(cov_list, list) and any(
+                isinstance(c, dict) and int(c.get("month", 0)) == m_val and (not c.get("year") or int(c.get("year", 0)) == y_val)
+                for c in cov_list
+            ):
+                return True
+            try:
+                st_m = int(doc.get("coverage_start_month") or doc.get("reporting_month") or 1)
+                st_y = int(doc.get("coverage_start_year") or doc.get("reporting_year") or y_val)
+                end_m = int(doc.get("coverage_end_month") or doc.get("reporting_month") or st_m)
+                end_y = int(doc.get("coverage_end_year") or doc.get("reporting_year") or st_y)
+                return (st_y * 12 + st_m) <= (y_val * 12 + m_val) <= (end_y * 12 + end_m)
+            except (ValueError, TypeError):
+                return False
+        try:
+            return int(doc.get("reporting_month", 0)) == m_val and (not doc.get("reporting_year") or int(doc.get("reporting_year", 0)) == y_val)
+        except (ValueError, TypeError):
+            return False
+
+    if len(employer_entries) > 1:
+        # Multi-Employer Evidence Organization
+        for e_idx, emp in enumerate(employer_entries):
+            emp_id = emp.get("id") or emp.get("employer_id") or f"emp_{e_idx + 1}"
+            emp_name = emp.get("employer_name") or f"Employer {e_idx + 1}"
+
+            # 1. Appointment Letter for this employer
+            al_doc = next(
+                (d for d in docs if d.get("document_type") == "APPOINTMENT_LETTER" and (str(d.get("upload_status") or "").upper() == "SUCCESS" or d.get("drive_file_id")) and emp_matches(d.get("employer_id"), emp_id)),
+                None,
+            )
+            key_al = f"appointment_letter_{emp_id}"
+            al_audit = get_row_audit(key_al)
+            al_avail, al_avail_str = map_avail_field(al_audit.get("available"), bool(al_doc))
+            al_comp = al_audit.get("compliance") or ("Compliant" if al_doc else "Missing / Non-Compliant")
+            al_obs = al_audit.get("remarks") or (f"Appointment letter verified for {emp_name}." if al_doc else f"Offer letter pending upload for {emp_name}.")
+            al_repo = f"Stored in Drive: {al_doc['file_name']}" if al_doc else ("Document marked unavailable" if al_avail_str == "No" else "No verified file in database")
+
+            evidence_list.append({
+                "code": f"AL / OL ({e_idx + 1})",
+                "key": key_al,
+                "label": f"Appointment / Offer Letter — {emp_name}",
+                "employer_id": emp_id,
+                "employer_name": emp_name,
+                "available": al_avail,
+                "availability_status": al_avail_str,
+                "compliance": al_comp,
+                "repository_status": al_repo,
+                "observations": al_obs,
+                "file_name": al_doc["file_name"] if al_doc else None,
+                "doc_id": al_doc["id"] if al_doc else None,
+                "drive_file_id": al_doc.get("drive_file_id") if al_doc else None,
+            })
+
+            # 2. Salary Slips for this employer
+            emp_salaries = [s for s in sorted_salaries if emp_matches(s.get("employer_id"), emp_id)]
+            for s_idx, sal in enumerate(emp_salaries):
+                s_month = sal.get("month")
+                s_year = sal.get("year")
+                m_str = MONTH_NAMES[s_month - 1] if s_month and 1 <= s_month <= 12 else f"Month {s_month}"
+                slip_doc = next(
+                    (d for d in docs if d.get("document_type") == "SALARY_SLIP" and (str(d.get("upload_status") or "").upper() == "SUCCESS" or d.get("drive_file_id")) and emp_matches(d.get("employer_id"), emp_id) and d.get("reporting_month") == s_month and d.get("reporting_year") == s_year),
+                    None,
+                )
+                key_ps = f"salary_slip_{emp_id}_{s_idx + 1}"
+                s_audit = get_row_audit(key_ps)
+                s_avail, s_avail_str = map_avail_field(s_audit.get("available"), bool(slip_doc))
+                s_comp = s_audit.get("compliance") or ("Compliant" if slip_doc else "Missing / Non-Compliant")
+                s_obs = s_audit.get("remarks") or (f"Salary slip verified for {emp_name}." if slip_doc else f"Salary slip pending upload for {emp_name}.")
+                s_repo = f"Stored in Drive: {slip_doc['file_name']}" if slip_doc else ("Document marked unavailable" if s_avail_str == "No" else "No verified file in database")
+
+                evidence_list.append({
+                    "code": f"PS {s_idx + 1} ({e_idx + 1})",
+                    "key": key_ps,
+                    "label": f"Salary Pay Slip — {m_str} {s_year} ({emp_name})",
+                    "employer_id": emp_id,
+                    "employer_name": emp_name,
+                    "available": s_avail,
+                    "availability_status": s_avail_str,
+                    "compliance": s_comp,
+                    "repository_status": s_repo,
+                    "observations": s_obs,
+                    "file_name": slip_doc["file_name"] if slip_doc else None,
+                    "doc_id": slip_doc["id"] if slip_doc else None,
+                    "drive_file_id": slip_doc.get("drive_file_id") if slip_doc else None,
+                    "reporting_month": s_month,
+                    "reporting_year": s_year,
+                })
+
+            # 3. Bank Statements for this employer
+            for b_idx, sal in enumerate(emp_salaries):
+                s_month = sal.get("month")
+                s_year = sal.get("year")
+                m_str = MONTH_NAMES[s_month - 1] if s_month and 1 <= s_month <= 12 else f"Month {s_month}"
+                bank_doc = next(
+                    (d for d in docs if emp_matches(d.get("employer_id"), emp_id) and doc_covers_bank_month(d, s_month, s_year)),
+                    None,
+                )
+                key_bs = f"bank_statement_{emp_id}_{b_idx + 1}"
+                b_audit = get_row_audit(key_bs)
+                b_avail, b_avail_str = map_avail_field(b_audit.get("available"), bool(bank_doc))
+                b_comp = b_audit.get("compliance") or ("Compliant" if bank_doc else "Missing / Non-Compliant")
+                is_consol = bool(bank_doc and (bank_doc.get("is_consolidated") or (bank_doc.get("coverage_start_month") and bank_doc.get("coverage_end_month"))))
+                consol_note = " (Consolidated Statement)" if is_consol else ""
+                b_obs = b_audit.get("remarks") or (f"Bank credit verified for {emp_name}{consol_note}." if bank_doc else f"Bank statement pending upload for {emp_name}.")
+                b_repo = f"Stored in Drive: {bank_doc['file_name']}{consol_note}" if bank_doc else ("Document marked unavailable" if b_avail_str == "No" else "No verified file in database")
+                cov_str = None
+                if is_consol and bank_doc:
+                    st_m = bank_doc.get("coverage_start_month")
+                    st_y = bank_doc.get("coverage_start_year")
+                    end_m = bank_doc.get("coverage_end_month")
+                    end_y = bank_doc.get("coverage_end_year")
+                    if st_m and end_m:
+                        cov_str = f"{MONTH_NAMES[int(st_m) - 1]} {st_y or ''} – {MONTH_NAMES[int(end_m) - 1]} {end_y or ''}".strip()
+
+                evidence_list.append({
+                    "code": f"BS {b_idx + 1} ({e_idx + 1})",
+                    "key": key_bs,
+                    "label": f"Bank Statement / Passbook — {m_str} {s_year} ({emp_name}){consol_note}",
+                    "employer_id": emp_id,
+                    "employer_name": emp_name,
+                    "is_consolidated": is_consol,
+                    "coverage_period": cov_str,
+                    "coverage_start_month": bank_doc.get("coverage_start_month") if is_consol else None,
+                    "coverage_start_year": bank_doc.get("coverage_start_year") if is_consol else None,
+                    "coverage_end_month": bank_doc.get("coverage_end_month") if is_consol else None,
+                    "coverage_end_year": bank_doc.get("coverage_end_year") if is_consol else None,
+                    "covered_months": bank_doc.get("covered_months") if is_consol else [],
+                    "available": b_avail,
+                    "availability_status": b_avail_str,
+                    "compliance": b_comp,
+                    "repository_status": b_repo,
+                    "observations": b_obs,
+                    "file_name": bank_doc["file_name"] if bank_doc else None,
+                    "doc_id": bank_doc["id"] if bank_doc else None,
+                    "drive_file_id": bank_doc.get("drive_file_id") if bank_doc else None,
+                    "reporting_month": s_month,
+                    "reporting_year": s_year,
+                })
+
+    else:
+        # Single-Employer Backward-Compatible Structure (AL/OL, PS 1-3, BS 1-3)
+        single_emp_name = employer_entries[0].get("employer_name") if employer_entries else None
+        single_emp_id = employer_entries[0].get("id") or employer_entries[0].get("employer_id") if employer_entries else None
+
+        al_doc = next(
+            (d for d in docs if d.get("document_type") == "APPOINTMENT_LETTER" and d.get("upload_status") == "SUCCESS"),
+            None,
+        )
+        successful_slips = sorted(
+            [d for d in docs if d.get("document_type") == "SALARY_SLIP" and d.get("upload_status") == "SUCCESS"],
+            key=lambda d: (d.get("reporting_year") or 0, d.get("reporting_month") or 0),
+        )
+
+        def find_slip_doc(idx: int) -> dict[str, Any] | None:
+            if idx < len(sorted_salaries):
+                target_year = sorted_salaries[idx].get("year")
+                target_month = sorted_salaries[idx].get("month")
+                match = next((d for d in successful_slips if d.get("reporting_year") == target_year and d.get("reporting_month") == target_month), None)
+                if match:
+                    return match
+            return successful_slips[idx] if idx < len(successful_slips) else None
+
+        def find_bank_doc(idx: int) -> dict[str, Any] | None:
+            if idx < len(sorted_salaries):
+                target_year = sorted_salaries[idx].get("year")
+                target_month = sorted_salaries[idx].get("month")
+                target_emp = sorted_salaries[idx].get("employer_id") or single_emp_id
+                match = next((d for d in docs if doc_covers_bank_month(d, target_month, target_year) and emp_matches(d.get("employer_id"), target_emp)), None)
+                if match:
+                    return match
+            return None
+
+        def slip_label(idx: int) -> str:
+            if idx < len(sorted_salaries) and sorted_salaries[idx].get("month"):
+                m = sorted_salaries[idx]["month"]
+                y = sorted_salaries[idx].get("year")
+                m_str = MONTH_NAMES[m - 1] if 1 <= m <= 12 else f"Month {m}"
+                return f"Salary Pay Slip — {m_str} {y or ''}".strip()
+            return f"Salary Pay Slip — Month {idx + 1}"
+
+        def bank_label(idx: int) -> str:
+            doc = find_bank_doc(idx)
+            if idx < len(sorted_salaries) and sorted_salaries[idx].get("month"):
+                m = sorted_salaries[idx]["month"]
+                y = sorted_salaries[idx].get("year")
+                m_str = MONTH_NAMES[m - 1] if 1 <= m <= 12 else f"Month {m}"
+                consol_suffix = " (Consolidated Statement)" if (doc and (doc.get("is_consolidated") or (doc.get("coverage_start_month") and doc.get("coverage_end_month")))) else ""
+                return f"Bank Statement / Passbook — {m_str} {y or ''}{consol_suffix}".strip()
+            return f"Bank Statement / Passbook — Month {idx + 1}"
+
+        # AL / OL
+        al_audit = get_row_audit("appointment_letter")
+        al_avail, al_avail_str = map_avail_field(al_audit.get("available"), bool(al_doc))
+        al_comp = al_audit.get("compliance") or ("Compliant" if al_doc else "Missing / Non-Compliant")
+        al_obs = al_audit.get("remarks") or ("Appointment letter verified against candidate placement record." if al_doc else "Mandatory appointment/offer letter is pending upload.")
+        al_repo = f"Stored in Drive: {al_doc['file_name']}" if al_doc else ("Document marked unavailable by coordinator" if al_avail_str == "No" else ("Document pending upload" if al_avail_str == "Pending" else "No verified file in database"))
+
+        evidence_list.append({
             "code": "AL / OL",
             "key": "appointment_letter",
             "label": "Appointment / Offer Letter",
+            "employer_id": single_emp_id,
+            "employer_name": single_emp_name,
             "available": al_avail,
             "availability_status": al_avail_str,
             "compliance": al_comp,
@@ -902,66 +1214,84 @@ def get_audit_statement(
             "observations": al_obs,
             "file_name": al_doc["file_name"] if al_doc else None,
             "doc_id": al_doc["id"] if al_doc else None,
-        }
-    ]
-
-    for i in range(3):
-        doc = find_slip_doc(i)
-        key = f"salary_slip_{i + 1}"
-        s_audit = get_row_audit(key)
-        s_avail, s_avail_str = map_avail_field(s_audit.get("available"), bool(doc))
-        s_comp = s_audit.get("compliance")
-        if not s_comp:
-            s_comp = "Compliant" if doc else "Missing / Non-Compliant"
-        s_obs = s_audit.get("remarks")
-        if not s_obs:
-            s_obs = "Disbursement slip verified with gross remuneration." if doc else "Salary slip pending upload."
-        s_repo = f"Stored in Drive: {doc['file_name']}" if doc else ("Document marked unavailable by coordinator" if s_avail_str == "No" else ("Document pending upload" if s_avail_str == "Pending" else "No verified file in database"))
-
-        evidence_list.append({
-            "code": f"PS {i + 1}",
-            "key": key,
-            "label": slip_label(i),
-            "available": s_avail,
-            "availability_status": s_avail_str,
-            "compliance": s_comp,
-            "repository_status": s_repo,
-            "observations": s_obs,
-            "file_name": doc["file_name"] if doc else None,
-            "doc_id": doc["id"] if doc else None,
-            "reporting_month": doc.get("reporting_month") if doc else None,
-            "reporting_year": doc.get("reporting_year") if doc else None,
+            "drive_file_id": al_doc.get("drive_file_id") if al_doc else None,
         })
 
-    for i in range(3):
-        doc = find_bank_doc(i)
-        key = f"bank_statement_{i + 1}"
-        b_audit = get_row_audit(key)
-        b_avail, b_avail_str = map_avail_field(b_audit.get("available"), bool(doc))
-        b_comp = b_audit.get("compliance")
-        if not b_comp:
-            b_comp = "Compliant" if doc else "Missing / Non-Compliant"
-        b_obs = b_audit.get("remarks")
-        if not b_obs:
-            b_obs = "Bank statement credit entry verified." if doc else "Mandatory bank statement is pending upload."
-        b_repo = f"Stored in Drive: {doc['file_name']}" if doc else ("Document marked unavailable by coordinator" if b_avail_str == "No" else ("Document pending upload" if b_avail_str == "Pending" else "No verified file in database"))
+        for i in range(max(3, len(sorted_salaries))):
+            doc = find_slip_doc(i)
+            key = f"salary_slip_{i + 1}"
+            s_audit = get_row_audit(key)
+            s_avail, s_avail_str = map_avail_field(s_audit.get("available"), bool(doc))
+            s_comp = s_audit.get("compliance") or ("Compliant" if doc else "Missing / Non-Compliant")
+            s_obs = s_audit.get("remarks") or ("Disbursement slip verified with gross remuneration." if doc else "Salary slip pending upload.")
+            s_repo = f"Stored in Drive: {doc['file_name']}" if doc else ("Document marked unavailable by coordinator" if s_avail_str == "No" else ("Document pending upload" if s_avail_str == "Pending" else "No verified file in database"))
 
-        evidence_list.append({
-            "code": f"BS {i + 1}",
-            "key": key,
-            "label": bank_label(i),
-            "available": b_avail,
-            "availability_status": b_avail_str,
-            "compliance": b_comp,
-            "repository_status": b_repo,
-            "observations": b_obs,
-            "file_name": doc["file_name"] if doc else None,
-            "doc_id": doc["id"] if doc else None,
-            "reporting_month": doc.get("reporting_month") if doc else None,
-            "reporting_year": doc.get("reporting_year") if doc else None,
-        })
+            evidence_list.append({
+                "code": f"PS {i + 1}",
+                "key": key,
+                "label": slip_label(i),
+                "employer_id": single_emp_id,
+                "employer_name": single_emp_name,
+                "available": s_avail,
+                "availability_status": s_avail_str,
+                "compliance": s_comp,
+                "repository_status": s_repo,
+                "observations": s_obs,
+                "file_name": doc["file_name"] if doc else None,
+                "doc_id": doc["id"] if doc else None,
+                "drive_file_id": doc.get("drive_file_id") if doc else None,
+                "reporting_month": doc.get("reporting_month") if doc else None,
+                "reporting_year": doc.get("reporting_year") if doc else None,
+            })
 
-    # Row 8: Optional Other Document
+        for i in range(max(3, len(sorted_salaries))):
+            doc = find_bank_doc(i)
+            key = f"bank_statement_{i + 1}"
+            b_audit = get_row_audit(key)
+            b_avail, b_avail_str = map_avail_field(b_audit.get("available"), bool(doc))
+            b_comp = b_audit.get("compliance") or ("Compliant" if doc else "Missing / Non-Compliant")
+            is_consol = bool(doc and (doc.get("is_consolidated") or (doc.get("coverage_start_month") and doc.get("coverage_end_month"))))
+            consol_note = " (Consolidated Statement)" if is_consol else ""
+            b_obs = b_audit.get("remarks") or (f"Bank statement credit entry verified{consol_note}." if doc else "Mandatory bank statement is pending upload.")
+            b_repo = f"Stored in Drive: {doc['file_name']}{consol_note}" if doc else ("Document marked unavailable by coordinator" if b_avail_str == "No" else ("Document pending upload" if b_avail_str == "Pending" else "No verified file in database"))
+            cov_str = None
+            if is_consol and doc:
+                st_m = doc.get("coverage_start_month")
+                st_y = doc.get("coverage_start_year")
+                end_m = doc.get("coverage_end_month")
+                end_y = doc.get("coverage_end_year")
+                if st_m and end_m:
+                    cov_str = f"{MONTH_NAMES[int(st_m) - 1]} {st_y or ''} – {MONTH_NAMES[int(end_m) - 1]} {end_y or ''}".strip()
+
+            target_m = sorted_salaries[i].get("month") if i < len(sorted_salaries) else (doc.get("reporting_month") if doc else None)
+            target_y = sorted_salaries[i].get("year") if i < len(sorted_salaries) else (doc.get("reporting_year") if doc else None)
+
+            evidence_list.append({
+                "code": f"BS {i + 1}",
+                "key": key,
+                "label": bank_label(i),
+                "employer_id": single_emp_id,
+                "employer_name": single_emp_name,
+                "is_consolidated": is_consol,
+                "coverage_period": cov_str,
+                "coverage_start_month": doc.get("coverage_start_month") if is_consol else None,
+                "coverage_start_year": doc.get("coverage_start_year") if is_consol else None,
+                "coverage_end_month": doc.get("coverage_end_month") if is_consol else None,
+                "coverage_end_year": doc.get("coverage_end_year") if is_consol else None,
+                "covered_months": doc.get("covered_months") if is_consol else [],
+                "available": b_avail,
+                "availability_status": b_avail_str,
+                "compliance": b_comp,
+                "repository_status": b_repo,
+                "observations": b_obs,
+                "file_name": doc["file_name"] if doc else None,
+                "doc_id": doc["id"] if doc else None,
+                "drive_file_id": doc.get("drive_file_id") if doc else None,
+                "reporting_month": target_m,
+                "reporting_year": target_y,
+            })
+
+    # Row: Optional Other Document
     other_doc = next(
         (d for d in docs if d.get("document_type") == "OTHER_DOCUMENT" and d.get("upload_status") == "SUCCESS"),
         None,
@@ -991,6 +1321,27 @@ def get_audit_statement(
         "doc_id": other_doc["id"] if other_doc else None,
     })
 
+
+    employer_summaries = {}
+    if len(employer_entries) > 1:
+        for e_idx, emp in enumerate(employer_entries):
+            emp_id = emp.get("id") or emp.get("employer_id") or f"emp_{e_idx + 1}"
+            emp_sals = [s for s in salary_entries if (s.get("employer_id") == emp_id or (len(employer_entries) == 1 and not s.get("employer_id")))]
+            e_cred = sum(float(s.get("amount_credited") or 0) for s in emp_sals)
+            e_gross = sum(float(s.get("gross_salary") or 0) for s in emp_sals)
+            e_ded = sum(float(s.get("deductions") or 0) for s in emp_sals)
+            e_net = sum(float(s.get("net_salary") or 0) for s in emp_sals)
+            e_avg = (e_gross / len(emp_sals)) if emp_sals else 0
+            employer_summaries[emp_id] = {
+                "employer_name": emp.get("employer_name"),
+                "total_credited": round(e_cred, 2),
+                "total_gross": round(e_gross, 2),
+                "total_deductions": round(e_ded, 2),
+                "total_net": round(e_net, 2),
+                "average_gross": round(e_avg, 2),
+                "month_count": len(emp_sals),
+            }
+
     audit_status = (audit and audit.get("audit_status")) or "DRAFT"
     cpass_status = (audit and audit.get("cpass_status")) or "PENDING"
     finalized_at = audit and audit.get("finalized_at")
@@ -1015,6 +1366,7 @@ def get_audit_statement(
             "average_gross": round(avg_salary, 2),
             "months_count": len(salary_entries),
             "month_count": len(salary_entries),
+            "employer_summaries": employer_summaries,
         },
         "document_evidence": evidence_list,
         "documents": docs,
@@ -1258,7 +1610,7 @@ def approve_placement_audit(
     # 5. Document Checklist Verification
     docs_res = (
         supabase.table("candidate_documents")
-        .select("id,document_type,reporting_month,reporting_year,file_name,upload_status")
+        .select("id,document_type,reporting_month,reporting_year,file_name,upload_status,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .execute()
@@ -1274,8 +1626,43 @@ def approve_placement_audit(
         raise HTTPException(400, "Approval blocked: Candidate is missing a verified Appointment / Offer Letter.")
     if len(slips) < 3:
         raise HTTPException(400, f"Approval blocked: At least 3 verified Salary Slips required (found: {len(slips)}).")
-    if len(banks) < 3:
-        raise HTTPException(400, f"Approval blocked: At least 3 verified Bank Statements required (found: {len(banks)}).")
+
+    bank_statement_months = set()
+    for d in banks:
+        if d.get("is_consolidated"):
+            cov = d.get("covered_months") or []
+            if isinstance(cov, str):
+                try:
+                    cov = json.loads(cov)
+                except Exception:
+                    cov = []
+            if isinstance(cov, list) and cov:
+                for c in cov:
+                    if isinstance(c, dict) and c.get("year") and c.get("month"):
+                        bank_statement_months.add((c["year"], c["month"]))
+            else:
+                st_m = d.get("coverage_start_month")
+                st_y = d.get("coverage_start_year")
+                end_m = d.get("coverage_end_month")
+                end_y = d.get("coverage_end_year")
+                if st_m and st_y and end_m and end_y:
+                    cur = st_y * 12 + st_m
+                    fin = end_y * 12 + end_m
+                    while cur <= fin:
+                        y = cur // 12
+                        m = cur % 12
+                        if m == 0:
+                            y -= 1
+                            m = 12
+                        bank_statement_months.add((y, m))
+                        cur += 1
+        elif d.get("reporting_month"):
+            bank_statement_months.add((d.get("reporting_year") or 0, d["reporting_month"]))
+        else:
+            bank_statement_months.add((0, len(bank_statement_months) + 1))
+
+    if len(bank_statement_months) < 3:
+        raise HTTPException(400, f"Approval blocked: At least 3 verified Bank Statement months required (found coverage for: {len(bank_statement_months)}).")
 
     doc_audit = audit.get("document_audit") or {}
     l2_reviews = doc_audit.get("l2_document_reviews") or {}
@@ -1288,9 +1675,16 @@ def approve_placement_audit(
         if not l2_reviews.get(str(s["id"]), {}).get("reviewed"):
             unreviewed.append(f"Salary Slip (Month {s.get('reporting_month') or (i + 1)})")
 
-    for i, b in enumerate(banks[:3]):
+    for i, b in enumerate(banks):
         if not l2_reviews.get(str(b["id"]), {}).get("reviewed"):
-            unreviewed.append(f"Bank Statement (Month {b.get('reporting_month') or (i + 1)})")
+            if b.get("is_consolidated"):
+                st_m = b.get("coverage_start_month")
+                st_y = b.get("coverage_start_year")
+                end_m = b.get("coverage_end_month")
+                end_y = b.get("coverage_end_year")
+                unreviewed.append(f"Consolidated Bank Statement ({st_m}/{st_y} – {end_m}/{end_y})")
+            else:
+                unreviewed.append(f"Bank Statement (Month {b.get('reporting_month') or (i + 1)})")
 
     if unreviewed:
         raise HTTPException(

@@ -73,7 +73,7 @@ export default function Login() {
   }
 
   useEffect(() => {
-    if (loading) return
+    if (loading || profile) return
     const stage = stageRef.current
     if (!stage) return
 
@@ -94,10 +94,8 @@ export default function Login() {
     let drag = false
     let lx = 0
     let lt = 0
-    let prev = 0
+    let prev = null
     let rafId
-
-    const clock = document.documentElement.animate([{ opacity: 1 }, { opacity: 1 }], { duration: 1e9 })
 
     function lay() {
       const W = stage.clientWidth || 320
@@ -144,9 +142,12 @@ export default function Login() {
       })
     }
 
-    function frame() {
-      const now = clock.currentTime || performance.now()
-      const dt = Math.min(0.05, (now - prev) / 1000 || 0)
+    function frame(timestamp) {
+      const now = typeof timestamp === 'number' ? timestamp : performance.now()
+      if (prev === null) {
+        prev = now
+      }
+      const dt = Math.min(0.05, Math.max(0, (now - prev) / 1000))
       prev = now
       if (!drag && !RM) {
         sc += (50 * 0.6 + vel) * dt
@@ -189,6 +190,7 @@ export default function Login() {
     stage.addEventListener('pointerup', onPointerUp)
     stage.addEventListener('pointercancel', onPointerUp)
 
+    lay()
     rafId = requestAnimationFrame(frame)
 
     // Run entrance animations if not reduced motion
@@ -233,7 +235,6 @@ export default function Login() {
 
     return () => {
       cancelAnimationFrame(rafId)
-      clock.cancel()
       window.removeEventListener('resize', lay)
       stage.removeEventListener('pointerdown', onPointerDown)
       stage.removeEventListener('pointermove', onPointerMove)
@@ -241,7 +242,7 @@ export default function Login() {
       stage.removeEventListener('pointercancel', onPointerUp)
       stage.innerHTML = ''
     }
-  }, [loading])
+  }, [loading, profile])
 
   if (loading) {
     return (

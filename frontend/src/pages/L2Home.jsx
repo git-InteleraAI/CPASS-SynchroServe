@@ -5,6 +5,11 @@ import PlacementAuditStatement from '../components/PlacementAuditStatement'
 import ErrorBoundary from '../components/ErrorBoundary'
 import PdfViewer from '../components/PdfViewer'
 import './L2Home.css'
+import {
+  MONTH_NAMES,
+  calculateNextSalaryPeriodForEmployer,
+  getEmployerDocumentSequence
+} from '../lib/salarySequenceHelper'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -13,11 +18,6 @@ const RESET = {
   batch: ['cand'],
   cand: [],
 }
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-]
 
 function getStageBadgeClass(status) {
   const s = (status || '').toLowerCase()
@@ -548,17 +548,18 @@ export default function L2Home() {
     setHasUnsavedChanges(true)
   }
 
-  const handleAddSalary = () => {
+  const handleAddSalary = (targetEmpId = null) => {
     if (editedData.salary_details.length >= 12) return
-    const nextMonth = ((editedData.salary_details[editedData.salary_details.length - 1]?.month || 1) % 12) + 1
-    const year = editedData.salary_details[editedData.salary_details.length - 1]?.year || 2026
+    const empId = targetEmpId || editedData.salary_details[editedData.salary_details.length - 1]?.employer_id || editedData.employers?.[0]?.id || 'emp_1'
+    const nextPeriod = calculateNextSalaryPeriodForEmployer(empId, editedData.salary_details, 2026)
     setEditedData((prev) => ({
       ...prev,
       salary_details: [
         ...prev.salary_details,
         {
-          month: nextMonth,
-          year: year,
+          employer_id: empId,
+          month: nextPeriod.month,
+          year: nextPeriod.year,
           working_days: 26,
           pay_days: 26,
           leave_days: 0,
@@ -714,20 +715,35 @@ export default function L2Home() {
   // ---------------------------------------------------------------------------
   // 8. Checklist & Approval Readiness Calculations
   // ---------------------------------------------------------------------------
+  const employersList = statementData?.employer_details || (statementData?.employer_name ? [{ id: 'emp_1', employer_name: statementData.employer_name }] : [])
+  const getEmployerName = (empId) => {
+    if (!empId) return null
+    const emp = employersList.find((e) => e.id === empId)
+    return emp?.employer_name || null
+  }
+
   const successDocs = documents.filter((d) => d.upload_status === 'SUCCESS')
-  const appointmentDoc = successDocs.find((d) => d.document_type === 'APPOINTMENT_LETTER')
+  const appointmentDocs = successDocs.filter((d) => d.document_type === 'APPOINTMENT_LETTER')
+  const appointmentDoc = appointmentDocs[0]
   const salaryDocs = successDocs.filter((d) => d.document_type === 'SALARY_SLIP')
   const bankDocs = successDocs.filter((d) => d.document_type === 'BANK_STATEMENT')
   const otherDocs = successDocs.filter((d) => !['APPOINTMENT_LETTER', 'SALARY_SLIP', 'BANK_STATEMENT'].includes(d.document_type))
 
-  const isAppointmentReviewed = appointmentDoc && docReviews[String(appointmentDoc.id)]?.reviewed
+  const requiredAppointmentCount = Math.max(1, employersList.length)
+  const reviewedAppointmentCount = appointmentDocs.filter((d) => docReviews[String(d.id)]?.reviewed).length
+  const allAppointmentsReviewed = appointmentDocs.length >= requiredAppointmentCount && appointmentDocs.every((d) => docReviews[String(d.id)]?.reviewed)
+
   const reviewedSalaryCount = salaryDocs.filter((d) => docReviews[String(d.id)]?.reviewed).length
   const reviewedBankCount = bankDocs.filter((d) => docReviews[String(d.id)]?.reviewed).length
 
+  // Consolidated bank statements count towards month coverage
+  const hasConsolidatedBank = bankDocs.some((d) => d.is_consolidated)
+  const allBankReviewed = bankDocs.length > 0 && bankDocs.every((d) => docReviews[String(d.id)]?.reviewed) && (bankDocs.length >= 3 || hasConsolidatedBank)
+
   const allMandatoryReviewed =
-    Boolean(appointmentDoc && isAppointmentReviewed) &&
+    allAppointmentsReviewed &&
     reviewedSalaryCount >= 3 &&
-    reviewedBankCount >= 3
+    allBankReviewed
 
   const auditStatus = statementData?.audit_status || 'DRAFT'
   const cpassStatus = statementData?.cpass_status || 'PENDING'
@@ -1430,43 +1446,50 @@ export default function L2Home() {
                   <div className="l2-doc-list">
                     {/* Appointment Letter Section */}
                     <div className="l2-evidence-category-header">
-                      <span>1. Appointment / Offer Letter</span>
+                      <span>1. Appointment / Offer Letter {employersList.length > 1 ? `(${appointmentDocs.length}/${employersList.length})` : ''}</span>
                     </div>
 
-                    {appointmentDoc ? (
-                      <div className="l2-doc-card">
-                        <div className="l2-doc-card-top">
-                          <span className="l2-doc-type-icon">✉</span>
-                          <div className="l2-doc-meta">
-                            <span className="l2-doc-name">{appointmentDoc.file_name}</span>
-                            <span className="l2-doc-sub">Appointment / Offer Letter • Verified in Drive</span>
+                    {appointmentDocs.length > 0 ? (
+                      appointmentDocs.map((doc) => (
+                        <div key={doc.id} className="l2-doc-card">
+                          <div className="l2-doc-card-top">
+                            <span className="l2-doc-type-icon">✉</span>
+                            <div className="l2-doc-meta">
+                              <span className="l2-doc-name">{doc.file_name}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                                <span className="l2-doc-sub">Appointment / Offer Letter • Verified in Drive</span>
+                                {doc.employer_id && getEmployerName(doc.employer_id) && (
+                                  <span className="l1-emp-badge">🏢 {getEmployerName(doc.employer_id)}</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="l2-doc-actions">
+                              <button
+                                type="button"
+                                className="l2-btn-preview"
+                                onClick={() => handlePreviewDocument(doc)}
+                              >
+                                <span>👁</span> Preview
+                              </button>
+                            </div>
                           </div>
-                          <div className="l2-doc-actions">
-                            <button
-                              type="button"
-                              className="l2-btn-preview"
-                              onClick={() => handlePreviewDocument(appointmentDoc)}
-                            >
-                              <span>👁</span> Preview
-                            </button>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f1f5f9', paddingTop: '8px' }}>
+                            <label className={`l2-review-checkbox-label ${docReviews[String(doc.id)]?.reviewed ? 'reviewed' : 'pending'}`}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(docReviews[String(doc.id)]?.reviewed)}
+                                onChange={(e) => handleToggleDocReview(doc.id, e.target.checked)}
+                              />
+                              <span>{docReviews[String(doc.id)]?.reviewed ? '✓ Verified by Manager' : 'Mark Reviewed'}</span>
+                            </label>
+                            {docReviews[String(doc.id)]?.reviewed && (
+                              <span style={{ fontSize: '11px', color: '#166534', fontWeight: 600 }}>
+                                Reviewed on {new Date(docReviews[String(doc.id)].reviewed_at).toLocaleDateString()}
+                              </span>
+                            )}
                           </div>
                         </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f1f5f9', paddingTop: '8px' }}>
-                          <label className={`l2-review-checkbox-label ${docReviews[String(appointmentDoc.id)]?.reviewed ? 'reviewed' : 'pending'}`}>
-                            <input
-                              type="checkbox"
-                              checked={Boolean(docReviews[String(appointmentDoc.id)]?.reviewed)}
-                              onChange={(e) => handleToggleDocReview(appointmentDoc.id, e.target.checked)}
-                            />
-                            <span>{docReviews[String(appointmentDoc.id)]?.reviewed ? '✓ Verified by Manager' : 'Mark Reviewed'}</span>
-                          </label>
-                          {docReviews[String(appointmentDoc.id)]?.reviewed && (
-                            <span style={{ fontSize: '11px', color: '#166534', fontWeight: 600 }}>
-                              Reviewed on {new Date(docReviews[String(appointmentDoc.id)].reviewed_at).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                      ))
                     ) : (
                       <div className="l2-doc-card" style={{ background: '#fef2f2', borderColor: '#fca5a5' }}>
                         <span style={{ fontSize: '13px', color: '#991b1b', fontWeight: 600 }}>
@@ -1480,15 +1503,22 @@ export default function L2Home() {
                       <span>2. Monthly Salary Slips (Min 3 Required)</span>
                     </div>
 
-                    {salaryDocs.map((doc, idx) => (
+                    {salaryDocs.map((doc, idx) => {
+                      const empSeq = getEmployerDocumentSequence(doc, successDocs)
+                      return (
                       <div key={doc.id} className="l2-doc-card">
                         <div className="l2-doc-card-top">
                           <span className="l2-doc-type-icon">₹</span>
                           <div className="l2-doc-meta">
                             <span className="l2-doc-name">{doc.file_name}</span>
-                            <span className="l2-doc-sub">
-                              {doc.reporting_month ? `${MONTH_NAMES[doc.reporting_month - 1] || doc.reporting_month} ${doc.reporting_year || ''}` : `Month ${idx + 1}`} • Verified in Drive
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                              <span className="l2-doc-sub">
+                                {doc.reporting_month ? `Month ${empSeq} — ${MONTH_NAMES[doc.reporting_month - 1] || doc.reporting_month} ${doc.reporting_year || ''}` : `Month ${empSeq}`} • Verified in Drive
+                              </span>
+                              {doc.employer_id && getEmployerName(doc.employer_id) && (
+                                <span className="l1-emp-badge">🏢 {getEmployerName(doc.employer_id)}</span>
+                              )}
+                            </div>
                           </div>
                           <div className="l2-doc-actions">
                             <button
@@ -1516,7 +1546,7 @@ export default function L2Home() {
                           )}
                         </div>
                       </div>
-                    ))}
+                    )})}
                     {salaryDocs.length === 0 && (
                       <div className="l2-doc-card" style={{ background: '#fef2f2', borderColor: '#fca5a5' }}>
                         <span style={{ fontSize: '13px', color: '#991b1b', fontWeight: 600 }}>
@@ -1536,9 +1566,20 @@ export default function L2Home() {
                           <span className="l2-doc-type-icon">▤</span>
                           <div className="l2-doc-meta">
                             <span className="l2-doc-name">{doc.file_name}</span>
-                            <span className="l2-doc-sub">
-                              {doc.reporting_month ? `${MONTH_NAMES[doc.reporting_month - 1] || doc.reporting_month} ${doc.reporting_year || ''}` : `Month ${idx + 1}`} • Verified in Drive
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                              {doc.is_consolidated ? (
+                                <span className="l1-coverage-badge">
+                                  📅 Consolidated: {MONTH_NAMES[(doc.coverage_start_month || 1) - 1]} {doc.coverage_start_year} – {MONTH_NAMES[(doc.coverage_end_month || 1) - 1]} {doc.coverage_end_year}
+                                </span>
+                              ) : (
+                                <span className="l2-doc-sub">
+                                  {doc.reporting_month ? `${MONTH_NAMES[doc.reporting_month - 1] || doc.reporting_month} ${doc.reporting_year || ''}` : `Month ${idx + 1}`} • Verified in Drive
+                                </span>
+                              )}
+                              {doc.employer_id && getEmployerName(doc.employer_id) && (
+                                <span className="l1-emp-badge">🏢 {getEmployerName(doc.employer_id)}</span>
+                              )}
+                            </div>
                           </div>
                           <div className="l2-doc-actions">
                             <button
@@ -1638,7 +1679,7 @@ export default function L2Home() {
                   <span>L2 Center Manager Review</span>
                 )}
                 <span className={`l2-status-badge ${allMandatoryReviewed ? 'approved' : 'pending'}`} style={{ fontSize: '11px', padding: '2px 8px' }}>
-                  Checklist: {(appointmentDoc && isAppointmentReviewed ? 1 : 0) + reviewedSalaryCount + reviewedBankCount} of 7 Reviewed
+                  Checklist: {reviewedAppointmentCount + reviewedSalaryCount + reviewedBankCount} of {requiredAppointmentCount + Math.max(3, salaryDocs.length) + (hasConsolidatedBank ? bankDocs.length : Math.max(3, bankDocs.length))} Reviewed
                 </span>
               </span>
               <span className="l2-dock-sub">

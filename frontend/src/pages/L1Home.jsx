@@ -4,6 +4,13 @@ import synchroLogo from '../../assets/SynchroServeLogoHD.png'
 import './L1Home.css'
 import ErrorBoundary from '../components/ErrorBoundary'
 import PlacementAuditStatement from '../components/PlacementAuditStatement'
+import {
+  MONTH_NAMES,
+  getEmployerSalarySequence,
+  formatEmployerSalaryLabel,
+  findPreviousSalaryRecordForEmployer,
+  calculateNextSalaryPeriodForEmployer
+} from '../lib/salarySequenceHelper'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -12,11 +19,6 @@ const RESET = {
   batch: ['cand'],
   cand: [],
 }
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-]
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024 // 10 MB
 const ALLOWED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg']
@@ -237,9 +239,9 @@ function FileUploadControl({
 // -----------------------------------------------------------------------------
 // Placement Audit Default State Creators
 // -----------------------------------------------------------------------------
-function createDefaultEmployer(detail) {
+function createDefaultEmployer(detail, idOverride) {
   return {
-    id: `emp_${Date.now()}_1`,
+    id: idOverride || `emp_${Date.now()}_1`,
     employer_name: detail?.employer_name || '',
     months_worked: '',
     appointment_date: detail?.appointed_date || '',
@@ -250,11 +252,12 @@ function createDefaultEmployer(detail) {
   }
 }
 
-function createDefaultSalaryList(year) {
+function createDefaultSalaryList(year, employerId = 'emp_1') {
   const y = year || new Date().getFullYear()
   return [
     {
       id: `sal_${Date.now()}_1`,
+      employer_id: employerId,
       month: 1,
       year: y,
       working_days: 26,
@@ -269,6 +272,7 @@ function createDefaultSalaryList(year) {
     },
     {
       id: `sal_${Date.now()}_2`,
+      employer_id: employerId,
       month: 2,
       year: y,
       working_days: 26,
@@ -283,6 +287,7 @@ function createDefaultSalaryList(year) {
     },
     {
       id: `sal_${Date.now()}_3`,
+      employer_id: employerId,
       month: 3,
       year: y,
       working_days: 26,
@@ -317,28 +322,18 @@ function normalizeDocAudit(data) {
   const defaults = createDefaultDocAudit()
   if (!data || typeof data !== 'object') return defaults
 
-  const out = { ...defaults, ...data }
-  const docKeys = [
-    'appointment_letter',
-    'salary_slip_1',
-    'salary_slip_2',
-    'salary_slip_3',
-    'bank_statement_1',
-    'bank_statement_2',
-    'bank_statement_3',
-    'other_document',
-  ]
-  for (const k of docKeys) {
-    const raw = data[k]
-    if (raw && typeof raw === 'object') {
+  const out = { ...defaults }
+  for (const [k, v] of Object.entries(data)) {
+    if (v && typeof v === 'object') {
       out[k] = {
-        available: raw.available || 'Pending',
-        compliance: raw.compliance || 'Under Verification',
-        remarks: raw.remarks || '',
-        title: raw.title || '',
+        available: v.available || 'Pending',
+        compliance: v.compliance || 'Under Verification',
+        remarks: v.remarks || '',
+        title: v.title || '',
+        explicitlySet: Boolean(v.explicitlySet),
       }
     } else {
-      out[k] = { ...defaults[k] }
+      out[k] = v
     }
   }
   return out
@@ -420,6 +415,26 @@ export default function L1Home() {
   const [stagedAppointment, setStagedAppointment] = useState(null)
   const [replacingAppointment, setReplacingAppointment] = useState(false)
   const [appointmentError, setAppointmentError] = useState('')
+
+  // Multi-employer appointment letter staging: { [empId]: { file, fileName, fileSize, replaceId } }
+  const [stagedAppointments, setStagedAppointments] = useState({})
+  const [replacingAppointments, setReplacingAppointments] = useState({})
+  const [appointmentErrors, setAppointmentErrors] = useState({})
+
+  // Multi-month Consolidated Bank Statement Staging:
+  const [stagedConsolidatedBankDocs, setStagedConsolidatedBankDocs] = useState([])
+  const [showConsolidatedModal, setShowConsolidatedModal] = useState(false)
+  const [consolidatedForm, setConsolidatedForm] = useState({
+    employer_id: '',
+    start_month: 1,
+    start_year: currentYear,
+    end_month: 3,
+    end_year: currentYear,
+    file: null,
+    fileName: '',
+    fileSize: 0,
+    error: '',
+  })
 
   // Other document staging: { file, fileName, fileSize, replaceId } | null
   const [stagedOtherDoc, setStagedOtherDoc] = useState(null)
@@ -709,6 +724,10 @@ export default function L1Home() {
     setStagedAppointment(null)
     setReplacingAppointment(false)
     setAppointmentError('')
+    setStagedAppointments({})
+    setReplacingAppointments({})
+    setAppointmentErrors({})
+    setStagedConsolidatedBankDocs([])
     setStagedOtherDoc(null)
     setOtherDocTitle('')
     setReplacingOtherDoc(false)
@@ -759,7 +778,7 @@ export default function L1Home() {
           if (Array.isArray(a.employer_details) && a.employer_details.length > 0) {
             setEmployerList(
               a.employer_details.map((e, idx) => ({
-                id: `emp_${idx + 1}`,
+                id: e.id || `emp_${idx + 1}`,
                 employer_name: e.employer_name || '',
                 months_worked: e.months_worked ?? '',
                 appointment_date: e.appointment_date || '',
@@ -770,12 +789,14 @@ export default function L1Home() {
               }))
             )
           } else {
-            setEmployerList([createDefaultEmployer(detail)])
+            setEmployerList([createDefaultEmployer(detail, 'emp_1')])
           }
 
           if (Array.isArray(a.salary_details) && a.salary_details.length > 0) {
+            const firstEmpId = (a.employer_details && a.employer_details[0]?.id) || 'emp_1'
             const loadedSalaryList = a.salary_details.map((s, idx) => ({
-              id: `sal_${idx + 1}`,
+              id: s.id || `sal_${idx + 1}`,
+              employer_id: s.employer_id || firstEmpId,
               month: s.month,
               year: s.year,
               working_days: s.working_days ?? '',
@@ -940,30 +961,24 @@ export default function L1Home() {
   }
 
   // --- Audit Salary List Handlers ---
-  function handleAddSalaryRow() {
+  function handleAddSalaryRow(targetEmpId = null) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
     if (salaryDetailList.length >= 12) {
       setAuditToast({ message: 'Maximum 12 monthly salary entries allowed.', type: 'info' })
       return
     }
-    // Find next unused month in currentYear if possible to avoid duplicate month-year
-    const usedMonths = new Set(salaryDetailList.filter((s) => s.year === currentYear).map((s) => s.month))
-    let nextMonth = 1
-    for (let m = 1; m <= 12; m++) {
-      if (!usedMonths.has(m)) {
-        nextMonth = m
-        break
-      }
-    }
-    if (usedMonths.size >= 12) {
-      nextMonth = ((salaryDetailList.length) % 12) + 1
-    }
+
+    const defaultEmpId = targetEmpId || employerList[0]?.id || 'emp_1'
+    const nextPeriod = calculateNextSalaryPeriodForEmployer(defaultEmpId, salaryDetailList, currentYear)
+    const nextMonth = nextPeriod.month
+    const nextYear = nextPeriod.year
 
     const newId = `sal_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`
     const newRow = {
       id: newId,
+      employer_id: defaultEmpId,
       month: nextMonth,
-      year: currentYear,
+      year: nextYear,
       working_days: 26,
       pay_days: 26,
       leave_days: 0,
@@ -983,7 +998,7 @@ export default function L1Home() {
       {
         id: `sal_${slotId}`,
         month: nextMonth,
-        year: currentYear,
+        year: nextYear,
         file: null,
         fileName: '',
         fileSize: 0,
@@ -997,7 +1012,7 @@ export default function L1Home() {
       {
         id: `bank_${slotId}`,
         month: nextMonth,
-        year: currentYear,
+        year: nextYear,
         file: null,
         fileName: '',
         fileSize: 0,
@@ -1065,6 +1080,78 @@ export default function L1Home() {
     })
   }
 
+  // --- Copy Previous Month (Same Employer) ---
+  function handleCopyPreviousMonth(targetSalId) {
+    if (auditRecord?.audit_status === 'SUBMITTED') return
+    const targetIdx = salaryDetailList.findIndex((s) => s.id === targetSalId)
+    if (targetIdx === -1) return
+    const target = salaryDetailList[targetIdx]
+    const targetEmpId = target.employer_id || employerList[0]?.id || 'emp_1'
+
+    // Look for immediately preceding chronological period for the SAME employer
+    const prevRecord = findPreviousSalaryRecordForEmployer(target, salaryDetailList)
+
+    if (!prevRecord) {
+      const targetEmp = employerList.find((e) => e.id === targetEmpId)
+      setAuditToast({
+        message: `No previous salary record found for "${targetEmp?.employer_name || 'this employer'}" to copy from.`,
+        type: 'info',
+      })
+      return
+    }
+
+    // Safety check: confirm if user already entered data in target row
+    const hasData =
+      (target.working_days !== '' && target.working_days !== 26 && target.working_days !== null) ||
+      (target.gross_salary !== '' && target.gross_salary !== 0 && target.gross_salary !== '0' && target.gross_salary !== null) ||
+      (target.deductions !== '' && target.deductions !== 0 && target.deductions !== '0' && target.deductions !== null) ||
+      (target.bank_name && target.bank_name.trim().length > 0)
+
+    if (hasData) {
+      const prevMonthName = MONTH_NAMES[(prevRecord.month || 1) - 1] || `Month ${prevRecord.month}`
+      const targetMonthName = MONTH_NAMES[(target.month || 1) - 1] || `Month ${target.month}`
+      const confirmed = window.confirm(
+        `Overwrite current salary fields for ${targetMonthName} ${target.year} with reusable details from ${prevMonthName} ${prevRecord.year}?`
+      )
+      if (!confirmed) return
+    }
+
+    // Copy eligible fields only:
+    // working_days, pay_days, leave_days, gross_salary, deductions, net_salary, bank_name
+    // Never copy credit_date, amount_credited, file attachments, remarks, or approval states.
+    const grossVal = prevRecord.gross_salary !== '' && prevRecord.gross_salary !== null ? prevRecord.gross_salary : ''
+    const dedVal = prevRecord.deductions !== '' && prevRecord.deductions !== null ? prevRecord.deductions : ''
+    let netVal = prevRecord.net_salary !== '' && prevRecord.net_salary !== null ? prevRecord.net_salary : ''
+    if (grossVal !== '') {
+      const g = parseFloat(grossVal) || 0
+      const d = parseFloat(dedVal) || 0
+      netVal = Math.max(0, g - d).toString()
+    }
+
+    setSalaryDetailList((prev) =>
+      prev.map((s) =>
+        s.id === targetSalId
+          ? {
+              ...s,
+              working_days: prevRecord.working_days ?? 26,
+              pay_days: prevRecord.pay_days ?? 26,
+              leave_days: prevRecord.leave_days ?? 0,
+              gross_salary: grossVal,
+              deductions: dedVal,
+              net_salary: netVal,
+              bank_name: prevRecord.bank_name || '',
+            }
+          : s
+      )
+    )
+
+    const prevMonthName = MONTH_NAMES[(prevRecord.month || 1) - 1] || `Month ${prevRecord.month}`
+    setAuditToast({
+      message: `✓ Reusable salary fields copied from ${prevMonthName} ${prevRecord.year}. Edit and verify as needed.`,
+      type: 'success',
+    })
+  }
+
   function handleUpdateDocAudit(docKey, field, value) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
     setDocumentAudit((prev) => {
@@ -1078,11 +1165,63 @@ export default function L1Home() {
           title: prevDoc.title || '',
           ...prevDoc,
           [field]: value,
+          ...(field === 'available' ? { explicitlySet: true } : {}),
         },
       }
     })
   }
 
+  function prepareDocumentAuditPayload() {
+    const currentItems = (
+      salaryDetailList.length > 0
+        ? [
+            (() => {
+              const apptEv = resolveEvidence('APPOINTMENT_LETTER', null, null, employerList[0]?.id)
+              return { key: 'appointment_letter', resolved: apptEv }
+            })(),
+            ...salaryDetailList.map((sal, idx) => {
+              const resSal = resolveEvidence('SALARY_SLIP', sal.month, sal.year, sal.employer_id)
+              return { key: `salary_slip_${idx + 1}`, resolved: resSal }
+            }),
+            ...salaryDetailList.map((sal, idx) => {
+              const resBank = resolveEvidence('BANK_STATEMENT', sal.month, sal.year, sal.employer_id)
+              return { key: `bank_statement_${idx + 1}`, resolved: resBank }
+            }),
+            { key: 'other_document', resolved: null }
+          ]
+        : [
+            (() => {
+              const apptEv = resolveEvidence('APPOINTMENT_LETTER', null, null, employerList[0]?.id)
+              return { key: 'appointment_letter', resolved: apptEv }
+            })(),
+            ...[1, 2, 3].map((mIdx) => ({
+              key: `salary_slip_${mIdx}`,
+              resolved: resolveEvidence('SALARY_SLIP', mIdx, currentYear, employerList[0]?.id)
+            })),
+            ...[1, 2, 3].map((mIdx) => ({
+              key: `bank_statement_${mIdx}`,
+              resolved: resolveEvidence('BANK_STATEMENT', mIdx, currentYear, employerList[0]?.id)
+            })),
+            { key: 'other_document', resolved: null }
+          ]
+    )
+
+    const merged = { ...documentAudit }
+    for (const item of currentItems) {
+      const entry = merged[item.key] && typeof merged[item.key] === 'object' ? merged[item.key] : {}
+      const isPresent = item.resolved ? (item.resolved.status === 'PERSISTED' || item.resolved.status === 'STAGED') : false
+      if (!entry.explicitlySet && isPresent) {
+        merged[item.key] = {
+          ...entry,
+          available: 'Yes',
+          compliance: entry.compliance || 'Under Verification',
+          remarks: entry.remarks || '',
+          title: entry.title || '',
+        }
+      }
+    }
+    return merged
+  }
 
   // --- Audit Draft & Submit Handlers ---
   async function handleSaveDraft(isSilent = false) {
@@ -1099,6 +1238,8 @@ export default function L1Home() {
     setAuditSavingDraft(true)
     setError('')
     try {
+      const payloadDocAudit = prepareDocumentAuditPayload()
+      setDocumentAudit(payloadDocAudit)
       const payload = {
         candidate_snapshot: {
           candidate_id: candDetail.candidate_id,
@@ -1115,6 +1256,7 @@ export default function L1Home() {
         employer_details: employerList
           .filter((e) => e.employer_name && e.employer_name.trim())
           .map((e) => ({
+            id: e.id,
             employer_name: e.employer_name.trim(),
             months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
             appointment_date: e.appointment_date || null,
@@ -1124,6 +1266,8 @@ export default function L1Home() {
             minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
           })),
         salary_details: salaryDetailList.map((s) => ({
+          id: s.id,
+          employer_id: s.employer_id || (employerList[0]?.id || 'emp_1'),
           month: parseInt(s.month, 10),
           year: parseInt(s.year, 10),
           working_days: s.working_days !== '' && s.working_days !== null ? parseInt(s.working_days, 10) : null,
@@ -1136,7 +1280,7 @@ export default function L1Home() {
           net_salary: s.net_salary !== '' && s.net_salary !== null ? parseFloat(s.net_salary) : null,
           bank_name: s.bank_name || null,
         })),
-        document_audit: documentAudit,
+        document_audit: payloadDocAudit,
         signoff_details: signoffDetails,
         remarks: auditRecord?.remarks || null,
       }
@@ -1192,42 +1336,59 @@ export default function L1Home() {
       return
     }
 
-    const periods = new Set(salaryDetailList.map((s) => `${s.month}-${s.year}`))
+    // Duplicate reporting period check scoped per employer
+    const periods = new Set(salaryDetailList.map((s) => `${s.employer_id || ''}-${s.month}-${s.year}`))
     if (periods.size < salaryDetailList.length) {
-      setError('Duplicate reporting month and year found in salary details. Each reporting month must be unique.')
-      setAuditToast({ message: 'Duplicate reporting months found.', type: 'error' })
+      setError('Duplicate reporting month and year found for the same employer in salary details. Each reporting month per employer must be unique.')
+      setAuditToast({ message: 'Duplicate reporting months per employer found.', type: 'error' })
       return
     }
 
-    // Validate that documents explicitly marked "Yes" have physical evidence in Drive or browser staging
-    const docFileMap = {
-      appointment_letter: !!appointmentDoc || !!stagedAppointment?.file,
-      salary_slip_1: salarySlips.length > 0 || !!salaryRows[0]?.file,
-      salary_slip_2: salarySlips.length > 1 || !!salaryRows[1]?.file,
-      salary_slip_3: salarySlips.length > 2 || !!salaryRows[2]?.file,
-      bank_statement_1: bankStatements.length > 0 || !!bankRows[0]?.file,
-      bank_statement_2: bankStatements.length > 1 || !!bankRows[1]?.file,
-      bank_statement_3: bankStatements.length > 2 || !!bankRows[2]?.file,
-      other_document: !!otherDoc || !!stagedOtherDoc?.file,
+    // Check appointment letter per employer when multiple employers exist
+    if (validEmployers.length > 1) {
+      for (const emp of validEmployers) {
+        const hasPersisted = safeDocs.some(
+          (d) => d.document_type === 'APPOINTMENT_LETTER' && (d.employer_id === emp.id || !d.employer_id)
+        )
+        const hasStaged = Boolean(stagedAppointments[emp.id]?.file)
+        if (!hasPersisted && !hasStaged) {
+          setError(`Appointment / Offer Letter is missing for employer: "${emp.employer_name}". Every employer must have an offer letter.`)
+          setAuditToast({ message: `Offer letter missing for ${emp.employer_name}`, type: 'error' })
+          return
+        }
+      }
     }
 
-    const checkLabels = [
-      ['appointment_letter', 'Appointment / Offer Letter'],
-      ['salary_slip_1', 'Salary Slip Month 1'],
-      ['salary_slip_2', 'Salary Slip Month 2'],
-      ['salary_slip_3', 'Salary Slip Month 3'],
-      ['bank_statement_1', 'Bank Statement Month 1'],
-      ['bank_statement_2', 'Bank Statement Month 2'],
-      ['bank_statement_3', 'Bank Statement Month 3'],
-    ]
-
-    for (const [key, label] of checkLabels) {
-      const row = documentAudit?.[key]
-      if (row?.available === 'Yes' && !docFileMap[key]) {
-        setError(`"${label}" is marked as "Yes" (Available), but no physical file has been uploaded to Drive or staged. Please attach the file or mark availability as "Pending" or "No".`)
-        setAuditToast({ message: `Physical file missing for ${label}`, type: 'error' })
+    // Validate that documents explicitly marked "Yes" have physical evidence in Drive or browser staging
+    for (let idx = 0; idx < salaryDetailList.length; idx++) {
+      const sal = salaryDetailList[idx]
+      const salKey = `salary_slip_${idx + 1}`
+      const salRow = documentAudit?.[salKey]
+      const salEv = resolveEvidence('SALARY_SLIP', sal.month, sal.year, sal.employer_id)
+      if (salRow?.available === 'Yes' && salEv.status === 'MISSING') {
+        const mName = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+        setError(`"Salary Slip Month ${idx + 1} (${mName} ${sal.year || ''})" is marked as "Yes" (Available), but no physical file has been uploaded to Drive or staged. Please attach the file or mark availability as "Pending" or "No".`)
+        setAuditToast({ message: `Physical file missing for Salary Slip Month ${idx + 1}`, type: 'error' })
         return
       }
+
+      const bankKey = `bank_statement_${idx + 1}`
+      const bankRow = documentAudit?.[bankKey]
+      const bankEv = resolveEvidence('BANK_STATEMENT', sal.month, sal.year, sal.employer_id)
+      if (bankRow?.available === 'Yes' && bankEv.status === 'MISSING') {
+        const mName = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+        setError(`"Bank Statement Month ${idx + 1} (${mName} ${sal.year || ''})" is marked as "Yes" (Available), but no physical file has been uploaded to Drive or staged. Please attach the file or mark availability as "Pending" or "No".`)
+        setAuditToast({ message: `Physical file missing for Bank Statement Month ${idx + 1}`, type: 'error' })
+        return
+      }
+    }
+
+    const apptRow = documentAudit?.appointment_letter
+    const apptEv = resolveEvidence('APPOINTMENT_LETTER', null, null, employerList[0]?.id)
+    if (apptRow?.available === 'Yes' && apptEv.status === 'MISSING') {
+      setError('"Appointment / Offer Letter" is marked as "Yes" (Available), but no physical file has been uploaded to Drive or staged. Please attach the file or mark availability as "Pending" or "No".')
+      setAuditToast({ message: 'Physical file missing for Appointment / Offer Letter', type: 'error' })
+      return
     }
 
     setError('')
@@ -1247,6 +1408,8 @@ export default function L1Home() {
     setError('')
     try {
       const validEmployers = employerList.filter((e) => e.employer_name && e.employer_name.trim())
+      const payloadDocAudit = prepareDocumentAuditPayload()
+      setDocumentAudit(payloadDocAudit)
       const payload = {
         candidate_snapshot: {
           candidate_id: candDetail.candidate_id,
@@ -1261,6 +1424,7 @@ export default function L1Home() {
           sanction_order: sel.order,
         },
         employer_details: validEmployers.map((e) => ({
+          id: e.id,
           employer_name: e.employer_name.trim(),
           months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
           appointment_date: e.appointment_date || null,
@@ -1270,6 +1434,8 @@ export default function L1Home() {
           minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
         })),
         salary_details: salaryDetailList.map((s) => ({
+          id: s.id,
+          employer_id: s.employer_id || (employerList[0]?.id || 'emp_1'),
           month: parseInt(s.month, 10),
           year: parseInt(s.year, 10),
           working_days: s.working_days !== '' && s.working_days !== null ? parseInt(s.working_days, 10) : null,
@@ -1282,7 +1448,7 @@ export default function L1Home() {
           net_salary: s.net_salary !== '' && s.net_salary !== null ? parseFloat(s.net_salary) : null,
           bank_name: s.bank_name || null,
         })),
-        document_audit: documentAudit,
+        document_audit: payloadDocAudit,
         signoff_details: signoffDetails,
         remarks: auditRecord?.remarks || null,
       }
@@ -1414,12 +1580,23 @@ export default function L1Home() {
     return `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim()
   }
   const safeDocs = Array.isArray(documents) ? documents : []
-  const appointmentDoc = safeDocs.find((d) => d.document_type === 'APPOINTMENT_LETTER')
+  const appointmentDocs = safeDocs.filter((d) => d.document_type === 'APPOINTMENT_LETTER')
+  const appointmentDoc = appointmentDocs[0] || null
   const salarySlips = safeDocs.filter((d) => d.document_type === 'SALARY_SLIP')
   const bankStatements = safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT')
+  const isDocConsolidated = (d) => Boolean(
+    d &&
+    d.document_type === 'BANK_STATEMENT' &&
+    (d.is_consolidated === true ||
+     d.is_consolidated === 'true' ||
+     d.is_consolidated === 1 ||
+     (d.coverage_start_month && d.coverage_end_month && Number(d.coverage_end_month) >= Number(d.coverage_start_month)))
+  )
+  const consolidatedBankDocs = safeDocs.filter((d) => isDocConsolidated(d))
+  const individualBankDocs = safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT' && !isDocConsolidated(d))
   const otherDoc = safeDocs.find((d) => d.document_type === 'OTHER_DOCUMENT')
 
-  // --- Staging Handlers for Appointment Letter ---
+  // --- Staging Handlers for Appointment Letter (Multi-Employer Aware) ---
   function handleSelectAppointment(file, isReplacement = false) {
     setAppointmentError('')
     if (!file) return
@@ -1440,6 +1617,397 @@ export default function L1Home() {
     setStagedAppointment(null)
     setAppointmentError('')
     setReplacingAppointment(false)
+  }
+
+  function handleSelectAppointmentForEmployer(empId, file, isReplacement = false) {
+    if (!file) return
+    const err = validateFile(file)
+    setAppointmentErrors((prev) => ({ ...prev, [empId]: err || '' }))
+    if (err) return
+    const existingDoc = appointmentDocs.find((d) => d.employer_id === empId || (!d.employer_id && employerList.length === 1))
+    setStagedAppointments((prev) => ({
+      ...prev,
+      [empId]: {
+        file,
+        fileName: file.name,
+        fileSize: file.size,
+        replaceId: isReplacement && existingDoc ? existingDoc.id : null,
+      },
+    }))
+    if (employerList.length <= 1 || empId === employerList[0]?.id) {
+      setStagedAppointment({
+        file,
+        fileName: file.name,
+        fileSize: file.size,
+        replaceId: isReplacement && existingDoc ? existingDoc.id : null,
+      })
+    }
+  }
+
+  function handleRemoveStagedAppointmentForEmployer(empId) {
+    setStagedAppointments((prev) => {
+      const copy = { ...prev }
+      delete copy[empId]
+      return copy
+    })
+    setAppointmentErrors((prev) => {
+      const copy = { ...prev }
+      delete copy[empId]
+      return copy
+    })
+    setReplacingAppointments((prev) => ({ ...prev, [empId]: false }))
+    if (employerList.length <= 1 || empId === employerList[0]?.id) {
+      setStagedAppointment(null)
+      setAppointmentError('')
+      setReplacingAppointment(false)
+    }
+  }
+
+  // Employer matching helper: resolves any employer ID (e.g. "emp_1", "emp_1793083463814_1", 1, etc.)
+  // to its canonical employer in employerList.
+  function getCanonicalEmployerId(empId) {
+    if (!empId) return employerList[0]?.id || ''
+    const s = String(empId).trim()
+    // 1. Direct match by ID in employerList
+    const direct = employerList.find((e) => String(e.id).trim() === s)
+    if (direct) return String(direct.id).trim()
+    // 2. Match sequence identifier: "emp_1", "emp_2", "1", "2"
+    const norm = s.startsWith('emp_') ? s.slice(4) : s
+    const idx = parseInt(norm, 10)
+    if (!isNaN(idx) && idx >= 1 && idx <= employerList.length) {
+      return String(employerList[idx - 1]?.id).trim()
+    }
+    // 3. If there is only one employer in the list, any employer ID refers to it
+    if (employerList.length <= 1 && employerList[0]) {
+      return String(employerList[0].id).trim()
+    }
+    return s
+  }
+
+  function matchesEmployer(docEmpId, targetEmpId) {
+    if (employerList.length <= 1) return true
+    if (!docEmpId || !targetEmpId) return true
+    const canDoc = getCanonicalEmployerId(docEmpId)
+    const canTarget = getCanonicalEmployerId(targetEmpId)
+    if (canDoc && canTarget) {
+      return canDoc === canTarget
+    }
+    return String(docEmpId).trim() === String(targetEmpId).trim()
+  }
+
+  // --- Consolidated Bank Statement Coverage Check ---
+  function getConsolidatedCoverage(month, year, empId) {
+    const targetM = Number(month)
+    const targetY = Number(year)
+    if (!targetM || !targetY) return null
+
+    // 1. Check persisted consolidated bank statements in Drive
+    const allBankDocs = [
+      ...safeDocs.filter((d) => d.document_type === 'BANK_STATEMENT'),
+      ...(Array.isArray(docSummary?.bank_statements) ? docSummary.bank_statements : []).filter((d) => d.document_type === 'BANK_STATEMENT'),
+    ]
+
+    for (const d of allBankDocs) {
+      if (!isDocConsolidated(d)) continue
+
+      const statusUpper = String(d.upload_status || '').toUpperCase()
+      const uploadOk = statusUpper === 'SUCCESS' || !d.upload_status || Boolean(d.drive_file_id)
+      if (!uploadOk) continue
+
+      if (!matchesEmployer(d.employer_id, empId)) continue
+
+      let covered = false
+      let coveredList = d.covered_months
+      if (typeof coveredList === 'string') {
+        try {
+          coveredList = JSON.parse(coveredList)
+        } catch (_) {
+          coveredList = []
+        }
+      }
+      if (Array.isArray(coveredList) && coveredList.length > 0) {
+        covered = coveredList.some(
+          (cm) => Number(cm.month) === targetM && (!cm.year || Number(cm.year) === targetY)
+        )
+      }
+      if (!covered) {
+        const startM = Number(d.coverage_start_month || d.reporting_month || 1)
+        const startY = Number(d.coverage_start_year || d.reporting_year || targetY)
+        const endM = Number(d.coverage_end_month || d.reporting_month || startM)
+        const endY = Number(d.coverage_end_year || d.reporting_year || startY)
+        const sVal = startY * 12 + startM
+        const eVal = endY * 12 + endM
+        const cVal = targetY * 12 + targetM
+        covered = cVal >= sVal && cVal <= eVal
+      }
+
+      if (covered) {
+        const startM = Number(d.coverage_start_month || d.reporting_month || 1)
+        const startY = Number(d.coverage_start_year || d.reporting_year || targetY)
+        const endM = Number(d.coverage_end_month || d.reporting_month || startM)
+        const endY = Number(d.coverage_end_year || d.reporting_year || startY)
+        return {
+          persisted: true,
+          doc: d,
+          fileName: d.file_name,
+          periodText: `${MONTH_NAMES[startM - 1]} ${startY} – ${MONTH_NAMES[endM - 1]} ${endY}`,
+        }
+      }
+    }
+
+    // 2. Check locally staged consolidated bank statements
+    for (const c of stagedConsolidatedBankDocs) {
+      if (c.file && matchesEmployer(c.employer_id, empId)) {
+        let covered = false
+        if (c.covered_months && Array.isArray(c.covered_months) && c.covered_months.length > 0) {
+          covered = c.covered_months.some(
+            (cm) => Number(cm.month) === targetM && (!cm.year || Number(cm.year) === targetY)
+          )
+        }
+        if (!covered) {
+          const sVal = Number(c.coverage_start_year) * 12 + Number(c.coverage_start_month)
+          const eVal = Number(c.coverage_end_year) * 12 + Number(c.coverage_end_month)
+          const cVal = targetY * 12 + targetM
+          covered = cVal >= sVal && cVal <= eVal
+        }
+        if (covered) {
+          return {
+            persisted: false,
+            fileName: c.fileName,
+            periodText: `${MONTH_NAMES[Number(c.coverage_start_month) - 1]} ${c.coverage_start_year} – ${MONTH_NAMES[Number(c.coverage_end_month) - 1]} ${c.coverage_end_year}`,
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  // --- Unified Employer-Aware Evidence Resolver ---
+  function resolveEvidence(docType, month, year, empId) {
+    if (docType === 'SALARY_SLIP') {
+      const targetM = Number(month)
+      const targetY = Number(year)
+      const persistedDoc = safeDocs.find(
+        (d) =>
+          d.document_type === 'SALARY_SLIP' &&
+          (!d.upload_status || String(d.upload_status).toUpperCase() === 'SUCCESS' || Boolean(d.drive_file_id)) &&
+          Number(d.reporting_month) === targetM &&
+          Number(d.reporting_year) === targetY &&
+          matchesEmployer(d.employer_id, empId)
+      )
+      if (persistedDoc) {
+        return {
+          status: 'PERSISTED',
+          doc: persistedDoc,
+          isConsolidated: false,
+          isReviewerVerified: !!(persistedDoc.reviewer_status === 'VERIFIED' || persistedDoc.verification_status === 'VERIFIED'),
+          fileName: persistedDoc.file_name,
+          periodText: `${MONTH_NAMES[(targetM || 1) - 1]} ${targetY || ''}`,
+          stagedFile: null,
+          source: 'INDIVIDUAL',
+        }
+      }
+      const stagedRow = salaryRows.find(
+        (r) =>
+          r.file &&
+          Number(r.month) === targetM &&
+          Number(r.year) === targetY &&
+          matchesEmployer(r.employer_id || empId, empId)
+      )
+      if (stagedRow) {
+        return {
+          status: 'STAGED',
+          doc: null,
+          isConsolidated: false,
+          isReviewerVerified: false,
+          fileName: stagedRow.fileName,
+          periodText: `${MONTH_NAMES[(targetM || 1) - 1]} ${targetY || ''}`,
+          stagedFile: stagedRow.file,
+          source: 'STAGED_INDIVIDUAL',
+        }
+      }
+      return {
+        status: 'MISSING',
+        doc: null,
+        isConsolidated: false,
+        isReviewerVerified: false,
+        fileName: '',
+        periodText: `${MONTH_NAMES[(targetM || 1) - 1]} ${targetY || ''}`,
+        stagedFile: null,
+        source: 'NONE',
+      }
+    }
+
+    if (docType === 'BANK_STATEMENT') {
+      const targetM = Number(month)
+      const targetY = Number(year)
+
+      // 1. Check individual bank statement in Drive
+      const persistedInd = safeDocs.find(
+        (d) =>
+          d.document_type === 'BANK_STATEMENT' &&
+          !isDocConsolidated(d) &&
+          (!d.upload_status || String(d.upload_status).toUpperCase() === 'SUCCESS' || Boolean(d.drive_file_id)) &&
+          Number(d.reporting_month) === targetM &&
+          Number(d.reporting_year) === targetY &&
+          matchesEmployer(d.employer_id, empId)
+      )
+      if (persistedInd) {
+        return {
+          status: 'PERSISTED',
+          doc: persistedInd,
+          isConsolidated: false,
+          isReviewerVerified: !!(persistedInd.reviewer_status === 'VERIFIED' || persistedInd.verification_status === 'VERIFIED'),
+          fileName: persistedInd.file_name,
+          periodText: `${MONTH_NAMES[(targetM || 1) - 1]} ${targetY || ''}`,
+          stagedFile: null,
+          source: 'INDIVIDUAL',
+        }
+      }
+
+      // 2. Check consolidated bank statement in Drive
+      const consol = getConsolidatedCoverage(targetM, targetY, empId)
+      if (consol && consol.persisted) {
+        return {
+          status: 'PERSISTED',
+          doc: consol.doc,
+          isConsolidated: true,
+          isReviewerVerified: !!(consol.doc?.reviewer_status === 'VERIFIED' || consol.doc?.verification_status === 'VERIFIED'),
+          fileName: consol.fileName,
+          periodText: consol.periodText,
+          stagedFile: null,
+          source: 'CONSOLIDATED',
+        }
+      }
+
+      // 3. Check staged individual bank statement
+      const stagedRow = bankRows.find(
+        (r) =>
+          r.file &&
+          Number(r.month) === targetM &&
+          Number(r.year) === targetY &&
+          matchesEmployer(r.employer_id || empId, empId)
+      )
+      if (stagedRow) {
+        return {
+          status: 'STAGED',
+          doc: null,
+          isConsolidated: false,
+          isReviewerVerified: false,
+          fileName: stagedRow.fileName,
+          periodText: `${MONTH_NAMES[(targetM || 1) - 1]} ${targetY || ''}`,
+          stagedFile: stagedRow.file,
+          source: 'STAGED_INDIVIDUAL',
+        }
+      }
+
+      // 4. Check staged consolidated bank statement
+      if (consol && !consol.persisted) {
+        return {
+          status: 'STAGED',
+          doc: null,
+          isConsolidated: true,
+          isReviewerVerified: false,
+          fileName: consol.fileName,
+          periodText: consol.periodText,
+          stagedFile: true,
+          source: 'STAGED_CONSOLIDATED',
+        }
+      }
+
+      return {
+        status: 'MISSING',
+        doc: null,
+        isConsolidated: false,
+        isReviewerVerified: false,
+        fileName: '',
+        periodText: `${MONTH_NAMES[(targetM || 1) - 1]} ${targetY || ''}`,
+        stagedFile: null,
+        source: 'NONE',
+      }
+    }
+
+    if (docType === 'APPOINTMENT_LETTER') {
+      const persistedDoc = safeDocs.find(
+        (d) =>
+          d.document_type === 'APPOINTMENT_LETTER' &&
+          (!d.upload_status || String(d.upload_status).toUpperCase() === 'SUCCESS' || Boolean(d.drive_file_id)) &&
+          matchesEmployer(d.employer_id, empId)
+      )
+      if (persistedDoc) {
+        return {
+          status: 'PERSISTED',
+          doc: persistedDoc,
+          isConsolidated: false,
+          isReviewerVerified: !!(persistedDoc.reviewer_status === 'VERIFIED' || persistedDoc.verification_status === 'VERIFIED'),
+          fileName: persistedDoc.file_name,
+          periodText: '',
+          stagedFile: null,
+          source: 'INDIVIDUAL',
+        }
+      }
+      const staged = stagedAppointments[empId]?.file
+        ? stagedAppointments[empId]
+        : (employerList.length <= 1 && stagedAppointment?.file ? stagedAppointment : null)
+      if (staged) {
+        return {
+          status: 'STAGED',
+          doc: null,
+          isConsolidated: false,
+          isReviewerVerified: false,
+          fileName: staged.fileName,
+          periodText: '',
+          stagedFile: staged.file,
+          source: 'STAGED_INDIVIDUAL',
+        }
+      }
+      return {
+        status: 'MISSING',
+        doc: null,
+        isConsolidated: false,
+        isReviewerVerified: false,
+        fileName: '',
+        periodText: '',
+        stagedFile: null,
+        source: 'NONE',
+      }
+    }
+
+
+    return {
+      status: 'MISSING',
+      doc: null,
+      isConsolidated: false,
+      isReviewerVerified: false,
+      fileName: '',
+      periodText: '',
+      stagedFile: null,
+      source: 'NONE',
+    }
+  }
+
+  // --- Phase 2: Visibility filters for monthly upload slots ---
+  function isSalarySlotVisible(row, index) {
+    if (row.file) return true // Keep genuinely staged files visible
+    if (row.notAvailable) return true // Keep explicit payslip availability toggle visible
+    const matchedSal = salaryDetailList[index]
+    const sEmpId = matchedSal?.employer_id || employerList[0]?.id
+    const targetMonth = row.month || matchedSal?.month
+    const targetYear = row.year || matchedSal?.year
+    const ev = resolveEvidence('SALARY_SLIP', targetMonth, targetYear, sEmpId)
+    // Redundant if already persisted in Drive
+    return ev.status !== 'PERSISTED'
+  }
+
+  function isBankSlotVisible(row, index) {
+    if (row.file) return true // Keep genuinely staged files visible
+    const matchedSal = salaryDetailList[index]
+    const sEmpId = matchedSal?.employer_id || employerList[0]?.id
+    const targetMonth = row.month || matchedSal?.month
+    const targetYear = row.year || matchedSal?.year
+    const ev = resolveEvidence('BANK_STATEMENT', targetMonth, targetYear, sEmpId)
+    // Redundant if already covered by persisted individual or consolidated statement
+    return ev.status !== 'PERSISTED'
   }
 
   function handleSelectOtherDoc(file) {
@@ -1555,6 +2123,9 @@ export default function L1Home() {
     if (stagedAppointment && appointmentError) {
       return `Appointment letter validation failed: ${appointmentError}`
     }
+    for (const [empId, err] of Object.entries(appointmentErrors)) {
+      if (err) return `Appointment letter error for employer: ${err}`
+    }
     if (stagedOtherDoc && otherDocError) {
       return `Other document validation failed: ${otherDocError}`
     }
@@ -1591,10 +2162,15 @@ export default function L1Home() {
       stagedBankMonths.add(key)
     }
 
+    const stagedApptEntries = Object.entries(stagedAppointments).filter(([_, v]) => v?.file)
+    const stagedApptCount = stagedApptEntries.length || (stagedAppointment?.file ? 1 : 0)
+    const stagedConsolidatedCount = stagedConsolidatedBankDocs.filter((c) => c.file).length
+
     const totalFilesToSubmit =
-      (stagedAppointment?.file ? 1 : 0) +
+      stagedApptCount +
       stagedSalaryEntries.length +
       stagedBankEntries.length +
+      stagedConsolidatedCount +
       (stagedOtherDoc?.file ? 1 : 0)
 
     if (totalFilesToSubmit === 0) {
@@ -1623,32 +2199,52 @@ export default function L1Home() {
     try {
       const formData = new FormData()
 
-      // Appointment Letter
-      if (stagedAppointment?.file) {
+      // Appointment Letters (Multi-Employer Support)
+      const stagedApptList = Object.entries(stagedAppointments).filter(([_, v]) => v?.file)
+      if (stagedApptList.length > 0) {
+        const apptMeta = []
+        for (const [empId, staged] of stagedApptList) {
+          formData.append('appointment_letters', staged.file)
+          apptMeta.push({
+            employer_id: empId,
+            replace_id: staged.replaceId || null,
+          })
+        }
+        formData.append('appointment_letters_meta', JSON.stringify(apptMeta))
+      } else if (stagedAppointment?.file) {
         formData.append('appointment_letter', stagedAppointment.file)
         if (stagedAppointment.replaceId) {
           formData.append('appointment_replace_id', stagedAppointment.replaceId)
+        }
+        if (employerList[0]?.id) {
+          formData.append('appointment_employer_id', employerList[0].id)
         }
       }
 
       // Salary Slips
       const salaryMeta = []
-      for (const row of salaryRows) {
+      for (let i = 0; i < salaryRows.length; i++) {
+        const row = salaryRows[i]
         if (row.file) {
+          const matchedSal = salaryDetailList[i]
+          const empId = matchedSal?.employer_id || employerList[0]?.id || null
           formData.append('salary_slips', row.file)
           salaryMeta.push({
             month: Number(row.month),
             year: Number(row.year),
+            employer_id: empId,
             replace_id: null,
           })
         }
       }
       for (const [replaceId, repl] of Object.entries(stagedSalaryReplacements)) {
         if (repl.file) {
+          const origDoc = salarySlips.find((d) => d.id === replaceId)
           formData.append('salary_slips', repl.file)
           salaryMeta.push({
             month: Number(repl.month),
             year: Number(repl.year),
+            employer_id: origDoc?.employer_id || employerList[0]?.id || null,
             replace_id: replaceId,
           })
         }
@@ -1657,23 +2253,67 @@ export default function L1Home() {
 
       // Bank Statements
       const bankMeta = []
-      for (const row of bankRows) {
+      for (let i = 0; i < bankRows.length; i++) {
+        const row = bankRows[i]
         if (row.file) {
+          const matchedSal = salaryDetailList[i]
+          const empId = matchedSal?.employer_id || employerList[0]?.id || null
           formData.append('bank_statements', row.file)
           bankMeta.push({
             month: Number(row.month),
             year: Number(row.year),
+            employer_id: empId,
+            is_consolidated: false,
             replace_id: null,
           })
         }
       }
       for (const [replaceId, repl] of Object.entries(stagedBankReplacements)) {
         if (repl.file) {
+          const origDoc = bankStatements.find((d) => d.id === replaceId)
           formData.append('bank_statements', repl.file)
           bankMeta.push({
             month: Number(repl.month),
             year: Number(repl.year),
+            employer_id: origDoc?.employer_id || employerList[0]?.id || null,
+            is_consolidated: false,
             replace_id: replaceId,
+          })
+        }
+      }
+      // Consolidated Multi-Month Bank Statements
+      for (const c of stagedConsolidatedBankDocs) {
+        if (c.file) {
+          formData.append('bank_statements', c.file)
+          let covered = c.covered_months
+          if (!covered || !covered.length) {
+            covered = []
+            let sm = Number(c.coverage_start_month)
+            let sy = Number(c.coverage_start_year)
+            let em = Number(c.coverage_end_month)
+            let ey = Number(c.coverage_end_year)
+            let curY = sy
+            let curM = sm
+            while (curY < ey || (curY === ey && curM <= em)) {
+              covered.push({ month: curM, year: curY })
+              curM++
+              if (curM > 12) {
+                curM = 1
+                curY++
+              }
+            }
+          }
+          bankMeta.push({
+            month: Number(c.coverage_start_month),
+            year: Number(c.coverage_start_year),
+            employer_id: c.employer_id || employerList[0]?.id || null,
+            is_consolidated: true,
+            coverage_start_month: Number(c.coverage_start_month),
+            coverage_start_year: Number(c.coverage_start_year),
+            coverage_end_month: Number(c.coverage_end_month),
+            coverage_end_year: Number(c.coverage_end_year),
+            covered_months: covered,
+            replace_id: null,
           })
         }
       }
@@ -1701,12 +2341,50 @@ export default function L1Home() {
       if (candDetail) {
         await loadAudit(sel.cand, candDetail)
       }
+
+      const individualBankMonths = bankMeta
+        .filter((m) => !m.is_consolidated)
+        .map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`)
+
+      const consolidatedBankStatements = bankMeta
+        .filter((m) => m.is_consolidated)
+        .map((m) => {
+          let months = []
+          if (Array.isArray(m.covered_months) && m.covered_months.length > 0) {
+            months = m.covered_months.map((cm) => `${MONTH_NAMES[cm.month - 1]} ${cm.year}`)
+          } else {
+            let sm = Number(m.coverage_start_month)
+            let sy = Number(m.coverage_start_year)
+            let em = Number(m.coverage_end_month)
+            let ey = Number(m.coverage_end_year)
+            let curY = sy
+            let curM = sm
+            while (curY < ey || (curY === ey && curM <= em)) {
+              months.push(`${MONTH_NAMES[curM - 1]} ${curY}`)
+              curM++
+              if (curM > 12) {
+                curM = 1
+                curY++
+              }
+            }
+          }
+          const emp = employerList.find((e) => String(e.id) === String(m.employer_id))
+          return {
+            employerName: emp?.employer_name || null,
+            months,
+            startText: `${MONTH_NAMES[m.coverage_start_month - 1]} ${m.coverage_start_year}`,
+            endText: `${MONTH_NAMES[m.coverage_end_month - 1]} ${m.coverage_end_year}`,
+          }
+        })
+
       setSubmitSuccessData({
         candidateId: sel.cand,
         candidateName: `${candDetail.first_name} ${candDetail.last_name}`,
-        appointmentUploaded: !!stagedAppointment?.file,
+        appointmentUploaded: !!stagedAppointment?.file || Object.values(stagedAppointments).some((a) => a?.file),
         salaryMonths: salaryMeta.map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
-        bankMonths: bankMeta.map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
+        bankMonths: individualBankMonths,
+        individualBankMonths,
+        consolidatedBankStatements,
         totalSubmitted: res.submitted_count,
       })
       setAuditToast({
@@ -1733,9 +2411,11 @@ export default function L1Home() {
 
   // Calculations for Checklist & Progress
   const stagedSalaryCount = salaryRows.filter((r) => r.file).length + Object.values(stagedSalaryReplacements).filter((r) => r.file).length
-  const stagedBankCount = bankRows.filter((r) => r.file).length + Object.values(stagedBankReplacements).filter((r) => r.file).length
+  const stagedConsolidatedCount = stagedConsolidatedBankDocs.filter((c) => c.file).length
+  const stagedBankCount = bankRows.filter((r) => r.file).length + Object.values(stagedBankReplacements).filter((r) => r.file).length + stagedConsolidatedCount
   const otherDocStagedCount = stagedOtherDoc?.file ? 1 : 0
-  const totalStagedFiles = (stagedAppointment?.file ? 1 : 0) + stagedSalaryCount + stagedBankCount + otherDocStagedCount
+  const stagedApptCount = Object.values(stagedAppointments).filter((a) => a?.file).length || (stagedAppointment?.file ? 1 : 0)
+  const totalStagedFiles = stagedApptCount + stagedSalaryCount + stagedBankCount + otherDocStagedCount
 
   // Candidate initials
   const candInitials = candDetail
@@ -2691,11 +3371,10 @@ export default function L1Home() {
                     {!isAuditSubmitted && employerList.length < 5 && (
                       <button
                         type="button"
-                        className="l1-btn-add-slot"
+                        className="l1-btn-add-employer"
                         onClick={handleAddEmployerRow}
-                        style={{ width: 'auto', padding: '6px 14px', fontSize: '13px' }}
                       >
-                        + Add Another Employer
+                        <span>+</span> Add Another Employer
                       </button>
                     )}
                   </div>
@@ -2712,7 +3391,7 @@ export default function L1Home() {
                           <th>Place of Work</th>
                           <th style={{ width: '130px' }}>Monthly CTC (₹)</th>
                           <th style={{ width: '130px' }}>Minimum Wages (₹)</th>
-                          {!isAuditSubmitted && employerList.length > 1 && <th style={{ width: '60px' }}>Action</th>}
+                          {!isAuditSubmitted && employerList.length > 1 && <th style={{ width: '60px', textAlign: 'center' }}>Action</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -2789,9 +3468,10 @@ export default function L1Home() {
                               <td style={{ textAlign: 'center' }}>
                                 <button
                                   type="button"
+                                  className="l1-btn-table-danger"
                                   onClick={() => handleRemoveEmployerRow(emp.id)}
-                                  title="Remove Employer"
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626', fontSize: '15px' }}
+                                  title={`Remove Employer ${emp.employer_name ? `"${emp.employer_name}"` : idx + 1}`}
+                                  aria-label={`Remove Employer ${emp.employer_name ? `"${emp.employer_name}"` : idx + 1}`}
                                 >
                                   🗑️
                                 </button>
@@ -2817,40 +3497,94 @@ export default function L1Home() {
                     {!isAuditSubmitted && salaryDetailList.length < 12 && (
                       <button
                         type="button"
-                        className="l1-btn-add-slot"
+                        className="l1-btn-add-month-header"
                         onClick={handleAddSalaryRow}
-                        style={{ width: 'auto', padding: '6px 14px', fontSize: '13px' }}
                       >
-                        + Add Salary Month
+                        <span>+</span> Add Salary Month
                       </button>
                     )}
                   </div>
 
                   <div className="l1-salary-records-container">
                     {salaryDetailList.map((sal, idx) => {
+                      const empSeq = getEmployerSalarySequence(sal, salaryDetailList)
                       const monthObj = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+                      const sEmpId = sal.employer_id || employerList[0]?.id
+                      const matchedEmp = employerList.find((e) => e.id === sEmpId) || employerList[0]
+                      const matchedEmpName = matchedEmp?.employer_name || `Employer 1`
+                      const prevRecord = findPreviousSalaryRecordForEmployer(sal, salaryDetailList)
+                      const hasPrev = !!prevRecord
+
                       return (
                         <div key={sal.id || idx} className="l1-salary-month-card">
                           <div className="l1-salary-month-header">
-                            <div className="l1-salary-month-badge-wrap">
-                              <span className="l1-salary-month-badge">Month {idx + 1}</span>
-                              <span className="l1-salary-month-period-title">
-                                {monthObj} {sal.year || 2024}
-                              </span>
-                              <span className="l1-salary-month-sync-hint">
-                                🔗 Synchronized to Salary Slips & Bank Statements
-                              </span>
+                            <div className="l1-salary-card-header-left">
+                              <div className="l1-salary-badge-lockup">
+                                <span className="l1-salary-month-badge">Month {empSeq}</span>
+                                <span className="l1-salary-month-period-title">
+                                  · {monthObj} {sal.year || 2024}
+                                </span>
+                              </div>
                             </div>
-                            {!isAuditSubmitted && salaryDetailList.length > 3 && (
-                              <button
-                                type="button"
-                                className="l1-btn-remove-month"
-                                onClick={() => handleRemoveSalaryRow(sal.id)}
-                                title="Remove Month"
-                              >
-                                <span>🗑️</span> Remove Month
-                              </button>
+
+                            {employerList.length > 1 && (
+                              <div className="l1-salary-card-header-mid">
+                                <div className="l1-emp-picker-wrap" title={`Assigned Employer: ${matchedEmpName}`}>
+                                  <label htmlFor={`emp-select-${sal.id || idx}`}>Employer:</label>
+                                  <select
+                                    id={`emp-select-${sal.id || idx}`}
+                                    className="l1-emp-picker-select"
+                                    value={sal.employer_id || employerList[0]?.id}
+                                    onChange={(e) => handleUpdateSalaryField(sal.id, 'employer_id', e.target.value)}
+                                    disabled={isAuditSubmitted}
+                                    aria-label={`Month ${empSeq} Employer`}
+                                    title={matchedEmpName}
+                                  >
+                                    {employerList.map((emp, eIdx) => (
+                                      <option key={emp.id || eIdx} value={emp.id}>
+                                        {emp.employer_name || `Employer ${eIdx + 1}`}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
                             )}
+
+                            <div className="l1-salary-card-header-right">
+                              <span
+                                className="l1-salary-sync-chip"
+                                title="Reporting period is synchronized across Salary Slips, Bank Statements, and Audit Evidence"
+                              >
+                                <span className="l1-sync-dot">●</span> Synced
+                              </span>
+                              {!isAuditSubmitted && (
+                                <button
+                                  type="button"
+                                  className={`l1-btn-copy-prev ${!hasPrev ? 'is-disabled' : ''}`}
+                                  onClick={() => handleCopyPreviousMonth(sal.id)}
+                                  disabled={!hasPrev}
+                                  title={
+                                    hasPrev
+                                      ? `Copy reusable salary fields from previous month (${MONTH_NAMES[(prevRecord.month || 1) - 1]} ${prevRecord.year}) for ${matchedEmpName}`
+                                      : `No previous month exists for "${matchedEmpName}" to copy from`
+                                  }
+                                >
+                                  <span className="l1-btn-icon">📋</span>
+                                  <span>Copy Prev</span>
+                                </button>
+                              )}
+                              {!isAuditSubmitted && salaryDetailList.length > 3 && (
+                                <button
+                                  type="button"
+                                  className="l1-btn-remove-month"
+                                  onClick={() => handleRemoveSalaryRow(sal.id)}
+                                  title={`Remove Month ${empSeq} (${monthObj} ${sal.year})`}
+                                >
+                                  <span className="l1-btn-icon">🗑️</span>
+                                  <span>Remove</span>
+                                </button>
+                              )}
+                            </div>
                           </div>
 
                           <div className="l1-salary-six-col-grid">
@@ -2862,7 +3596,7 @@ export default function L1Home() {
                                 value={sal.month || 1}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'month', parseInt(e.target.value, 10))}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Month`}
+                                aria-label={`Month ${empSeq} Month`}
                               >
                                 <option value={1}>01 - January</option>
                                 <option value={2}>02 - February</option>
@@ -2889,7 +3623,7 @@ export default function L1Home() {
                                 value={sal.year || 2024}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'year', parseInt(e.target.value, 10))}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Year`}
+                                aria-label={`Month ${empSeq} Year`}
                               />
                             </div>
 
@@ -2904,7 +3638,7 @@ export default function L1Home() {
                                 value={sal.working_days ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'working_days', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Work Days`}
+                                aria-label={`Month ${empSeq} Work Days`}
                               />
                             </div>
 
@@ -2919,7 +3653,7 @@ export default function L1Home() {
                                 value={sal.pay_days ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'pay_days', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Pay Days`}
+                                aria-label={`Month ${empSeq} Pay Days`}
                               />
                             </div>
 
@@ -2934,7 +3668,7 @@ export default function L1Home() {
                                 value={sal.leave_days ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'leave_days', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Leave Days`}
+                                aria-label={`Month ${empSeq} Leave Days`}
                               />
                             </div>
 
@@ -2946,7 +3680,7 @@ export default function L1Home() {
                                 value={sal.credit_date || ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'credit_date', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Credit Date`}
+                                aria-label={`Month ${empSeq} Credit Date`}
                               />
                             </div>
 
@@ -2961,7 +3695,7 @@ export default function L1Home() {
                                 value={sal.gross_salary ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'gross_salary', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Gross Salary`}
+                                aria-label={`Month ${empSeq} Gross Salary`}
                               />
                             </div>
 
@@ -2975,12 +3709,14 @@ export default function L1Home() {
                                 value={sal.deductions ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'deductions', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Deductions`}
+                                aria-label={`Month ${empSeq} Deductions`}
                               />
                             </div>
 
                             <div className="l1-salary-col">
-                              <label className="l1-salary-label">Net Salary (₹)</label>
+                              <label className="l1-salary-label">
+                                Net Salary (₹) <span className="l1-calc-tag">Auto</span>
+                              </label>
                               <input
                                 type="number"
                                 className="l1-salary-control calculated-field"
@@ -2989,7 +3725,7 @@ export default function L1Home() {
                                 value={sal.net_salary ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'net_salary', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Net Salary`}
+                                aria-label={`Month ${empSeq} Net Salary`}
                               />
                             </div>
 
@@ -3003,7 +3739,7 @@ export default function L1Home() {
                                 value={sal.amount_credited ?? ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'amount_credited', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Amount Credited`}
+                                aria-label={`Month ${empSeq} Amount Credited`}
                               />
                             </div>
 
@@ -3016,7 +3752,7 @@ export default function L1Home() {
                                 value={sal.bank_name || ''}
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'bank_name', e.target.value)}
                                 disabled={isAuditSubmitted}
-                                aria-label={`Month ${idx + 1} Bank Name`}
+                                aria-label={`Month ${empSeq} Bank Name`}
                               />
                             </div>
                           </div>
@@ -3069,61 +3805,145 @@ export default function L1Home() {
                     </span>
                   </div>
 
-                  {/* Display Persisted Appointment Letter if exists */}
-                  {appointmentDoc && (
-                    <div className={`l1-doc-item-card persisted ${replacingAppointment ? 'replacing' : ''}`}>
-                      <div className="l1-doc-item-row">
-                        <div className="l1-file-info">
-                          <div className="l1-file-icon-box">✓</div>
-                          <div className="l1-file-details">
-                            <span className="title">{appointmentDoc.file_name}</span>
-                            <span className="meta">
-                              Size: {formatFileSize(appointmentDoc.file_size_bytes)} · Persisted: {new Date(appointmentDoc.created_at).toLocaleDateString()}
-                            </span>
+                  {employerList.length > 1 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {employerList.map((emp, eIdx) => {
+                        const empDoc = appointmentDocs.find((d) => d.employer_id === emp.id)
+                        const stagedEmp = stagedAppointments[emp.id]
+                        const isReplacing = replacingAppointments[emp.id]
+                        const empErr = appointmentErrors[emp.id]
+
+                        return (
+                          <div key={emp.id || eIdx} style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span className="l1-emp-badge" style={{ fontSize: '12px', padding: '3px 8px' }}>
+                                  🏢 {emp.employer_name || `Employer ${eIdx + 1}`}
+                                </span>
+                                <span style={{ fontSize: '12px', color: '#64748B' }}>
+                                  Appointment / Offer Letter
+                                </span>
+                              </div>
+                              <span className={`l1-status-pill ${empDoc ? 'success' : stagedEmp?.file ? 'info' : 'danger'}`}>
+                                {empDoc ? '✓ Persisted in Drive' : stagedEmp?.file ? '● Staged (Pending Submit)' : 'Required'}
+                              </span>
+                            </div>
+
+                            {empDoc && (
+                              <div className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`} style={{ marginBottom: '6px' }}>
+                                <div className="l1-doc-item-row">
+                                  <div className="l1-file-info">
+                                    <div className="l1-file-icon-box">✓</div>
+                                    <div className="l1-file-details">
+                                      <span className="title">{empDoc.file_name}</span>
+                                      <span className="meta">
+                                        Size: {formatFileSize(empDoc.file_size_bytes)} · Persisted: {new Date(empDoc.created_at).toLocaleDateString()}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="l1-btn-group">
+                                    <button
+                                      type="button"
+                                      className="l1-btn-outline"
+                                      onClick={() => handleDownloadFile(empDoc.id, empDoc.file_name)}
+                                      disabled={downloadingDocId === empDoc.id}
+                                    >
+                                      {downloadingDocId === empDoc.id ? 'Downloading…' : 'Download / Preview'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="l1-btn-secondary"
+                                      onClick={() => {
+                                        if (isReplacing) {
+                                          handleRemoveStagedAppointmentForEmployer(emp.id)
+                                        } else {
+                                          setReplacingAppointments((prev) => ({ ...prev, [emp.id]: true }))
+                                        }
+                                      }}
+                                    >
+                                      {isReplacing ? 'Cancel Replacement' : 'Replace Letter'}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {(!empDoc || isReplacing) && (
+                              <FileUploadControl
+                                file={stagedEmp?.file}
+                                fileName={stagedEmp?.fileName}
+                                fileSize={stagedEmp?.fileSize}
+                                error={empErr}
+                                label={empDoc ? `Attach Replacement Offer Letter for ${emp.employer_name || 'Employer'}` : `Choose Offer Letter for ${emp.employer_name || 'Employer'}`}
+                                helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
+                                stagedLabel={empDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
+                                onSelect={(file) => handleSelectAppointmentForEmployer(emp.id, file, !!empDoc)}
+                                onRemove={() => handleRemoveStagedAppointmentForEmployer(emp.id)}
+                              />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <>
+                      {/* Display Persisted Appointment Letter if exists */}
+                      {appointmentDoc && (
+                        <div className={`l1-doc-item-card persisted ${replacingAppointment ? 'replacing' : ''}`}>
+                          <div className="l1-doc-item-row">
+                            <div className="l1-file-info">
+                              <div className="l1-file-icon-box">✓</div>
+                              <div className="l1-file-details">
+                                <span className="title">{appointmentDoc.file_name}</span>
+                                <span className="meta">
+                                  Size: {formatFileSize(appointmentDoc.file_size_bytes)} · Persisted: {new Date(appointmentDoc.created_at).toLocaleDateString()}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="l1-btn-group">
+                              <button
+                                type="button"
+                                className="l1-btn-outline"
+                                onClick={() => handleDownloadFile(appointmentDoc.id, appointmentDoc.file_name)}
+                                disabled={downloadingDocId === appointmentDoc.id}
+                              >
+                                {downloadingDocId === appointmentDoc.id ? 'Downloading…' : 'Download / Preview'}
+                              </button>
+                              <button
+                                type="button"
+                                className="l1-btn-secondary"
+                                onClick={() => {
+                                  if (replacingAppointment) {
+                                    handleRemoveStagedAppointment()
+                                  } else {
+                                    setReplacingAppointment(true)
+                                  }
+                                }}
+                              >
+                                {replacingAppointment ? 'Cancel Replacement' : 'Replace Letter'}
+                              </button>
+                            </div>
                           </div>
                         </div>
-                        <div className="l1-btn-group">
-                          <button
-                            type="button"
-                            className="l1-btn-outline"
-                            onClick={() => handleDownloadFile(appointmentDoc.id, appointmentDoc.file_name)}
-                            disabled={downloadingDocId === appointmentDoc.id}
-                          >
-                            {downloadingDocId === appointmentDoc.id ? 'Downloading…' : 'Download / Preview'}
-                          </button>
-                          <button
-                            type="button"
-                            className="l1-btn-secondary"
-                            onClick={() => {
-                              if (replacingAppointment) {
-                                handleRemoveStagedAppointment()
-                              } else {
-                                setReplacingAppointment(true)
-                              }
-                            }}
-                          >
-                            {replacingAppointment ? 'Cancel Replacement' : 'Replace Letter'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                      )}
 
-                  {/* Staging Dropzone (New Upload or Replacement) */}
-                  {(!appointmentDoc || replacingAppointment) && (
-                    <div style={{ marginTop: '4px' }}>
-                      <FileUploadControl
-                        file={stagedAppointment?.file}
-                        fileName={stagedAppointment?.fileName}
-                        fileSize={stagedAppointment?.fileSize}
-                        error={appointmentError}
-                        label={appointmentDoc ? 'Attach Replacement Appointment Letter' : 'Choose Appointment / Offer Letter'}
-                        helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
-                        stagedLabel={appointmentDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
-                        onSelect={(file) => handleSelectAppointment(file, !!appointmentDoc)}
-                        onRemove={handleRemoveStagedAppointment}
-                      />
-                    </div>
+                      {/* Staging Dropzone (New Upload or Replacement) */}
+                      {(!appointmentDoc || replacingAppointment) && (
+                        <div style={{ marginTop: '4px' }}>
+                          <FileUploadControl
+                            file={stagedAppointment?.file}
+                            fileName={stagedAppointment?.fileName}
+                            fileSize={stagedAppointment?.fileSize}
+                            error={appointmentError}
+                            label={appointmentDoc ? 'Attach Replacement Appointment Letter' : 'Choose Appointment / Offer Letter'}
+                            helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
+                            stagedLabel={appointmentDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
+                            onSelect={(file) => handleSelectAppointment(file, !!appointmentDoc)}
+                            onRemove={handleRemoveStagedAppointment}
+                          />
+                        </div>
+                      )}
+                    </>
                   )}
                 </section>
 
@@ -3163,6 +3983,7 @@ export default function L1Home() {
                       {salarySlips.map((doc) => {
                         const isReplacing = activeReplaceIds.has(doc.id)
                         const stagedRepl = stagedSalaryReplacements[doc.id]
+                        const empObj = employerList.find((e) => e.id === doc.employer_id)
 
                         return (
                           <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
@@ -3174,6 +3995,7 @@ export default function L1Home() {
                                     {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
                                   </span>
                                   <span className="meta">
+                                    {empObj && <span className="l1-emp-badge" style={{ marginRight: '6px' }}>🏢 {empObj.employer_name}</span>}
                                     Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
                                   </span>
                                 </div>
@@ -3219,72 +4041,99 @@ export default function L1Home() {
                   )}
 
                   {/* Pending / Staged Monthly Slots */}
-                  <div style={{ marginTop: '8px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
-                      Pending / Staged Monthly Slots ({salaryRows.length})
-                    </span>
+                  {(() => {
+                    const visibleSalaryRows = salaryRows.filter((r, idx) => isSalarySlotVisible(r, idx))
+                    return (
+                      <div style={{ marginTop: '8px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
+                          Pending / Staged Monthly Slots ({visibleSalaryRows.length})
+                        </span>
 
-                    {salaryRows.map((row, index) => (
-                      <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
-                        <div className="l1-slot-top">
-                          <span className="l1-slot-badge">
-                            <span className="l1-step-dot">{index + 1}</span>
-                            Monthly Slot {index + 1}
-                          </span>
+                        {visibleSalaryRows.length > 0 ? (
+                          visibleSalaryRows.map((row) => {
+                            const index = salaryRows.findIndex((r) => r.id === row.id)
+                            const matchedSal = salaryDetailList[index >= 0 ? index : 0]
+                            const sEmpId = matchedSal?.employer_id || employerList[0]?.id
+                            const matchedEmp = employerList.find((e) => e.id === sEmpId) || employerList[0]
+                            const empSeq = matchedSal ? getEmployerSalarySequence(matchedSal, salaryDetailList) : (index + 1)
+
+                            return (
+                              <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
+                                <div className="l1-slot-top">
+                                  <span className="l1-slot-badge">
+                                    <span className="l1-step-dot">{index + 1}</span>
+                                    {matchedEmp && employerList.length > 1
+                                      ? `${matchedEmp.employer_name} • Month ${empSeq}`
+                                      : `Monthly Slot ${index + 1} (Month ${empSeq})`}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="l1-btn-danger-ghost"
+                                    onClick={() => handleRemoveRow('SALARY', row.id)}
+                                  >
+                                    {salaryRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                                  </button>
+                                </div>
+
+                                <div className="l1-slot-controls">
+                                  <div className="l1-period-picker l1-period-synchronized">
+                                    <div className="l1-sync-period-pill" title="Synchronized with Section 3 Monthly Salary Disbursement Record">
+                                      <span className="l1-sync-period-icon">📅</span>
+                                      <span className="l1-sync-period-text">
+                                        {MONTH_NAMES[(row.month || 1) - 1]} {row.year}
+                                      </span>
+                                    </div>
+                                    {employerList.length > 1 && (
+                                      <span className="l1-emp-badge" style={{ marginLeft: '6px' }}>
+                                        🏢 {matchedEmp?.employer_name || 'Employer 1'}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <FileUploadControl
+                                    file={row.file}
+                                    fileName={row.fileName}
+                                    fileSize={row.fileSize}
+                                    error={row.error}
+                                    label={`Attach Salary Slip (${MONTH_NAMES[row.month - 1]} ${row.year})`}
+                                    helperText="PDF, PNG, JPG (up to 10MB)"
+                                    stagedLabel="Staged (Pending Submit)"
+                                    disabled={isAuditSubmitted}
+                                    isUnavailable={row.notAvailable}
+                                    onMarkNotAvailable={() => handleMarkPayslipNotAvailable(index + 1, row.id)}
+                                    onResetAvailability={() => handleResetPayslipAvailability(index + 1, row.id)}
+                                    disableNotAvailable={!!salarySlips[index]}
+                                    notAvailableTitle={
+                                      salarySlips[index]
+                                        ? 'Cannot mark as Not Available: a verified payslip is already uploaded in Drive'
+                                        : 'Record that payslip is unavailable'
+                                    }
+                                    onSelect={(file) => updateRowField('SALARY', row.id, 'file', file)}
+                                    onRemove={() => updateRowField('SALARY', row.id, 'file', null)}
+                                  />
+                                </div>
+                              </div>
+                            )
+                          })
+                        ) : (
+                          <div style={{ padding: '12px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', color: '#166534', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span>✓</span>
+                            <span>All current reporting months have verified salary slips persisted in Drive. Use the action below to add the next month if required.</span>
+                          </div>
+                        )}
+
+                        {salaryRows.length + salarySlips.length < 12 && (
                           <button
                             type="button"
-                            className="l1-btn-danger-ghost"
-                            onClick={() => handleRemoveRow('SALARY', row.id)}
+                            className="l1-btn-add-slot"
+                            onClick={handleAddSalaryRow}
                           >
-                            {salaryRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                            + Add Salary Month (Synchronized)
                           </button>
-                        </div>
-
-                        <div className="l1-slot-controls">
-                          <div className="l1-period-picker l1-period-synchronized">
-                            <div className="l1-sync-period-pill" title="Synchronized with Section 3 Monthly Salary Disbursement Record">
-                              <span className="l1-sync-period-icon">📅</span>
-                              <span className="l1-sync-period-text">
-                                {MONTH_NAMES[(row.month || 1) - 1]} {row.year}
-                              </span>
-                            </div>
-                          </div>
-
-                          <FileUploadControl
-                            file={row.file}
-                            fileName={row.fileName}
-                            fileSize={row.fileSize}
-                            error={row.error}
-                            label={`Attach Salary Slip (${MONTH_NAMES[row.month - 1]} ${row.year})`}
-                            helperText="PDF, PNG, JPG (up to 10MB)"
-                            stagedLabel="Staged (Pending Submit)"
-                            disabled={isAuditSubmitted}
-                            isUnavailable={row.notAvailable}
-                            onMarkNotAvailable={() => handleMarkPayslipNotAvailable(index + 1, row.id)}
-                            onResetAvailability={() => handleResetPayslipAvailability(index + 1, row.id)}
-                            disableNotAvailable={!!salarySlips[index]}
-                            notAvailableTitle={
-                              salarySlips[index]
-                                ? 'Cannot mark as Not Available: a verified payslip is already uploaded in Drive'
-                                : 'Record that payslip is unavailable'
-                            }
-                            onSelect={(file) => updateRowField('SALARY', row.id, 'file', file)}
-                            onRemove={() => updateRowField('SALARY', row.id, 'file', null)}
-                          />
-                        </div>
+                        )}
                       </div>
-                    ))}
-
-                    {salaryRows.length + salarySlips.length < 12 && (
-                      <button
-                        type="button"
-                        className="l1-btn-add-slot"
-                        onClick={handleAddSalaryRow}
-                      >
-                        + Add Salary Month (Synchronized)
-                      </button>
-                    )}
-                  </div>
+                    )
+                  })()}
                 </section>
 
                 {/* ================================================================
@@ -3314,15 +4163,291 @@ export default function L1Home() {
                     </div>
                   </div>
 
-                  {/* Persisted Bank Statements */}
-                  {bankStatements.length > 0 && (
+                  {/* Consolidated Multi-Month Bank Statement Box */}
+                  <div className="l1-consolidated-box">
+                    <div className="l1-consolidated-box-header">
+                      <div className="l1-consolidated-title">
+                        <span className="l1-consolidated-icon">📑</span>
+                        <div>
+                          <strong>Consolidated Multi-Month Bank Statement</strong>
+                          <span className="l1-consolidated-subtitle">
+                            Single PDF covering multiple consecutive months for an employer
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="l1-btn-consolidated-toggle"
+                        onClick={() => setShowConsolidatedModal((v) => !v)}
+                        aria-expanded={showConsolidatedModal}
+                      >
+                        {showConsolidatedModal ? '✕ Close Uploader' : '+ Upload Consolidated Statement (e.g. 3-Month PDF)'}
+                      </button>
+                    </div>
+
+                    <p className="l1-consolidated-note">
+                      Upload a single PDF covering multiple consecutive months for an employer. The file is stored once in Drive and satisfies coverage for all included months.
+                    </p>
+
+                    {showConsolidatedModal && (
+                      <div className="l1-consolidated-modal-panel">
+                        <div className="l1-consolidated-range-form">
+                          {employerList.length > 1 && (
+                            <div className="l1-consolidated-col-emp">
+                              <label className="l1-salary-label">Employer</label>
+                              <select
+                                className="l1-salary-control"
+                                value={consolidatedForm.employer_id || employerList[0]?.id}
+                                onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, employer_id: e.target.value }))}
+                              >
+                                {employerList.map((emp, eIdx) => (
+                                  <option key={emp.id || eIdx} value={emp.id}>
+                                    {emp.employer_name || `Employer ${eIdx + 1}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          <div className="l1-consolidated-col-period">
+                            <label className="l1-salary-label">Coverage Start</label>
+                            <div className="l1-period-input-lockup">
+                              <select
+                                className="l1-salary-control"
+                                value={consolidatedForm.start_month}
+                                onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, start_month: parseInt(e.target.value, 10) }))}
+                              >
+                                {MONTH_NAMES.map((m, idx) => (
+                                  <option key={idx + 1} value={idx + 1}>{m}</option>
+                                ))}
+                              </select>
+                              <input
+                                type="number"
+                                className="l1-salary-control l1-year-short-input"
+                                value={consolidatedForm.start_year}
+                                onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, start_year: parseInt(e.target.value, 10) }))}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="l1-consolidated-col-period">
+                            <label className="l1-salary-label">Coverage End</label>
+                            <div className="l1-period-input-lockup">
+                              <select
+                                className="l1-salary-control"
+                                value={consolidatedForm.end_month}
+                                onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, end_month: parseInt(e.target.value, 10) }))}
+                              >
+                                {MONTH_NAMES.map((m, idx) => (
+                                  <option key={idx + 1} value={idx + 1}>{m}</option>
+                                ))}
+                              </select>
+                              <input
+                                type="number"
+                                className="l1-salary-control l1-year-short-input"
+                                value={consolidatedForm.end_year}
+                                onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, end_year: parseInt(e.target.value, 10) }))}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="l1-coverage-preview-lockup">
+                            <span className="l1-coverage-badge">
+                              📅 Declared Coverage: {MONTH_NAMES[consolidatedForm.start_month - 1]} {consolidatedForm.start_year} – {MONTH_NAMES[consolidatedForm.end_month - 1]} {consolidatedForm.end_year}
+                            </span>
+                          </div>
+                        </div>
+
+                        <FileUploadControl
+                          file={consolidatedForm.file}
+                          fileName={consolidatedForm.fileName}
+                          fileSize={consolidatedForm.fileSize}
+                          error={consolidatedForm.error}
+                          label="Attach Consolidated Multi-Month Bank Statement PDF"
+                          helperText="PDF up to 10MB · Staged locally until Final Submit"
+                          stagedLabel="Staged Consolidated Statement"
+                          onSelect={(file) => {
+                            const err = validateFile(file)
+                            setConsolidatedForm((prev) => ({
+                              ...prev,
+                              file,
+                              fileName: file?.name || '',
+                              fileSize: file?.size || 0,
+                              error: err || '',
+                            }))
+                          }}
+                          onRemove={() => {
+                            setConsolidatedForm((prev) => ({
+                              ...prev,
+                              file: null,
+                              fileName: '',
+                              fileSize: 0,
+                              error: '',
+                            }))
+                          }}
+                        />
+
+                        {consolidatedForm.file && !consolidatedForm.error && (
+                          <div className="l1-consolidated-actions">
+                            <button
+                              type="button"
+                              className="l1-btn-primary-action"
+                              style={{ padding: '8px 20px', fontSize: '13px' }}
+                              onClick={() => {
+                                const empId = consolidatedForm.employer_id || employerList[0]?.id || 'emp_1'
+                                const newDoc = {
+                                  id: `consol_${Date.now()}`,
+                                  file: consolidatedForm.file,
+                                  fileName: consolidatedForm.fileName,
+                                  fileSize: consolidatedForm.fileSize,
+                                  employer_id: empId,
+                                  coverage_start_month: consolidatedForm.start_month,
+                                  coverage_start_year: consolidatedForm.start_year,
+                                  coverage_end_month: consolidatedForm.end_month,
+                                  coverage_end_year: consolidatedForm.end_year,
+                                }
+                                setStagedConsolidatedBankDocs((prev) => [...prev, newDoc])
+                                setConsolidatedForm((prev) => ({
+                                  ...prev,
+                                  file: null,
+                                  fileName: '',
+                                  fileSize: 0,
+                                  error: '',
+                                }))
+                                setShowConsolidatedModal(false)
+                                setAuditToast({
+                                  message: `✓ Staged consolidated bank statement covering ${MONTH_NAMES[consolidatedForm.start_month - 1]} ${consolidatedForm.start_year} – ${MONTH_NAMES[consolidatedForm.end_month - 1]} ${consolidatedForm.end_year}.`,
+                                  type: 'success',
+                                })
+                              }}
+                            >
+                              ✓ Stage Consolidated Statement
+                            </button>
+                            <button
+                              type="button"
+                              className="l1-btn-secondary"
+                              onClick={() => {
+                                setConsolidatedForm((prev) => ({
+                                  ...prev,
+                                  file: null,
+                                  fileName: '',
+                                  fileSize: 0,
+                                  error: '',
+                                }))
+                                setShowConsolidatedModal(false)
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Display Persisted Consolidated Statements */}
+                    {consolidatedBankDocs.length > 0 && (
+                      <div className="l1-consolidated-doc-group">
+                        <span className="l1-group-label">
+                          Persisted Consolidated Statements ({consolidatedBankDocs.length})
+                        </span>
+                        {consolidatedBankDocs.map((doc) => {
+                          const empObj = employerList.find((e) => e.id === doc.employer_id)
+                          const startM = doc.coverage_start_month || doc.reporting_month
+                          const startY = doc.coverage_start_year || doc.reporting_year
+                          const endM = doc.coverage_end_month || doc.reporting_month
+                          const endY = doc.coverage_end_year || doc.reporting_year
+                          return (
+                            <div key={doc.id} className="l1-doc-item-card persisted">
+                              <div className="l1-doc-item-row">
+                                <div className="l1-file-info">
+                                  <div className="l1-file-icon-box">📑</div>
+                                  <div className="l1-file-details">
+                                    <span className="title">{doc.file_name}</span>
+                                    <div className="l1-badge-cluster">
+                                      {empObj && (
+                                        <span className="l1-emp-badge" title={empObj.employer_name}>
+                                          🏢 {empObj.employer_name}
+                                        </span>
+                                      )}
+                                      <span className="l1-coverage-badge persisted">
+                                        📅 Covers {MONTH_NAMES[startM - 1]} {startY} – {MONTH_NAMES[endM - 1]} {endY}
+                                      </span>
+                                      <span className="l1-status-pill success" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                        ✓ Verified in Drive
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="l1-btn-outline"
+                                  onClick={() => handleDownloadFile(doc.id, doc.file_name)}
+                                  disabled={downloadingDocId === doc.id}
+                                >
+                                  {downloadingDocId === doc.id ? 'Downloading…' : 'Download / Preview'}
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* Display Locally Staged Consolidated Statements */}
+                    {stagedConsolidatedBankDocs.length > 0 && (
+                      <div className="l1-consolidated-doc-group">
+                        <span className="l1-group-label">
+                          Staged Consolidated Statements ({stagedConsolidatedBankDocs.length})
+                        </span>
+                        {stagedConsolidatedBankDocs.map((c) => {
+                          const empObj = employerList.find((e) => e.id === c.employer_id)
+                          return (
+                            <div key={c.id} className="l1-doc-item-card staged">
+                              <div className="l1-doc-item-row">
+                                <div className="l1-file-info">
+                                  <div className="l1-file-icon-box">📑</div>
+                                  <div className="l1-file-details">
+                                    <span className="title">{c.fileName}</span>
+                                    <div className="l1-badge-cluster">
+                                      {empObj && (
+                                        <span className="l1-emp-badge" title={empObj.employer_name}>
+                                          🏢 {empObj.employer_name}
+                                        </span>
+                                      )}
+                                      <span className="l1-coverage-badge">
+                                        📅 Covers {MONTH_NAMES[c.coverage_start_month - 1]} {c.coverage_start_year} – {MONTH_NAMES[c.coverage_end_month - 1]} {c.coverage_end_year}
+                                      </span>
+                                      <span className="l1-status-pill info" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                        ⏳ Staged (Pending Submit)
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="l1-btn-danger-ghost"
+                                  onClick={() => setStagedConsolidatedBankDocs((prev) => prev.filter((item) => item.id !== c.id))}
+                                >
+                                  ✕ Remove
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Persisted Monthly Bank Statements */}
+                  {individualBankDocs.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                        Persisted Bank Statements ({bankStatements.length})
+                        Persisted Monthly Bank Statements ({individualBankDocs.length})
                       </span>
-                      {bankStatements.map((doc) => {
+                      {individualBankDocs.map((doc) => {
                         const isReplacing = activeReplaceIds.has(doc.id)
                         const stagedRepl = stagedBankReplacements[doc.id]
+                        const empObj = employerList.find((e) => e.id === doc.employer_id)
 
                         return (
                           <div key={doc.id} className={`l1-doc-item-card persisted ${isReplacing ? 'replacing' : ''}`}>
@@ -3334,6 +4459,7 @@ export default function L1Home() {
                                     {MONTH_NAMES[doc.reporting_month - 1]} {doc.reporting_year} — {doc.file_name}
                                   </span>
                                   <span className="meta">
+                                    {empObj && <span className="l1-emp-badge" style={{ marginRight: '6px' }}>🏢 {empObj.employer_name}</span>}
                                     Size: {formatFileSize(doc.file_size_bytes)} · Verified in Drive
                                   </span>
                                 </div>
@@ -3379,62 +4505,96 @@ export default function L1Home() {
                   )}
 
                   {/* Pending / Staged Monthly Slots */}
-                  <div style={{ marginTop: '8px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
-                      Pending / Staged Monthly Slots ({bankRows.length})
-                    </span>
+                  {(() => {
+                    const visibleBankRows = bankRows.filter((r, idx) => isBankSlotVisible(r, idx))
+                    return (
+                      <div style={{ marginTop: '8px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--mut)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
+                          Pending / Staged Monthly Slots ({visibleBankRows.length})
+                        </span>
 
-                    {bankRows.map((row, index) => (
-                      <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
-                        <div className="l1-slot-top">
-                          <span className="l1-slot-badge">
-                            <span className="l1-step-dot">{index + 1}</span>
-                            Monthly Slot {index + 1}
-                          </span>
+                        {visibleBankRows.length > 0 ? (
+                          visibleBankRows.map((row) => {
+                            const index = bankRows.findIndex((r) => r.id === row.id)
+                            const matchedSal = salaryDetailList[index >= 0 ? index : 0]
+                            const sEmpId = matchedSal?.employer_id || employerList[0]?.id
+                            const matchedEmp = employerList.find((e) => e.id === sEmpId) || employerList[0]
+                            const coverageInfo = getConsolidatedCoverage(row.month, row.year, sEmpId)
+                            const empSeq = matchedSal ? getEmployerSalarySequence(matchedSal, salaryDetailList) : (index + 1)
+
+                            return (
+                              <div key={row.id} className={`l1-slot-row ${row.file ? 'staged' : ''}`}>
+                                <div className="l1-slot-top">
+                                  <span className="l1-slot-badge">
+                                    <span className="l1-step-dot">{index + 1}</span>
+                                    {matchedEmp && employerList.length > 1
+                                      ? `${matchedEmp.employer_name} • Month ${empSeq}`
+                                      : `Monthly Slot ${index + 1} (Month ${empSeq})`}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="l1-btn-danger-ghost"
+                                    onClick={() => handleRemoveRow('BANK', row.id)}
+                                  >
+                                    {bankRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                                  </button>
+                                </div>
+
+                                <div className="l1-slot-controls">
+                                  <div className="l1-period-picker l1-period-synchronized">
+                                    <div className="l1-sync-period-pill" title="Synchronized with Section 3 Monthly Salary Disbursement Record">
+                                      <span className="l1-sync-period-icon">📅</span>
+                                      <span className="l1-sync-period-text">
+                                        {MONTH_NAMES[(row.month || 1) - 1]} {row.year}
+                                      </span>
+                                    </div>
+                                    {employerList.length > 1 && (
+                                      <span className="l1-emp-badge" style={{ marginLeft: '6px' }}>
+                                        🏢 {matchedEmp?.employer_name || 'Employer 1'}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <FileUploadControl
+                                    file={row.file}
+                                    fileName={row.fileName}
+                                    fileSize={row.fileSize}
+                                    error={row.error}
+                                    label={`Attach Bank Statement (${MONTH_NAMES[row.month - 1]} ${row.year})`}
+                                    helperText="PDF, PNG, JPG (up to 10MB)"
+                                    stagedLabel="Staged (Pending Submit)"
+                                    onSelect={(file) => updateRowField('BANK', row.id, 'file', file)}
+                                    onRemove={() => updateRowField('BANK', row.id, 'file', null)}
+                                  />
+
+                                  {coverageInfo && (
+                                    <div className={`l1-coverage-badge ${coverageInfo.persisted ? 'persisted' : ''}`}>
+                                      <span>✓ Covered by Consolidated Statement: <strong>{coverageInfo.fileName}</strong> ({coverageInfo.periodText})</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })
+                        ) : (
+                          <div style={{ padding: '12px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', color: '#166534', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span>✓</span>
+                            <span>All current reporting months have verified bank statement coverage persisted in Drive. Use the action below to add the next month if required.</span>
+                          </div>
+                        )}
+
+                        {bankRows.length + bankStatements.length < 12 && (
                           <button
                             type="button"
-                            className="l1-btn-danger-ghost"
-                            onClick={() => handleRemoveRow('BANK', row.id)}
+                            className="l1-btn-add-slot"
+                            onClick={handleAddSalaryRow}
                           >
-                            {bankRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                            + Add Salary Month (Synchronized)
                           </button>
-                        </div>
-
-                        <div className="l1-slot-controls">
-                          <div className="l1-period-picker l1-period-synchronized">
-                            <div className="l1-sync-period-pill" title="Synchronized with Section 3 Monthly Salary Disbursement Record">
-                              <span className="l1-sync-period-icon">📅</span>
-                              <span className="l1-sync-period-text">
-                                {MONTH_NAMES[(row.month || 1) - 1]} {row.year}
-                              </span>
-                            </div>
-                          </div>
-
-                          <FileUploadControl
-                            file={row.file}
-                            fileName={row.fileName}
-                            fileSize={row.fileSize}
-                            error={row.error}
-                            label={`Attach Bank Statement (${MONTH_NAMES[row.month - 1]} ${row.year})`}
-                            helperText="PDF, PNG, JPG (up to 10MB)"
-                            stagedLabel="Staged (Pending Submit)"
-                            onSelect={(file) => updateRowField('BANK', row.id, 'file', file)}
-                            onRemove={() => updateRowField('BANK', row.id, 'file', null)}
-                          />
-                        </div>
+                        )}
                       </div>
-                    ))}
-
-                    {bankRows.length + bankStatements.length < 12 && (
-                      <button
-                        type="button"
-                        className="l1-btn-add-slot"
-                        onClick={handleAddSalaryRow}
-                      >
-                        + Add Salary Month (Synchronized)
-                      </button>
-                    )}
-                  </div>
+                    )
+                  })()}
                 </section>
 
                 {/* Section 4: Other Document (Optional) Workspace */}
@@ -3625,28 +4785,79 @@ export default function L1Home() {
                         </tr>
                       </thead>
                       <tbody>
-                        {[
-                          { code: 'AL / OL', label: 'Appointment / Offer Letter', key: 'appointment_letter', fileDoc: appointmentDoc, staged: stagedAppointment?.file },
-                          { code: 'PS 1', label: 'Salary Pay Slip — Month 1', key: 'salary_slip_1', fileDoc: salarySlips[0], staged: salaryRows[0]?.file },
-                          { code: 'PS 2', label: 'Salary Pay Slip — Month 2', key: 'salary_slip_2', fileDoc: salarySlips[1], staged: salaryRows[1]?.file },
-                          { code: 'PS 3', label: 'Salary Pay Slip — Month 3', key: 'salary_slip_3', fileDoc: salarySlips[2], staged: salaryRows[2]?.file },
-                          { code: 'BS 1', label: 'Bank Statement / Passbook — Month 1', key: 'bank_statement_1', fileDoc: bankStatements[0], staged: bankRows[0]?.file },
-                          { code: 'BS 2', label: 'Bank Statement / Passbook — Month 2', key: 'bank_statement_2', fileDoc: bankStatements[1], staged: bankRows[1]?.file },
-                          { code: 'BS 3', label: 'Bank Statement / Passbook — Month 3', key: 'bank_statement_3', fileDoc: bankStatements[2], staged: bankRows[2]?.file },
-                          { code: 'OD', label: `Other Document ${otherDocTitle || otherDoc?.document_title ? `— ${otherDocTitle || otherDoc?.document_title}` : '(Optional)'}`, key: 'other_document', fileDoc: otherDoc, staged: stagedOtherDoc?.file, isOptional: true },
-                        ].map((item) => {
+                        {(salaryDetailList && salaryDetailList.length > 0
+                          ? [
+                              (() => {
+                                const apptEv = resolveEvidence('APPOINTMENT_LETTER', null, null, employerList[0]?.id)
+                                return { code: 'AL / OL', label: 'Appointment / Offer Letter', key: 'appointment_letter', fileDoc: apptEv.doc, staged: apptEv.stagedFile, resolved: apptEv }
+                              })(),
+                              ...salaryDetailList.map((sal, idx) => {
+                                const empSeq = getEmployerSalarySequence(sal, salaryDetailList)
+                                const emp = employerList.find((e) => e.id === sal.employer_id) || employerList[0]
+                                const mName = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+                                const empPrefix = employerList.length > 1 ? `${emp?.employer_name || 'Employer'} • ` : ''
+                                const resSal = resolveEvidence('SALARY_SLIP', sal.month, sal.year, sal.employer_id)
+                                return {
+                                  code: `PS ${empSeq}`,
+                                  label: `Salary Pay Slip — ${empPrefix}Month ${empSeq} (${mName} ${sal.year || ''})`,
+                                  key: `salary_slip_${idx + 1}`,
+                                  resolved: resSal,
+                                  fileDoc: resSal.doc,
+                                  staged: resSal.stagedFile,
+                                }
+                              }),
+                              ...salaryDetailList.map((sal, idx) => {
+                                const empSeq = getEmployerSalarySequence(sal, salaryDetailList)
+                                const emp = employerList.find((e) => e.id === sal.employer_id) || employerList[0]
+                                const mName = MONTH_NAMES[(sal.month || 1) - 1] || `Month ${sal.month}`
+                                const empPrefix = employerList.length > 1 ? `${emp?.employer_name || 'Employer'} • ` : ''
+                                const resBank = resolveEvidence('BANK_STATEMENT', sal.month, sal.year, sal.employer_id)
+                                return {
+                                  code: `BS ${empSeq}`,
+                                  label: `Bank Statement / Passbook — ${empPrefix}Month ${empSeq} (${mName} ${sal.year || ''})`,
+                                  key: `bank_statement_${idx + 1}`,
+                                  resolved: resBank,
+                                  fileDoc: resBank.doc,
+                                  staged: resBank.stagedFile,
+                                }
+                              }),
+                              { code: 'OD', label: `Other Document ${otherDocTitle || otherDoc?.document_title ? `— ${otherDocTitle || otherDoc?.document_title}` : '(Optional)'}`, key: 'other_document', fileDoc: otherDoc, staged: stagedOtherDoc?.file, isOptional: true },
+                            ]
+                          : [
+                              (() => {
+                                const apptEv = resolveEvidence('APPOINTMENT_LETTER', null, null, employerList[0]?.id)
+                                return { code: 'AL / OL', label: 'Appointment / Offer Letter', key: 'appointment_letter', fileDoc: apptEv.doc, staged: apptEv.stagedFile, resolved: apptEv }
+                              })(),
+                              ...[1, 2, 3].map((mIdx) => {
+                                const resSal = resolveEvidence('SALARY_SLIP', mIdx, currentYear, employerList[0]?.id)
+                                return { code: `PS ${mIdx}`, label: `Salary Pay Slip — Month ${mIdx}`, key: `salary_slip_${mIdx}`, fileDoc: resSal.doc, staged: resSal.stagedFile, resolved: resSal }
+                              }),
+                              ...[1, 2, 3].map((mIdx) => {
+                                const resBank = resolveEvidence('BANK_STATEMENT', mIdx, currentYear, employerList[0]?.id)
+                                return { code: `BS ${mIdx}`, label: `Bank Statement / Passbook — Month ${mIdx}`, key: `bank_statement_${mIdx}`, fileDoc: resBank.doc, staged: resBank.stagedFile, resolved: resBank }
+                              }),
+                              { code: 'OD', label: `Other Document ${otherDocTitle || otherDoc?.document_title ? `— ${otherDocTitle || otherDoc?.document_title}` : '(Optional)'}`, key: 'other_document', fileDoc: otherDoc, staged: stagedOtherDoc?.file, isOptional: true },
+                            ]
+                        ).map((item) => {
                           const entry = (documentAudit && typeof documentAudit[item.key] === 'object' && documentAudit[item.key]) || { available: 'Pending', compliance: 'Under Verification', remarks: '' }
-                          const hasDriveDoc = !!item.fileDoc
-                          const hasStaged = !!item.staged
+                          const isPersisted = item.resolved ? item.resolved.status === 'PERSISTED' : !!item.fileDoc
+                          const isStaged = item.resolved ? item.resolved.status === 'STAGED' : !!item.staged
+                          const effectiveAvailable = entry.explicitlySet
+                            ? (entry.available || 'Pending')
+                            : (isPersisted || isStaged ? 'Yes' : (entry.available || 'Pending'))
                           return (
                             <tr key={item.key}>
                               <td><strong>{item.code}</strong></td>
-                              <td>{item.label}</td>
+                              <td>
+                                <span>{item.label}</span>
+                              </td>
                               <td>
                                 <select
-                                  value={entry.available || 'Pending'}
+                                  className="l1-audit-table-select"
+                                  value={effectiveAvailable}
                                   onChange={(e) => handleUpdateDocAudit(item.key, 'available', e.target.value)}
                                   disabled={isAuditSubmitted}
+                                  aria-label={`${item.label} Availability`}
                                 >
                                   <option value="Yes">Yes</option>
                                   <option value="No">No</option>
@@ -3654,31 +4865,45 @@ export default function L1Home() {
                                 </select>
                               </td>
                               <td>
-                                {hasDriveDoc ? (
-                                  <span className="l1-status-pill success" style={{ fontSize: '11px', padding: '2px 8px' }}>
-                                    ✓ Verified in Drive
+                                {isPersisted ? (
+                                  <span
+                                    className="l1-status-pill success"
+                                    style={{ fontSize: '11px', padding: '2px 8px' }}
+                                  >
+                                    Available
                                   </span>
-                                ) : hasStaged ? (
-                                  <span className="l1-status-pill info" style={{ fontSize: '11px', padding: '2px 8px' }}>
-                                    Staged in Browser
+                                ) : isStaged ? (
+                                  <span
+                                    className="l1-status-pill info"
+                                    style={{ fontSize: '11px', padding: '2px 8px' }}
+                                  >
+                                    Pending
                                   </span>
                                 ) : item.isOptional ? (
-                                  <span className="l1-status-pill secondary" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  <span
+                                    className="l1-status-pill secondary"
+                                    style={{ fontSize: '11px', padding: '2px 8px' }}
+                                  >
                                     Optional / Omitted
                                   </span>
                                 ) : (
-                                  <span className="l1-status-pill danger" style={{ fontSize: '11px', padding: '2px 8px' }}>
-                                    Missing in Drive
+                                  <span
+                                    className="l1-status-pill danger"
+                                    style={{ fontSize: '11px', padding: '2px 8px' }}
+                                  >
+                                    Missing
                                   </span>
                                 )}
                               </td>
                               <td>
                                 <input
                                   type="text"
-                                  placeholder="Observations..."
+                                  className="l1-audit-table-input"
+                                  placeholder="Coordinator observations..."
                                   value={entry.remarks || ''}
                                   onChange={(e) => handleUpdateDocAudit(item.key, 'remarks', e.target.value)}
                                   disabled={isAuditSubmitted}
+                                  aria-label={`${item.label} Coordinator Remarks`}
                                 />
                               </td>
                             </tr>
@@ -4006,12 +5231,17 @@ export default function L1Home() {
                 <strong style={{ display: 'block', marginBottom: '6px', fontSize: '13.5px' }}>
                   3. Bank Statements to Submit:
                 </strong>
-                {bankRows.filter((r) => r.file).length === 0 && Object.keys(stagedBankReplacements).length === 0 ? (
+                {bankRows.filter((r) => r.file).length === 0 && Object.keys(stagedBankReplacements).length === 0 && stagedConsolidatedBankDocs.filter((c) => c.file).length === 0 ? (
                   <div style={{ fontSize: '13px', color: 'var(--mut)' }}>
                     (No new bank statements staged; retaining {bankStatements.length} existing verified months)
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {stagedConsolidatedBankDocs.filter((c) => c.file).map((c) => (
+                      <div key={c.id} style={{ padding: '6px 12px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', fontSize: '13px' }}>
+                        📑 <strong>Consolidated Bank Statement:</strong> {c.fileName} ({formatFileSize(c.fileSize)}) — Covers {MONTH_NAMES[c.coverage_start_month - 1]} {c.coverage_start_year} – {MONTH_NAMES[c.coverage_end_month - 1]} {c.coverage_end_year}
+                      </div>
+                    ))}
                     {bankRows.filter((r) => r.file).map((r) => (
                       <div key={r.id} style={{ padding: '6px 12px', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '8px', fontSize: '13px' }}>
                         📅 <strong>{MONTH_NAMES[r.month - 1]} {r.year}:</strong> {r.fileName} ({formatFileSize(r.fileSize)})
@@ -4104,9 +5334,15 @@ export default function L1Home() {
                     ✓ Salary Slips ({submitSuccessData.salaryMonths.length} months): {submitSuccessData.salaryMonths.join(', ')}
                   </div>
                 )}
-                {submitSuccessData.bankMonths.length > 0 && (
+                {submitSuccessData.consolidatedBankStatements?.map((cs, idx) => (
+                  <div key={idx} style={{ color: '#166534' }}>
+                    ✓ Consolidated Bank Statement ({cs.months.length} months): {cs.months.join(', ')}
+                    {cs.employerName ? ` [${cs.employerName}]` : ''}
+                  </div>
+                ))}
+                {submitSuccessData.individualBankMonths?.length > 0 && (
                   <div style={{ color: '#166534' }}>
-                    ✓ Bank Statements ({submitSuccessData.bankMonths.length} months): {submitSuccessData.bankMonths.join(', ')}
+                    ✓ Bank Statements ({submitSuccessData.individualBankMonths.length} months): {submitSuccessData.individualBankMonths.join(', ')}
                   </div>
                 )}
                 <div style={{ marginTop: '4px', fontWeight: 700, color: '#166534' }}>
