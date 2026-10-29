@@ -489,6 +489,7 @@ export default function L1Home() {
   const selStateRef = useRef(sel.state)
   const selectedCandidateIdRef = useRef(sel.cand)
   const cardCandidatesRequestRef = useRef(0)
+  const dashboardSummaryRequestRef = useRef(0)
 
   useEffect(() => {
     selStateRef.current = sel.state
@@ -500,24 +501,33 @@ export default function L1Home() {
 
   const fetchDashboardSummary = useCallback((targetState) => {
     const s = targetState || selStateRef.current
+    const requestId = ++dashboardSummaryRequestRef.current
     if (!s) {
       setSummaryData(null)
       setSummaryError('')
+      setLoadingSummary(false)
       return
     }
     setLoadingSummary(true)
     setSummaryError('')
     api(`/dashboard/summary?state=${encodeURIComponent(s)}`)
       .then((data) => {
+        if (requestId !== dashboardSummaryRequestRef.current) return
+        // Ignore a response if the user has switched to a different state.
+        if (selStateRef.current && selStateRef.current !== s) return
         setSummaryData(data)
         setSummaryError('')
       })
       .catch((err) => {
+        if (requestId !== dashboardSummaryRequestRef.current) return
+        if (selStateRef.current && selStateRef.current !== s) return
         console.warn('Failed to load dashboard summary:', err)
         setSummaryError(err?.message || 'Failed to load dashboard summary metrics.')
       })
       .finally(() => {
-        setLoadingSummary(false)
+        if (requestId === dashboardSummaryRequestRef.current) {
+          setLoadingSummary(false)
+        }      
       })
   }, [])
 
@@ -684,16 +694,25 @@ export default function L1Home() {
     }
   }
 
+  // Each lookup key has its own request sequence so older responses cannot
+  // overwrite options for a newer parent selection.
+  const lookupRequestRefs = useRef({})
+
   const fill = (key, promise) => {
+    const requestId = (lookupRequestRefs.current[key] || 0) + 1
+    lookupRequestRefs.current[key] = requestId
     return promise
       .then((rows) => {
+        if (lookupRequestRefs.current[key] !== requestId) return []
         const rowsArr = Array.isArray(rows) ? rows : []
         setLists((l) => ({ ...l, [key]: rowsArr }))
         return rowsArr
       })
       .catch((e) => {
+        if (lookupRequestRefs.current[key] !== requestId) return []
         setLists((l) => ({ ...l, [key]: [] }))
         setError(e?.message || `Failed to load ${key} options.`)
+        return []
       })
   }
 
@@ -924,6 +943,13 @@ export default function L1Home() {
 
   function pick(level, value) {
     selectedCandidateIdRef.current = level === 'cand' ? value : ''
+
+    // Invalidate pending requests for this selection and all dependent levels
+    // before clearing their lists or starting the next lookup in the chain.
+    ;[level, ...RESET[level]].forEach((key) => {
+      lookupRequestRefs.current[key] = (lookupRequestRefs.current[key] || 0) + 1
+    })
+
     setError('')
     setSel((s) => ({ ...s, ...Object.fromEntries(RESET[level].map((k) => [k, ''])), [level]: value }))
     setLists((l) => ({ ...l, ...Object.fromEntries(RESET[level].map((k) => [k, []])) }))

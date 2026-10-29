@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import json
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from postgrest.exceptions import APIError
@@ -322,8 +323,8 @@ def _execute_audit_update(query: Any, candidate_id: int, action_desc: str) -> An
                 f"Database constraint violation during {action_desc}: One or more audit status values are not permitted.",
             )
         raise HTTPException(
-            400,
-            f"Database error during {action_desc}: {msg or 'Request could not be saved.'}",
+            500,
+            f"Unable to complete {action_desc}. Please try again or contact support if the issue persists.",
         )
     except TRANSIENT_ERRORS as exc:
         logger.error("Network transport error during %s for candidate %s: %s", action_desc, candidate_id, exc)
@@ -370,7 +371,10 @@ def get_audit(
         )
     except Exception as exc:
         logger.exception("Failed to query placement_audits for candidate %s: %s", candidate_id, exc)
-        raise HTTPException(status_code=500, detail=f"Database error while querying audit: {str(exc)}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve the placement audit. Please try again or contact support if the issue persists.",
+        ) from exc
 
 
 MONTH_NAMES = [

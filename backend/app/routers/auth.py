@@ -26,11 +26,6 @@ class LoginRequest(BaseModel):
     password: str = Field(..., description="User password")
     expected_role: str | None = Field(None, description="Role selected on the client for validation")
 
-
-class RefreshRequest(BaseModel):
-    refresh_token: str | None = Field(None, description="Refresh token if not sent via cookie")
-
-
 class UserProfileResponse(BaseModel):
     id: str
     email: str | None
@@ -48,11 +43,9 @@ class UpdateProfileRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
-    refresh_token: str | None
-    token_type: str = "bearer"
-    expires_in: int | None
-    expires_at: int | None
+    token_type: str = "cookie"
+    expires_in: int | None = None
+    expires_at: int | None = None
     user: UserProfileResponse
 
 
@@ -91,8 +84,7 @@ def _clear_auth_cookies(response: Response):
 @router.post("/login", response_model=LoginResponse)
 def login(payload: LoginRequest, response: Response):
     """Authenticate user with Supabase Auth via backend, verify active CPASS profile,
-
-    check client-selected role against DB role, and issue session cookies & tokens.
+    check client-selected role against DB role, and issue HttpOnly session cookies.
     """
     auth_client = get_auth_client()
 
@@ -168,9 +160,7 @@ def login(payload: LoginRequest, response: Response):
     )
 
     return LoginResponse(
-        access_token=session.access_token,
-        refresh_token=session.refresh_token,
-        token_type="bearer",
+        token_type="cookie",
         expires_in=session.expires_in,
         expires_at=session.expires_at,
         user=UserProfileResponse(
@@ -236,9 +226,9 @@ def update_profile(
 
 
 @router.post("/refresh", response_model=LoginResponse)
-def refresh(request: Request, response: Response, payload: RefreshRequest | None = None):
-    """Refresh session token using refresh token from payload or HttpOnly cookie."""
-    refresh_token = (payload and payload.refresh_token) or request.cookies.get("cpass_refresh_token")
+def refresh(request: Request, response: Response):
+    """Refresh the session using only the HttpOnly refresh-token cookie."""
+    refresh_token = request.cookies.get("cpass_refresh_token")
     if not refresh_token:
         raise HTTPException(401, "Missing refresh token.")
 
@@ -296,9 +286,7 @@ def refresh(request: Request, response: Response, payload: RefreshRequest | None
     assigned_state = resolve_state(profile.get("assigned_state"))
 
     return LoginResponse(
-        access_token=session.access_token,
-        refresh_token=session.refresh_token,
-        token_type="bearer",
+        token_type="cookie",
         expires_in=session.expires_in,
         expires_at=session.expires_at,
         user=UserProfileResponse(

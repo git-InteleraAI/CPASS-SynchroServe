@@ -121,6 +121,23 @@ def _get_target_state(user: CurrentUser, state_param: str | None) -> str | None:
         return user.assigned_state
     return None
 
+def _fetch_all_pages(query_factory, page_size: int = 1000):
+    """Fetch every row from a Supabase query in bounded pages.
+
+    query_factory must return a fresh query builder each time, so filters and
+    selected columns remain identical while range offsets advance.
+    """
+    rows = []
+    offset = 0
+    while True:
+        response = query_factory().range(offset, offset + page_size - 1).execute()
+        page = response.data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return rows
+
 
 @router.get("/summary")
 def get_dashboard_summary(
@@ -166,37 +183,55 @@ def get_dashboard_summary(
     )
     total_count = total_res.count or 0
 
-    # 2. Uploaded Candidates (candidates in target_state having candidate_documents or placement_audits)
-    docs_res = retry_read_query(
-        lambda: supabase.table("candidate_documents")
-        .select("candidate_id")
-        .neq("upload_status", "FAILED")
-        .execute()
+    # 2. Load only candidate IDs belonging to the authorized state, then scope
+    # document/audit reads to those IDs. Avoid scanning every state's records.
+    state_candidate_rows = retry_read_query(
+        lambda: _fetch_all_pages(
+            lambda: supabase.table("ddugky_candidates")
+            .select("candidate_id")
+            .eq("tc_state_name", target_state)
+        )
     )
-    doc_cids = {d["candidate_id"] for d in (docs_res.data or []) if d.get("candidate_id")}
+    state_candidate_ids = [
+        row["candidate_id"] for row in state_candidate_rows
+        if row.get("candidate_id") is not None
+    ]
 
-    aud_res = retry_read_query(
-        lambda: supabase.table("placement_audits")
-        .select("candidate_id,cpass_status,audit_status,signoff_details")
-        .execute()
-    )
-    aud_rows = aud_res.data or []
-    audit_map = {a["candidate_id"]: a for a in aud_rows if a.get("candidate_id")}
+    doc_cids: set[int] = set()
+    audit_map = {}
+    for start in range(0, len(state_candidate_ids), 500):
+        id_chunk = state_candidate_ids[start:start + 500]
+        doc_rows = retry_read_query(
+            lambda id_chunk=id_chunk: _fetch_all_pages(
+                lambda: supabase.table("candidate_documents")
+                .select("candidate_id")
+                .in_("candidate_id", id_chunk)
+                .neq("upload_status", "FAILED")
+            )
+        )
+        doc_cids.update(
+            row["candidate_id"] for row in doc_rows if row.get("candidate_id") is not None
+        )
+
+        aud_rows = retry_read_query(
+            lambda id_chunk=id_chunk: _fetch_all_pages(
+                lambda: supabase.table("placement_audits")
+                .select("candidate_id,cpass_status,audit_status,signoff_details")
+                .in_("candidate_id", id_chunk)
+            )
+        )
+        audit_map.update(
+            {row["candidate_id"]: row for row in aud_rows if row.get("candidate_id") is not None}
+        )
+
     all_uploaded_cids = doc_cids | set(audit_map.keys())
 
     uploaded_in_state: set[int] = set()
     if all_uploaded_cids:
-        cand_check = retry_read_query(
-            lambda: supabase.table("ddugky_candidates")
-            .select("candidate_id,tc_state_name")
-            .in_("candidate_id", list(all_uploaded_cids))
-            .eq("tc_state_name", target_state)
-            .execute()
-        )
-        for r in (cand_check.data or []):
-            if get_candidate_state(r) == target_state:
-                uploaded_in_state.add(r["candidate_id"])
-
+        # Every candidate ID came from the state-scoped candidate query above.
+        uploaded_in_state = {
+            cid for cid in all_uploaded_cids if cid in set(state_candidate_ids)
+        }
     uploaded_count = len(uploaded_in_state)
 
     # 3. Confirmed Pending / Remaining business rule:
@@ -315,35 +350,42 @@ def get_dashboard_candidates(
         }
 
     # Fetch uploaded IDs and audit statuses for state
-    docs_res = retry_read_query(
-        lambda: supabase.table("candidate_documents")
-        .select("candidate_id")
-        .neq("upload_status", "FAILED")
-        .execute()
+    doc_rows = retry_read_query(
+        lambda: _fetch_all_pages(
+            lambda: supabase.table("candidate_documents")
+            .select("candidate_id")
+            .neq("upload_status", "FAILED")
+        )
     )
-    doc_cids = {d["candidate_id"] for d in (docs_res.data or []) if d.get("candidate_id")}
+    doc_cids = {d["candidate_id"] for d in doc_rows if d.get("candidate_id")}
 
-    aud_res = retry_read_query(
-        lambda: supabase.table("placement_audits")
-        .select("candidate_id,cpass_status,audit_status,signoff_details")
-        .execute()
+    aud_rows = retry_read_query(
+        lambda: _fetch_all_pages(
+            lambda: supabase.table("placement_audits")
+            .select("candidate_id,cpass_status,audit_status,signoff_details")
+        )
     )
-    aud_rows = aud_res.data or []
     audit_map = {a["candidate_id"]: a for a in aud_rows if a.get("candidate_id")}
     all_uploaded_cids = doc_cids | set(audit_map.keys())
 
     uploaded_in_state: set[int] = set()
     if all_uploaded_cids:
-        cand_check = retry_read_query(
-            lambda: supabase.table("ddugky_candidates")
-            .select("candidate_id,tc_state_name")
-            .in_("candidate_id", list(all_uploaded_cids))
-            .eq("tc_state_name", target_state)
-            .execute()
-        )
-        for r in (cand_check.data or []):
-            if get_candidate_state(r) == target_state:
-                uploaded_in_state.add(r["candidate_id"])
+        # Bound each IN clause and paginate each chunk so large candidate sets
+        # do not create oversized requests or silently stop at the API row limit.
+        candidate_ids = list(all_uploaded_cids)
+        for start in range(0, len(candidate_ids), 500):
+            id_chunk = candidate_ids[start:start + 500]
+            cand_check_rows = retry_read_query(
+                lambda id_chunk=id_chunk: _fetch_all_pages(
+                    lambda: supabase.table("ddugky_candidates")
+                    .select("candidate_id,tc_state_name")
+                    .in_("candidate_id", id_chunk)
+                    .eq("tc_state_name", target_state)
+                )
+            )
+            for r in cand_check_rows:
+                if get_candidate_state(r) == target_state:
+                    uploaded_in_state.add(r["candidate_id"])
 
     # Compute candidate ID sets for specific filters
     approved_in_state = {cid for cid in uploaded_in_state if is_candidate_approved(audit_map.get(cid))}

@@ -34,6 +34,8 @@ from ..services.google_drive import (
 
 logger = logging.getLogger("cpass.documents")
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/candidates/{candidate_id}/documents", tags=["documents"])
 
 VALID_DOCUMENT_TYPES = {"APPOINTMENT_LETTER", "SALARY_SLIP", "BANK_STATEMENT", "OTHER_DOCUMENT"}
