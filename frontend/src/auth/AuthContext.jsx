@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearTokens, setTokens } from '../lib/api'
+import { api, clearTokens } from '../lib/api'
 
 const AuthContext = createContext(null)
 export const useAuth = () => useContext(AuthContext)
@@ -13,7 +13,7 @@ export function AuthProvider({ children }) {
 
     async function initSession() {
       try {
-        // Attempt session restoration via /auth/me (transparently refreshes if expired token exists)
+        // Restore the session from HttpOnly cookies; tokens are never exposed to JavaScript.
         const me = await api('/auth/me')
         if (!isCancelled) {
           setProfile(me)
@@ -49,12 +49,7 @@ export function AuthProvider({ children }) {
       }),
     })
 
-    if (data.access_token) {
-      setTokens({
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token || null,
-      })
-    }
+    // The backend sets HttpOnly cookies. Never store authentication tokens in JavaScript storage.
     setProfile(data.user)
     return data.user
   }

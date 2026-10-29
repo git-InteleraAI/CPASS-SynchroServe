@@ -16,6 +16,7 @@ import io
 import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import quote
 from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -36,6 +37,26 @@ logger = logging.getLogger("cpass.documents")
 router = APIRouter(prefix="/candidates/{candidate_id}/documents", tags=["documents"])
 
 VALID_DOCUMENT_TYPES = {"APPOINTMENT_LETTER", "SALARY_SLIP", "BANK_STATEMENT", "OTHER_DOCUMENT"}
+
+
+def _content_disposition_header(file_name: str) -> str:
+    """Build a safe Content-Disposition header that supports Unicode filenames.
+
+    Starlette encodes header values as Latin-1. Use an ASCII fallback plus the
+    RFC 5987 filename* parameter so names containing characters such as em/en
+    dashes remain valid and are displayed correctly by modern browsers.
+    """
+    cleaned_name = (file_name or "download").replace("\\", "_").replace("/", "_")
+    cleaned_name = cleaned_name.replace('"', "'")
+    cleaned_name = "".join(
+        char for char in cleaned_name
+        if ord(char) >= 32 and ord(char) != 127
+    ).strip() or "download"
+
+    ascii_fallback = cleaned_name.encode("ascii", "ignore").decode("ascii").strip()
+    ascii_fallback = ascii_fallback or "download"
+    encoded_name = quote(cleaned_name, safe="")
+    return f"inline; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_name}"
 
 
 def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -> dict[str, Any]:
@@ -63,24 +84,43 @@ def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -
 
 
 def _validate_file_upload(file_name: str, content: bytes, mime_type: str | None) -> str:
-    """Validate format and size of uploaded file, returning normalized mime_type."""
+    """Validate size and actual file signature; never trust extension or client MIME alone."""
     if not content:
         raise HTTPException(400, f"File '{file_name}' is empty.")
     if len(content) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(400, f"File size exceeds limit: '{file_name}' exceeds size limit of {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB.")
-    mime = (mime_type or "application/octet-stream").lower()
-    if mime not in ALLOWED_MIME_TYPES:
-        ext = file_name.split(".")[-1].lower() if "." in file_name else ""
-        if ext == "pdf":
-            mime = "application/pdf"
-        elif ext in ("jpg", "jpeg"):
-            mime = "image/jpeg"
-        elif ext == "png":
-            mime = "image/png"
-        else:
-            raise HTTPException(400, f"Unsupported file format for '{file_name}'. Allowed formats: PDF, PNG, JPG/JPEG.")
-    return mime
+    
+    # Detect the actual format from its magic bytes rather than trusting the
+    # browser-supplied Content-Type or the filename extension.
+    if content.startswith(b"%PDF-"):
+        detected_mime = "application/pdf"
+    elif content.startswith(b"\xff\xd8\xff"):
+        detected_mime = "image/jpeg"
+    elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected_mime = "image/png"
+    else:
+        raise HTTPException(
+            400,
+            f"Unsupported or invalid file content for '{file_name}'. Allowed formats: PDF, PNG, JPG/JPEG."
+        )
 
+    # Browsers may omit Content-Type or send octet-stream; allow those and
+    # use the detected signature. Reject an explicit, conflicting MIME type.
+    supplied_mime = (mime_type or "").strip().lower()
+    if supplied_mime in ("", "application/octet-stream"):
+        return detected_mime
+    normalized_supplied_mime = "image/jpeg" if supplied_mime == "image/jpg" else supplied_mime
+    if normalized_supplied_mime not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            400,
+            f"Unsupported declared file format for '{file_name}'. Allowed formats: PDF, PNG, JPG/JPEG."
+        )
+    if normalized_supplied_mime != detected_mime:
+        raise HTTPException(
+            400,
+            f"File content does not match the declared format for '{file_name}'."
+        )
+    return detected_mime
 
 @router.get("")
 def list_documents(
@@ -364,13 +404,18 @@ async def upload_document(
     if replace_id:
         existing_doc = (
             supabase.table("candidate_documents")
-            .select("drive_file_id")
+            .select("id,candidate_id,document_type,drive_file_id")
             .eq("id", replace_id)
+            .eq("candidate_id", candidate_id)
             .limit(1)
             .execute()
             .data
         )
-        if existing_doc and existing_doc[0].get("drive_file_id"):
+        if not existing_doc:
+            raise HTTPException(404, "Replacement document not found for this candidate.")
+        if existing_doc[0].get("document_type") != doc_type:
+            raise HTTPException(400, "Replacement document type does not match the uploaded document.")
+        if existing_doc[0].get("drive_file_id"):
             old_drive_file_id = existing_doc[0]["drive_file_id"]
 
     try:
@@ -394,8 +439,9 @@ async def upload_document(
             "Google Drive integration is not configured on the backend. "
             "Please configure GOOGLE_SERVICE_ACCOUNT_FILE or OAuth credentials in backend/.env.",
         )
-    except Exception as e:
-        raise HTTPException(502, f"Failed to upload document to Google Drive: {e}")
+    except Exception:
+        logger.exception("Failed to upload document to Google Drive for candidate %s", candidate_id)
+        raise HTTPException(502, "Document upload failed. Please try again.")
 
     doc_payload: dict[str, Any] = {
         "candidate_id": candidate_id,
@@ -427,8 +473,12 @@ async def upload_document(
                 supabase.table("candidate_documents")
                 .update(doc_payload)
                 .eq("id", replace_id)
+                .eq("candidate_id", candidate_id)
                 .execute()
             )
+            if not db_res.data:
+                google_drive_service.delete_file(drive_res["file_id"])
+                raise HTTPException(404, "Replacement document not found for this candidate.")
             if old_drive_file_id and old_drive_file_id != drive_res["file_id"]:
                 google_drive_service.delete_file(old_drive_file_id)
         else:
@@ -437,9 +487,15 @@ async def upload_document(
                 .insert(doc_payload)
                 .execute()
             )
-    except Exception as e:
-        google_drive_service.delete_file(drive_res["file_id"])
-        raise HTTPException(500, f"Document metadata could not be saved to the database: {e}")
+    except HTTPException:
+        raise        
+    except Exception:
+        logger.exception("Document metadata could not be saved for candidate %s", candidate_id)
+        try:
+            google_drive_service.delete_file(drive_res["file_id"])
+        except Exception:
+            logger.exception("Failed to clean up staged Google Drive file after metadata failure")
+        raise HTTPException(500, "Document metadata could not be saved. Please try again.")
 
     return db_res.data[0] if db_res.data else doc_payload
 
@@ -742,8 +798,12 @@ async def batch_submit_documents(
     try:
         for item in staged_uploads:
             if item.get("replace_id"):
-                old_row = next((d for d in existing_docs if d["id"] == item["replace_id"]), None)
-                if old_row and old_row.get("drive_file_id"):
+                old_row = existing_docs_by_id.get(item["replace_id"])
+                if not old_row:
+                    raise HTTPException(404, "Replacement document not found for this candidate.")
+                if old_row.get("document_type") != item["doc_type"]:
+                    raise HTTPException(400, "Replacement document type does not match the uploaded document.")
+                if old_row.get("drive_file_id"):
                     old_drive_files_to_delete.append(old_row["drive_file_id"])
 
             dest_folder_id, folder_path = google_drive_service.get_or_create_candidate_subfolder(
@@ -793,10 +853,18 @@ async def batch_submit_documents(
         for fid in created_drive_file_ids:
             google_drive_service.delete_file(fid)
         raise HTTPException(503, "Google Drive integration is not configured on the backend.")
-    except Exception as e:
+    except HTTPException:
         for fid in created_drive_file_ids:
             google_drive_service.delete_file(fid)
-        raise HTTPException(502, f"Failed to upload document to Google Drive: {e}")
+        raise
+    except Exception:
+        logger.exception("Batch document upload failed for candidate %s", candidate_id)
+        for fid in created_drive_file_ids:
+            try:
+                google_drive_service.delete_file(fid)
+            except Exception:
+                logger.exception("Failed to clean up staged Google Drive file during batch rollback")
+        raise HTTPException(502, "Document upload failed. Please try again.")
 
     # 8. Persist Database Records with Compensation
     persisted_inserted_ids: list[str] = []
@@ -808,10 +876,12 @@ async def batch_submit_documents(
                     supabase.table("candidate_documents")
                     .update(op["payload"])
                     .eq("id", op["replace_id"])
+                    .eq("candidate_id", candidate_id)
                     .execute()
                 )
-                if db_res.data:
-                    persisted_updated_ids.append(op["replace_id"])
+                if not db_res.data:
+                    raise RuntimeError("Replacement document disappeared or no longer belongs to this candidate.")
+                persisted_updated_ids.append(op["replace_id"])
             else:
                 db_res = (
                     supabase.table("candidate_documents")
@@ -834,7 +904,7 @@ async def batch_submit_documents(
         # Roll back newly inserted database rows
         for doc_id in persisted_inserted_ids:
             try:
-                supabase.table("candidate_documents").delete().eq("id", doc_id).execute()
+                supabase.table("candidate_documents").delete().eq("id", doc_id).eq("candidate_id", candidate_id).execute()
             except Exception as sb_err:
                 logger.error("Failed to delete inserted document %s during rollback: %s", doc_id, sb_err)
 
@@ -847,14 +917,21 @@ async def batch_submit_documents(
                         k: v for k, v in orig.items()
                         if k not in ("id", "created_at", "updated_at")
                     }
-                    supabase.table("candidate_documents").update(restore_payload).eq("id", doc_id).execute()
+                    supabase.table("candidate_documents").update(restore_payload).eq("id", doc_id).eq("candidate_id", candidate_id).execute()
                 except Exception as sb_err:
                     logger.error("Failed to restore replaced document %s during rollback: %s", doc_id, sb_err)
 
-        err_detail = f"Database persistence failed: {e}. Staged changes have been rolled back."
+        
         if drive_cleanup_failures:
-            err_detail += f" Warning: {len(drive_cleanup_failures)} newly created Drive files could not be cleaned up."
-        raise HTTPException(500, err_detail)
+            logger.error(
+                "Batch rollback for candidate %s left %s staged Google Drive file(s) requiring cleanup",
+                candidate_id,
+                len(drive_cleanup_failures),
+            )
+        raise HTTPException(
+            500,
+            "Document changes could not be saved. Staged changes were rolled back where possible. Please try again.",
+        )
 
     # 9. Cleanup old replaced files in Google Drive
     cleanup_warnings: list[str] = []
@@ -863,7 +940,7 @@ async def batch_submit_documents(
             google_drive_service.delete_file(old_fid)
         except Exception as e:
             logger.warning("Failed to delete replaced Google Drive file %s: %s", old_fid, e)
-            cleanup_warnings.append(f"Replaced Drive file {old_fid} could not be automatically deleted: {e}")
+            cleanup_warnings.append("One or more replaced files could not be cleaned up automatically.")
 
     # 10. Synchronize placement audit document availability if audit exists
     try:
@@ -1024,13 +1101,14 @@ def download_document(
         file_bytes, file_name, mime_type = google_drive_service.download_file(drive_file_id)
     except GoogleDriveNotConfiguredError:
         raise HTTPException(503, "Google Drive integration is not configured.")
-    except Exception as e:
-        raise HTTPException(502, f"Failed to retrieve document from Google Drive: {e}")
+    except Exception:
+        logger.exception("Failed to retrieve document from Google Drive for candidate %s", candidate_id)
+        raise HTTPException(502, "Document download failed. Please try again.")
 
     return StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=mime_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{file_name}"'},
+        headers={"Content-Disposition": _content_disposition_header(file_name)},
     )
 
 
@@ -1057,5 +1135,13 @@ def delete_document(
     if drive_file_id:
         google_drive_service.delete_file(drive_file_id)
 
-    supabase.table("candidate_documents").delete().eq("id", document_id).execute()
+    delete_res = (
+        supabase.table("candidate_documents")
+        .delete()
+        .eq("id", document_id)
+        .eq("candidate_id", candidate_id)
+        .execute()
+    )
+    if not delete_res.data:
+        raise HTTPException(404, "Document not found for this candidate.")
     return {"status": "deleted", "id": document_id}

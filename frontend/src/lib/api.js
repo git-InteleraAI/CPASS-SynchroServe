@@ -1,52 +1,25 @@
 const rawBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const BASE = rawBase.replace(/\/+$/, '')
-const TOKEN_KEY = 'cpass_token'
-const REFRESH_TOKEN_KEY = 'cpass_refresh_token'
-
+// Authentication is cookie-only. These exports remain as no-op compatibility
+// shims for older imports; no token is read from or written to JavaScript storage.
 export function getToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY)
-  } catch {
-    return null
-  }
+  return null
 }
 
 export function getRefreshToken() {
-  try {
-    return localStorage.getItem(REFRESH_TOKEN_KEY)
-  } catch {
-    return null
-  }
+  return null
 }
 
-export function setTokens({ accessToken, refreshToken }) {
-  try {
-    if (accessToken) {
-      localStorage.setItem(TOKEN_KEY, accessToken)
-    } else {
-      localStorage.removeItem(TOKEN_KEY)
-    }
-    if (refreshToken) {
-      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
-    } else if (refreshToken === null) {
-      localStorage.removeItem(REFRESH_TOKEN_KEY)
-    }
-  } catch {
-    // LocalStorage fallback
-  }
+export function setTokens(_tokens) {
+  // Intentionally disabled: auth tokens must never be persisted in localStorage.
 }
 
-export function setToken(token) {
-  setTokens({ accessToken: token })
+export function setToken(_token) {
+  // Intentionally disabled.
 }
 
 export function clearTokens() {
-  try {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(REFRESH_TOKEN_KEY)
-  } catch {
-    // LocalStorage fallback
-  }
+  // Intentionally no-op; the server clears HttpOnly cookies via /auth/logout.
 }
 
 export function clearToken() {
@@ -63,15 +36,8 @@ export async function refreshSession() {
 
   refreshPromise = (async () => {
     try {
-      const storedRefreshToken = getRefreshToken()
       const res = await fetch(`${BASE}/auth/refresh`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          refresh_token: storedRefreshToken || null,
-        }),
         credentials: 'include',
       })
 
@@ -84,12 +50,7 @@ export async function refreshSession() {
       }
 
       const data = await res.json()
-      if (data.access_token) {
-        setTokens({
-          accessToken: data.access_token,
-          refreshToken: data.refresh_token,
-        })
-      }
+      // The refreshed session is delivered only through HttpOnly Set-Cookie headers.
       return data
     } finally {
       refreshPromise = null
@@ -100,14 +61,9 @@ export async function refreshSession() {
 }
 
 export async function api(path, params, options = {}, _isRetry = false) {
-  const token = getToken()
   const qs = params ? '?' + new URLSearchParams(params).toString() : ''
   const headers = {
     ...(options.headers || {}),
-  }
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
   }
   if (options.body && typeof options.body === 'string' && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json'
@@ -126,22 +82,14 @@ export async function api(path, params, options = {}, _isRetry = false) {
     path === '/auth/logout'
 
   if (res.status === 401 && !isAuthManagement && !_isRetry) {
-    // Check if we have credentials or tokens to attempt refresh
-    const hasRefreshToken = !!getRefreshToken()
-    const hasToken = !!token
-
-    if (hasRefreshToken || hasToken) {
-      try {
-        await refreshSession()
-        // Retry the request once with refreshed token
-        return api(path, params, options, true)
-      } catch (refreshErr) {
-        // Refresh failed; clear tokens and propagate original 401
-        clearTokens()
-        const err = new Error(refreshErr.message || 'Session expired')
-        err.status = 401
-        throw err
-      }
+    try {
+      await refreshSession()
+      // Retry the request once with the refreshed HttpOnly cookie.
+      return api(path, params, options, true)
+    } catch (refreshErr) {
+      const err = new Error(refreshErr.message || 'Session expired')
+      err.status = 401
+      throw err
     }
   }
 
@@ -167,11 +115,7 @@ export async function api(path, params, options = {}, _isRetry = false) {
 }
 
 export async function downloadDocument(candidateId, documentId, fallbackFilename, _isRetry = false) {
-  const token = getToken()
   const headers = {}
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   const res = await fetch(`${BASE}/candidates/${candidateId}/documents/${documentId}/download`, {
     headers,
     credentials: 'include',
@@ -206,11 +150,7 @@ export async function downloadDocument(candidateId, documentId, fallbackFilename
 }
 
 export async function fetchDocumentBlob(candidateId, documentId, _isRetry = false) {
-  const token = getToken()
   const headers = {}
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   const res = await fetch(`${BASE}/candidates/${candidateId}/documents/${documentId}/download`, {
     headers,
     credentials: 'include',
@@ -235,4 +175,3 @@ export async function fetchDocumentBlob(candidateId, documentId, _isRetry = fals
 
   return res.blob()
 }
-

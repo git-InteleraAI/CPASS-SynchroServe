@@ -156,15 +156,9 @@ def login(payload: LoginRequest, response: Response):
     if payload.expected_role and profile["role"] != payload.expected_role:
         raise HTTPException(403, "This account does not have the selected role.")
 
-    meta = auth_user.user_metadata or {}
-    assigned_state = (
-        resolve_state(profile.get("assigned_state"))
-        or resolve_state(profile.get("state"))
-        or resolve_state(meta.get("assigned_state"))
-        or resolve_state(meta.get("state"))
-        or resolve_state(profile.get("email"))
-        or resolve_state(auth_user.email)
-    )
+    # Use only the explicit CPASS profile assignment for authorization scope.
+    # Email/username and auth metadata are not trusted assignment sources.
+    assigned_state = resolve_state(profile.get("assigned_state"))
 
     _set_auth_cookies(
         response=response,
@@ -298,15 +292,8 @@ def refresh(request: Request, response: Response, payload: RefreshRequest | None
         expires_in=session.expires_in,
     )
 
-    meta = auth_user.user_metadata or {}
-    assigned_state = (
-        resolve_state(profile.get("assigned_state"))
-        or resolve_state(profile.get("state"))
-        or resolve_state(meta.get("assigned_state"))
-        or resolve_state(meta.get("state"))
-        or resolve_state(profile.get("email"))
-        or resolve_state(auth_user.email)
-    )
+    # Keep refresh behavior consistent with login: profile assignment only.
+    assigned_state = resolve_state(profile.get("assigned_state"))
 
     return LoginResponse(
         access_token=session.access_token,

@@ -142,10 +142,9 @@ class CurrentUser:
     assigned_state: str | None = None
 
     def __post_init__(self):
-        if self.assigned_state:
-            self.assigned_state = resolve_state(self.assigned_state)
-        elif self.email:
-            self.assigned_state = resolve_state(self.email)
+        # Authorization scope must come from the explicit profile assignment,
+        # never from an email address or username convention.
+        self.assigned_state = resolve_state(self.assigned_state)
 
     @property
     def sees_all_centres(self) -> bool:
@@ -241,15 +240,9 @@ def get_current_user(
     if not p["is_active"]:
         raise HTTPException(403, "This account is disabled.")
 
-    meta = auth_user.user_metadata or {}
-    assigned_state = (
-        resolve_state(p.get("assigned_state"))
-        or resolve_state(p.get("state"))
-        or resolve_state(meta.get("assigned_state"))
-        or resolve_state(meta.get("state"))
-        or resolve_state(p.get("email"))
-        or resolve_state(auth_user.email)
-    )
+    # The CPASS profile's explicit assignment is authoritative. Missing or
+    # invalid assignments remain None and are handled fail-closed by allowed_states.
+    assigned_state = resolve_state(p.get("assigned_state"))
 
     user = CurrentUser(
         id=p["id"],
@@ -286,7 +279,7 @@ def allowed_states(user: CurrentUser) -> list[str] | None:
         return []  # Fail-closed: unassigned coordinator or manager sees zero states
     if user.assigned_state:
         return [user.assigned_state]
-    return None
+    return []  # Fail closed: no explicit state assignment means no state access
 
 
 def allowed_tc_ids(user: CurrentUser) -> list[int] | None:
@@ -346,5 +339,3 @@ def check_candidate_access(user: CurrentUser, cand: dict[str, Any]) -> None:
         tc_id = cand.get("tc_id")
         if tc_id is not None and tc_id not in permitted_tcs:
             raise HTTPException(403, "You are not assigned to this candidate's training centre.")
-
-
