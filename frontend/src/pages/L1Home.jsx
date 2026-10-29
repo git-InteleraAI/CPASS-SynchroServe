@@ -487,9 +487,16 @@ export default function L1Home() {
   const [cardCandError, setCardCandError] = useState('')
 
   const selStateRef = useRef(sel.state)
+  const selectedCandidateIdRef = useRef(sel.cand)
+  const cardCandidatesRequestRef = useRef(0)
+
   useEffect(() => {
     selStateRef.current = sel.state
   }, [sel.state])
+
+  useEffect(() => {
+    selectedCandidateIdRef.current = sel.cand
+  }, [sel.cand])
 
   const fetchDashboardSummary = useCallback((targetState) => {
     const s = targetState || selStateRef.current
@@ -516,6 +523,7 @@ export default function L1Home() {
 
   const fetchCardCandidates = useCallback((filterType, page = 1, search = '') => {
     if (!filterType) return
+    const requestId = ++cardCandidatesRequestRef.current
     const s = sel.state
     setCardCandLoading(true)
     setCardCandError('')
@@ -528,18 +536,20 @@ export default function L1Home() {
     }
     api(url)
       .then((res) => {
+        if (requestId !== cardCandidatesRequestRef.current) return
         setCardCandidates(res.candidates || [])
         setCardCandTotal(res.total_count || 0)
         setCardCandPages(res.total_pages || 1)
         setCardCandPage(res.page || 1)
       })
       .catch((err) => {
+        if (requestId !== cardCandidatesRequestRef.current) return
         console.warn('Failed to load card candidates:', err)
         setCardCandError(err.message || 'Could not load candidates')
         setCardCandidates([])
       })
       .finally(() => {
-        setCardCandLoading(false)
+        if (requestId === cardCandidatesRequestRef.current) setCardCandLoading(false)
       })
   }, [sel.state])
 
@@ -571,6 +581,7 @@ export default function L1Home() {
 
   function handleSelectCandidateFromList(cand) {
     if (!cand?.candidate_id) return
+    selectedCandidateIdRef.current = cand.candidate_id
     setError('')
     setActiveCardFilter(null)
     setCardCandidates([])
@@ -582,14 +593,19 @@ export default function L1Home() {
     }))
     api(`/lookups/candidates/${cand.candidate_id}`)
       .then((detail) => {
+        if (selectedCandidateIdRef.current !== cand.candidate_id) return
         setCandDetail(detail)
         refreshDocuments(cand.candidate_id)
         loadAudit(cand.candidate_id, detail)
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        if (selectedCandidateIdRef.current === cand.candidate_id) setError(e.message)
+      })
       .finally(() => {
+        if (selectedCandidateIdRef.current !== cand.candidate_id) return
         setLoadingDetail(false)
         setTimeout(() => {
+          if (selectedCandidateIdRef.current !== cand.candidate_id) return
           const el = document.getElementById('candidate-dossier-anchor')
           if (el) el.scrollIntoView({ behavior: 'smooth' })
         }, 150)
@@ -748,13 +764,14 @@ export default function L1Home() {
   }
 
   async function refreshDocuments(candidateId) {
-    if (!candidateId) return
+    if (!candidateId || selectedCandidateIdRef.current !== candidateId) return
     setLoadingDocs(true)
     try {
       const [summaryRes, docsRes] = await Promise.allSettled([
         api(`/candidates/${candidateId}/documents/summary`),
         api(`/candidates/${candidateId}/documents`),
       ])
+      if (selectedCandidateIdRef.current !== candidateId) return
       if (summaryRes.status === 'fulfilled') {
         setDocSummary(summaryRes.value)
       }
@@ -766,19 +783,21 @@ export default function L1Home() {
         setDocuments([])
       }
     } catch (e) {
+      if (selectedCandidateIdRef.current !== candidateId) return
       console.warn('Error refreshing documents:', e)
       setDocuments([])
     } finally {
-      setLoadingDocs(false)
+      if (selectedCandidateIdRef.current === candidateId) setLoadingDocs(false)
     }
   }
 
   function loadAudit(candidateId, detail) {
-    if (!candidateId) return
+    if (!candidateId || selectedCandidateIdRef.current !== candidateId) return
     setLoadingAudit(true)
     setAuditLoadError('')
     api(`/candidates/${candidateId}/audit`)
       .then((res) => {
+        if (selectedCandidateIdRef.current !== candidateId) return
         if (res?.exists && res.audit) {
           const a = res.audit
           setAuditRecord(a)
@@ -887,6 +906,7 @@ export default function L1Home() {
         }
       })
       .catch((err) => {
+        if (selectedCandidateIdRef.current !== candidateId) return
         console.warn('Could not load candidate audit:', err)
         setAuditLoadError(err.message || 'Could not load placement audit record.')
         setAuditRecord(null)
@@ -898,11 +918,12 @@ export default function L1Home() {
         setSignoffDetails(createDefaultSignoffs())
       })
       .finally(() => {
-        setLoadingAudit(false)
+        if (selectedCandidateIdRef.current === candidateId) setLoadingAudit(false)
       })
   }
 
   function pick(level, value) {
+    selectedCandidateIdRef.current = level === 'cand' ? value : ''
     setError('')
     setSel((s) => ({ ...s, ...Object.fromEntries(RESET[level].map((k) => [k, ''])), [level]: value }))
     setLists((l) => ({ ...l, ...Object.fromEntries(RESET[level].map((k) => [k, []])) }))
@@ -931,12 +952,17 @@ export default function L1Home() {
       setLoadingDetail(true)
       api(`/lookups/candidates/${value}`)
         .then((detail) => {
+          if (selectedCandidateIdRef.current !== value) return
           setCandDetail(detail)
           refreshDocuments(value)
           loadAudit(value, detail)
         })
-        .catch((e) => setError(e.message))
-        .finally(() => setLoadingDetail(false))
+        .catch((e) => {
+          if (selectedCandidateIdRef.current === value) setError(e.message)
+        })
+        .finally(() => {
+          if (selectedCandidateIdRef.current === value) setLoadingDetail(false)
+        })
     }
   }
 
