@@ -669,4 +669,5 @@ def test_return_to_l1_handles_transient_error():
         )
         assert res.status_code == 503
         assert "temporarily unreachable" in res.json()["detail"].lower()
+    app.dependency_overrides.clear()
 

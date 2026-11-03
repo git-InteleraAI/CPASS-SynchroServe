@@ -23,9 +23,10 @@
    ----------------------------------------------------------------------------- */
 .cpass-statement-sheet .cpass-statement-header,
 .cpass-statement-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid !important;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) !important;
+  align-items: center !important;
+  justify-content: space-between !important;
   border-bottom: 2px solid #0b4fb8;
   padding-bottom: 12px;
   gap: 16px;
@@ -34,7 +35,8 @@
 
 .cpass-statement-sheet .cpass-header-logo,
 .cpass-header-logo {
-  flex-shrink: 0;
+  order: 1;
+  justify-self: start;
   display: flex;
   align-items: center;
 }
@@ -49,9 +51,10 @@
 
 .cpass-statement-sheet .cpass-header-title,
 .cpass-header-title {
+  order: 2;
+  justify-self: center;
   text-align: center;
-  flex: 1;
-  min-width: 0;
+  width: 100%;
   padding: 0 8px;
 }
 
@@ -88,7 +91,8 @@
 
 .cpass-statement-sheet .cpass-header-meta,
 .cpass-header-meta {
-  flex-shrink: 0;
+  order: 3;
+  justify-self: end;
   text-align: right;
   display: flex;
   flex-direction: column;
@@ -279,7 +283,7 @@
 .cpass-signoff-trio {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
+  gap: 10px;
   margin-top: 6px;
 }
 
@@ -416,7 +420,7 @@
 /* -----------------------------------------------------------------------------
    8. Responsive Layouts (Tablet & Mobile)
    ----------------------------------------------------------------------------- */
-@media (max-width: 768px) {
+@media screen and (max-width: 768px) {
   .cpass-statement-header {
     flex-wrap: wrap;
     gap: 12px;
@@ -444,7 +448,7 @@
   }
 }
 
-@media (max-width: 480px) {
+@media screen and (max-width: 480px) {
   .cpass-statement-header {
     flex-direction: column;
     align-items: flex-start;
@@ -469,47 +473,29 @@
     margin: 10mm 10mm 10mm 10mm;
   }
 
-  /* Hide application chrome, navigation, headers, footers, and interactive controls */
-  .l1-no-print,
-  .l1-statement-modal-header,
-  .l1-statement-modal-footer,
-  .l1-modal-header,
-  .l1-modal-footer,
-  header.top,
-  .top,
-  .l2-workspace-selector,
-  .l2-audit-actions-bar,
-  .l1-hero-banner,
-  .l1-selector-panel,
-  .l1-cand-summary-card,
-  .l1-audit-workflow-container,
-  .l1-doc-workspace,
-  .l1-submit-dock,
-  button {
-    display: none !important;
-  }
-
+  /* Unconstrain body, html, and statement containers */
   body, html {
     background: #ffffff !important;
     color: #000000 !important;
     margin: 0 !important;
     padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 
-  .l1-modal-backdrop {
-    position: static !important;
-    background: transparent !important;
-    padding: 0 !important;
-    overflow: visible !important;
-    display: block !important;
-    height: auto !important;
-    width: 100% !important;
-    margin: 0 !important;
-    box-shadow: none !important;
-  }
-
+  #root,
+  .app-layout,
+  .content-container,
+  .l1-dashboard,
+  .l2-dashboard,
+  .l2-workspace,
+  .l2-statement-panel,
+  .l2-statement-panel .l2-panel-body,
+  .l1-modal-backdrop,
   .l1-statement-modal-card,
   .l1-statement-modal-scroll {
     position: static !important;
@@ -517,6 +503,7 @@
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;
+    min-height: 0 !important;
     max-height: none !important;
     overflow: visible !important;
     border: none !important;
@@ -526,38 +513,192 @@
     background: transparent !important;
   }
 
+  /* Structural print isolation: ensure only the statement branch is printed */
+  .l1-dashboard > :not(.l1-modal-backdrop) {
+    display: none !important;
+  }
+  .l2-dashboard > :not(.l2-workspace) {
+    display: none !important;
+  }
+  .l2-workspace > :not(.l2-statement-panel) {
+    display: none !important;
+  }
+  .l2-statement-panel > :not(.l2-panel-body) {
+    display: none !important;
+  }
+
+  /* Completely hide all application chrome, dashboard layout, navigation, filters, cards, and evidence panel */
+  .l1-no-print,
+  .l1-compact-summary-row,
+  .l2-compact-summary-row,
+  .l1-compact-card,
+  .l2-compact-card,
+  .l1-compact-summary-row *,
+  .l2-compact-summary-row *,
+  section.l1-compact-summary-row,
+  section.l2-compact-summary-row,
+  .l1-compact-cards-row,
+  .l2-compact-cards-row,
+  .l1-statement-modal-header,
+  .l1-statement-modal-footer,
+  .l1-modal-header,
+  .l1-modal-footer,
+  header.top,
+  header.top *,
+  .top,
+  .top *,
+  .logo,
+  .user,
+  .app-layout > header,
+  .l2-topbar,
+  .l2-selector-panel,
+  .l2-pipeline-strip,
+  .l2-panel-header,
+  .l2-audit-actions-bar,
+  .l2-bottom-dock,
+  .l2-panel.l2-doc-panel,
+  .l2-doc-panel,
+  .l2-evidence-panel,
+  .l1-doc-checklist,
+  .l2-decision-modal,
+  .l2-modal-overlay,
+  .l1-hero-banner,
+  .l1-selector-panel,
+  .l1-cand-summary-card,
+  .l1-audit-workflow-container,
+  .l1-doc-workspace,
+  .l1-submit-dock,
+  .l1-cand-popup-backdrop,
+  .l1-cand-popup-dialog,
+  .l2-cand-popup-backdrop,
+  .l2-cand-popup-dialog,
+  .l1-empty-state,
+  .l2-empty-state,
+  .l1-banner-warning,
+  .l2-banner-warning,
+  .l1-banner-danger,
+  .l2-banner-danger,
+  .l1-toast,
+  .l2-toast,
+  .l1-btn-open-dossier,
+  .l1-popup-close-btn,
+  .l1-search-clear-btn,
+  .l1-page-btn,
+  button,
+  input:not(.l1-edit-cell),
+  select,
+  textarea:not(.l1-edit-cell) {
+    display: none !important;
+  }
+
+  /* Center the official placement statement sheet on the page */
   .cpass-statement-sheet {
+    display: block !important;
     box-shadow: none !important;
     border: none !important;
     border-radius: 0 !important;
     padding: 0 !important;
-    margin: 0 !important;
+    margin: 0 auto !important;
     width: 100% !important;
     max-width: 100% !important;
     font-size: 9.5pt !important;
     line-height: 1.35 !important;
+    overflow: visible !important;
+    page-break-after: auto !important;
+    break-after: auto !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 
+  .cpass-statement-sheet .cpass-statement-header,
   .cpass-statement-header {
+    display: grid !important;
+    grid-template-columns: minmax(170px, 1fr) auto minmax(170px, 1fr) !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 10px !important;
+    width: 100% !important;
     border-bottom: 2px solid #0a2a7a !important;
     padding-bottom: 8px !important;
     margin-bottom: 10px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    flex-wrap: nowrap !important;
   }
 
-  .cpass-header-logo img {
+  .cpass-statement-sheet .cpass-header-logo,
+  .cpass-header-logo {
+    order: 1 !important;
+    justify-self: start !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+  }
+
+  .cpass-header-logo img,
+  .cpass-statement-sheet .cpass-header-logo img {
     height: 38px !important;
+    width: auto !important;
+    object-fit: contain !important;
+    display: block !important;
   }
 
+  .cpass-statement-sheet .cpass-header-title,
+  .cpass-header-title {
+    order: 2 !important;
+    justify-self: center !important;
+    text-align: center !important;
+    width: 100% !important;
+    padding: 0 4px !important;
+  }
+
+  .cpass-statement-sheet .cpass-header-title h2,
   .cpass-header-title h2 {
     font-size: 11pt !important;
+    font-weight: 800 !important;
     color: #0a2a7a !important;
+    line-height: 1.2 !important;
+    margin: 0 !important;
+    text-align: center !important;
   }
 
+  .cpass-statement-sheet .cpass-header-title h4,
   .cpass-header-title h4 {
     font-size: 9.5pt !important;
+    font-weight: 800 !important;
     color: #0b4fb8 !important;
+    margin: 2px 0 0 !important;
+    letter-spacing: 0.05em !important;
+    text-align: center !important;
+  }
+
+  .cpass-statement-sheet .cpass-header-title p,
+  .cpass-header-title p {
+    font-size: 7.5pt !important;
+    color: #475569 !important;
+    line-height: 1.25 !important;
+    margin: 2px 0 0 !important;
+    text-align: center !important;
+  }
+
+  .cpass-statement-sheet .cpass-header-meta,
+  .cpass-header-meta {
+    order: 3 !important;
+    justify-self: end !important;
+    text-align: right !important;
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+    font-size: 8.5pt !important;
+    line-height: 1.3 !important;
+    color: #334155 !important;
+  }
+
+  .cpass-statement-sheet .cpass-header-meta div,
+  .cpass-header-meta div {
+    white-space: nowrap !important;
+    text-align: right !important;
   }
 
   .cpass-statement-section-title {
@@ -570,11 +711,14 @@
     margin-bottom: 6px !important;
     page-break-after: avoid !important;
     break-after: avoid !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 
   .cpass-dossier-grid {
+    display: grid !important;
     grid-template-columns: repeat(4, 1fr) !important;
     gap: 6px 10px !important;
     background: #f8fafc !important;
@@ -589,15 +733,37 @@
   .cpass-table-responsive {
     overflow: visible !important;
     border: none !important;
+    width: 100% !important;
+    display: block !important;
   }
 
-  .cpass-doc-table {
+  .cpass-doc-table,
+  .cpass-table-responsive table {
     font-size: 8.5pt !important;
     width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+    break-inside: auto !important;
   }
 
-  .cpass-doc-table thead {
+  .cpass-doc-table thead,
+  .cpass-table-responsive thead {
     display: table-header-group !important;
+  }
+
+  .cpass-doc-table tr,
+  .cpass-table-responsive tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .cpass-doc-table th,
+  .cpass-doc-table td,
+  .cpass-table-responsive th,
+  .cpass-table-responsive td {
+    padding: 4px 6px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 
   .cpass-doc-table th,
@@ -607,21 +773,19 @@
     print-color-adjust: exact !important;
   }
 
-  .cpass-doc-table tr {
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
-  }
-
   .cpass-signoff-trio {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
+    display: grid !important;
     grid-template-columns: repeat(3, 1fr) !important;
-    gap: 10px !important;
+    gap: 8px !important;
   }
 
   .cpass-signoff-box {
     min-height: 100px !important;
     border: 1px solid #cbd5e1 !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 
   .cpass-statement-footer {

@@ -54,6 +54,7 @@ L4_USER = CurrentUser(
     email="l4.bl@cpass.org",
     full_name="L4 Business Leader",
     role="L4_LEADER",
+    assigned_states=["ODISHA"],
 )
 
 ADMIN_USER = CurrentUser(

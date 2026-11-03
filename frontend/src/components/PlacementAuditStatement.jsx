@@ -265,14 +265,23 @@ export default function PlacementAuditStatement({
   ).map(item => {
     const isConsol = item.isConsolidated
     const consolNote = isConsol ? ' (Consolidated Statement)' : ''
+    const docAudit = statementData.document_audit?.[item.key] || {}
+    const isExplicitNo = docAudit.available === 'No' || docAudit.available === false
+    const availVal = isExplicitNo ? 'No' : (item.fallbackDoc ? 'Yes' : (docAudit.available || 'Pending'))
+    const compVal = docAudit.compliance || (isExplicitNo ? 'Non-Compliant' : (item.fallbackDoc ? 'Compliant' : 'Under Verification'))
+    const repoVal = item.fallbackDoc ? `Stored in Drive: ${item.fallbackDoc.file_name}${consolNote}` : (isExplicitNo ? 'Document marked unavailable by coordinator' : (item.code === 'OD' ? 'Optional document not provided' : 'No verified file in database'))
+    const defaultObs = item.key?.startsWith('salary_slip') ? 'Payslip not available' : (item.key?.startsWith('bank_statement') ? 'Bank statement not available' : 'Document not available')
+    const obsVal = docAudit.remarks || (isExplicitNo ? defaultObs : (item.fallbackDoc ? `Verified during placement audit${consolNote}` : (item.code === 'OD' ? 'Optional supporting document' : 'Pending upload and verification')))
+
     return {
       code: item.code,
       key: item.key,
       label: item.fallbackDoc?.document_title ? `Other Document — ${item.fallbackDoc.document_title}` : item.label,
-      available: item.fallbackDoc ? 'Yes' : 'Pending',
-      compliance: item.fallbackDoc ? 'Compliant' : 'Under Verification',
-      repository_status: item.fallbackDoc ? `Stored in Drive: ${item.fallbackDoc.file_name}${consolNote}` : (item.code === 'OD' ? 'Optional document not provided' : 'No verified file in database'),
-      observations: item.fallbackDoc ? `Verified during placement audit${consolNote}` : (item.code === 'OD' ? 'Optional supporting document' : 'Pending upload and verification'),
+      available: availVal,
+      compliance: compVal,
+      repository_status: repoVal,
+      observations: obsVal,
+      remarks: docAudit.remarks || (isExplicitNo ? defaultObs : ''),
     }
   })
 
@@ -315,8 +324,7 @@ export default function PlacementAuditStatement({
           <h2>SYNCHROSERVE GLOBAL SOLUTIONS PRIVATE LIMITED</h2>
           <h4>C-PASS STATEMENT</h4>
           <p>
-            Deen Dayal Upadhyaya Grameen Kaushalya Yojana (DDU-GKY)<br />
-            Candidate Placement Audit &amp; Sign-off Verification Record
+            Deen Dayal Upadhyaya Grameen Kaushalya Yojana<br />
           </p>
         </div>
         <div className="cpass-header-meta">
@@ -808,7 +816,7 @@ export default function PlacementAuditStatement({
                   <td style={{ fontSize: '11px', color: '#4B5563' }}>
                     {docItem.repository_status}
                   </td>
-                  <td>{docItem.observations || 'Verified during placement audit'}</td>
+                  <td>{docItem.observations || (docItem.available === 'No' || docItem.available === false ? (docItem.remarks || 'Payslip not available') : (docItem.available === 'Pending' ? 'Pending upload and verification' : 'Verified during placement audit'))}</td>
                 </tr>
               ))}
             </tbody>
@@ -819,6 +827,33 @@ export default function PlacementAuditStatement({
       {/* Section 5: Authorizations & Sign-off Endorsements */}
       <div>
         <h5 className="cpass-statement-section-title">5. Multi-Level Sign-Off &amp; Approvals</h5>
+
+        {statusInfo.activeReturn && (
+          <div style={{
+            background: '#FFFBEB',
+            border: '1px solid #FDE68A',
+            borderRadius: '6px',
+            padding: '8px 12px',
+            marginBottom: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '11.5px',
+            color: '#92400E'
+          }}>
+            <span style={{ fontSize: '14px' }}>↩️</span>
+            <div>
+              <strong>Active Correction Notice:</strong> Rejected &amp; Sent Back to <strong>Level {statusInfo.activeReturn.destination}</strong> by <strong>{statusInfo.activeReturn.stage}</strong>
+              {statusInfo.activeReturn.returned_by ? ` (${statusInfo.activeReturn.returned_by})` : ''}
+              {statusInfo.activeReturn.reason && (
+                <div style={{ marginTop: '2px', color: '#B45309', fontStyle: 'italic' }}>
+                  Reason: "{statusInfo.activeReturn.reason}"
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="cpass-signoff-trio">
           {/* Centre Head (CH) */}
           <div className="cpass-signoff-box">

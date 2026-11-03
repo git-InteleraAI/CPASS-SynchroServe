@@ -244,6 +244,70 @@ function FileUploadControl({
 }
 
 // -----------------------------------------------------------------------------
+// Autosave Indicator & State Helpers
+// -----------------------------------------------------------------------------
+function hasEnteredAuditData(empList, salList) {
+  if (Array.isArray(empList)) {
+    const hasEmp = empList.some(
+      (e) => (e.employer_name && e.employer_name.trim().length > 0) || e.appointment_date || e.designation || e.monthly_ctc
+    )
+    if (hasEmp) return true
+  }
+  if (Array.isArray(salList)) {
+    const hasSal = salList.some(
+      (s) =>
+        (s.gross_salary !== '' && s.gross_salary !== null && s.gross_salary !== 0 && s.gross_salary !== '0') ||
+        (s.net_salary !== '' && s.net_salary !== null && s.net_salary !== 0 && s.net_salary !== '0') ||
+        (s.amount_credited !== '' && s.amount_credited !== null && s.amount_credited !== 0 && s.amount_credited !== '0') ||
+        (s.bank_name && s.bank_name.trim().length > 0) ||
+        (s.credit_date && s.credit_date.trim().length > 0)
+    )
+    if (hasSal) return true
+  }
+  return false
+}
+
+function AutosaveIndicator({ status, lastSavedAt, error, onRetry }) {
+  if (status === 'idle') return null
+
+  let text = 'All changes saved'
+  let badgeClass = 'l1-autosave-badge saved'
+
+  if (status === 'saving') {
+    badgeClass = 'l1-autosave-badge saving'
+    text = 'Saving changes...'
+  } else if (status === 'retrying') {
+    badgeClass = 'l1-autosave-badge retrying'
+    text = 'Save failed – retrying...'
+  } else if (status === 'error') {
+    badgeClass = 'l1-autosave-badge error'
+    text = 'Save failed'
+  } else if (status === 'saved') {
+    const timeStr = lastSavedAt
+      ? new Date(lastSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : 'just now'
+    text = `All changes saved (${timeStr})`
+  }
+
+  return (
+    <div className="l1-autosave-container">
+      <div className={badgeClass} title={error || text}>
+        {status === 'saving' && <span className="l1-autosave-spinner" />}
+        {status === 'retrying' && <span className="l1-autosave-pulse" />}
+        {status === 'saved' && <span className="l1-autosave-check">✓</span>}
+        {status === 'error' && <span className="l1-autosave-err-icon">⚠️</span>}
+        <span className="l1-autosave-text">{text}</span>
+        {status === 'error' && onRetry && (
+          <button type="button" className="l1-autosave-retry-btn" onClick={onRetry}>
+            Retry
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// -----------------------------------------------------------------------------
 // Placement Audit Default State Creators
 // -----------------------------------------------------------------------------
 function createDefaultEmployer(detail, idOverride) {
@@ -404,6 +468,18 @@ export default function L1Home() {
   const [documentAudit, setDocumentAudit] = useState(createDefaultDocAudit)
   const [signoffDetails, setSignoffDetails] = useState(createDefaultSignoffs)
 
+  // Autosave State & References
+  const [autosaveStatus, setAutosaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved' | 'retrying' | 'error'
+  const [autosaveLastSavedAt, setAutosaveLastSavedAt] = useState(null)
+  const [autosaveError, setAutosaveError] = useState('')
+  const isDirtyRef = useRef(false)
+  const autosaveTimerRef = useRef(null)
+  const inFlightSavePromiseRef = useRef(null)
+  const saveSeqRef = useRef(0)
+  const formStateRef = useRef({})
+
+
+
   // Statement View Modal State
   const [statementModalOpen, setStatementModalOpen] = useState(false)
   const [statementData, setStatementData] = useState(null)
@@ -459,6 +535,23 @@ export default function L1Home() {
 
   const [salaryRows, setSalaryRows] = useState(() => createDefaultRows(0))
   const [bankRows, setBankRows] = useState(() => createDefaultRows(0))
+
+  // Keep formStateRef current for debounce execution without stale closure
+  useEffect(() => {
+    formStateRef.current = {
+      sel,
+      candDetail,
+      lists,
+      employerList,
+      salaryDetailList,
+      documentAudit,
+      signoffDetails,
+      auditRecord,
+      auditLoadError,
+      salaryRows,
+      bankRows,
+    }
+  }, [sel, candDetail, lists, employerList, salaryDetailList, documentAudit, signoffDetails, auditRecord, auditLoadError, salaryRows, bankRows])
 
   // Staged replacements for existing persisted documents
   // Keyed by persisted document ID: { file, fileName, fileSize, month, year, error }
@@ -648,12 +741,16 @@ export default function L1Home() {
         [`salary_slip_${monthNumber}`]: {
           ...(prev[`salary_slip_${monthNumber}`] || {}),
           available: 'No',
+          compliance: 'Non-Compliant',
+          remarks: 'Payslip not available',
+          explicitlySet: true,
           month: row?.month || null,
           year: row?.year || null,
         },
       }))
       setAuditToast({ message: `Month ${monthNumber} PaySlip recorded as Not Available.`, type: 'info' })
       fetchDashboardSummary(sel.state)
+      scheduleAutosave()
     } catch (err) {
       const errMsg = err?.message && err.message !== '[object Object]' ? err.message : 'Failed to update payslip availability.'
       setAuditToast({ message: errMsg, type: 'error' })
@@ -684,10 +781,14 @@ export default function L1Home() {
         [`salary_slip_${monthNumber}`]: {
           ...(prev[`salary_slip_${monthNumber}`] || {}),
           available: 'Pending',
+          compliance: 'Under Verification',
+          remarks: '',
+          explicitlySet: false,
         },
       }))
       setAuditToast({ message: `Month ${monthNumber} PaySlip reset to Browse / Upload mode.`, type: 'info' })
       fetchDashboardSummary(sel.state)
+      scheduleAutosave()
     } catch (err) {
       const errMsg = err?.message && err.message !== '[object Object]' ? err.message : 'Failed to reset payslip availability.'
       setAuditToast({ message: errMsg, type: 'error' })
@@ -752,6 +853,14 @@ export default function L1Home() {
   }
 
   function resetAuditForm() {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current)
+      autosaveTimerRef.current = null
+    }
+    isDirtyRef.current = false
+    setAutosaveStatus('idle')
+    setAutosaveError('')
+    setAutosaveLastSavedAt(null)
     setAuditRecord(null)
     setAuditLoadError('')
     setEmployerList([createDefaultEmployer(null)])
@@ -914,14 +1023,22 @@ export default function L1Home() {
               business_leader: { ...createDefaultSignoffs().business_leader, ...(a.signoff_details.business_leader || {}) },
             })
           }
+          setAutosaveStatus('saved')
+          setAutosaveLastSavedAt(new Date(a.updated_at || Date.now()))
         } else {
           setAuditRecord(null)
-          setEmployerList([createDefaultEmployer(detail)])
-          setSalaryDetailList(createDefaultSalaryList(currentYear))
-          setSalaryRows(createDefaultRows(0))
-          setBankRows(createDefaultRows(0))
-          setDocumentAudit(createDefaultDocAudit())
-          setSignoffDetails(createDefaultSignoffs())
+          const userHasData = isDirtyRef.current || hasEnteredAuditData(employerList, salaryDetailList)
+          if (!userHasData) {
+            setEmployerList([createDefaultEmployer(detail)])
+            setSalaryDetailList(createDefaultSalaryList(currentYear))
+            setSalaryRows(createDefaultRows(0))
+            setBankRows(createDefaultRows(0))
+            setDocumentAudit(createDefaultDocAudit())
+            setSignoffDetails(createDefaultSignoffs())
+            setAutosaveStatus('idle')
+          } else {
+            scheduleAutosave()
+          }
         }
       })
       .catch((err) => {
@@ -929,12 +1046,15 @@ export default function L1Home() {
         console.warn('Could not load candidate audit:', err)
         setAuditLoadError(err.message || 'Could not load placement audit record.')
         setAuditRecord(null)
-        setEmployerList([createDefaultEmployer(detail)])
-        setSalaryDetailList(createDefaultSalaryList(currentYear))
-        setSalaryRows(createDefaultRows(0))
-        setBankRows(createDefaultRows(0))
-        setDocumentAudit(createDefaultDocAudit())
-        setSignoffDetails(createDefaultSignoffs())
+        const userHasData = isDirtyRef.current || hasEnteredAuditData(employerList, salaryDetailList)
+        if (!userHasData) {
+          setEmployerList([createDefaultEmployer(detail)])
+          setSalaryDetailList(createDefaultSalaryList(currentYear))
+          setSalaryRows(createDefaultRows(0))
+          setBankRows(createDefaultRows(0))
+          setDocumentAudit(createDefaultDocAudit())
+          setSignoffDetails(createDefaultSignoffs())
+        }
       })
       .finally(() => {
         if (selectedCandidateIdRef.current === candidateId) setLoadingAudit(false)
@@ -1006,12 +1126,14 @@ export default function L1Home() {
       minimum_wages: '',
     }
     setEmployerList((prev) => [...prev, newRow])
+    scheduleAutosave()
   }
 
   function handleRemoveEmployerRow(id) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
     if (employerList.length <= 1) return
     setEmployerList((prev) => prev.filter((e) => e.id !== id))
+    scheduleAutosave()
   }
 
   function handleUpdateEmployerField(id, field, value) {
@@ -1019,6 +1141,7 @@ export default function L1Home() {
     setEmployerList((prev) =>
       prev.map((e) => (e.id === id ? { ...e, [field]: value } : e))
     )
+    scheduleAutosave()
   }
 
   // --- Audit Salary List Handlers ---
@@ -1084,6 +1207,7 @@ export default function L1Home() {
         notAvailable: false,
       },
     ])
+    scheduleAutosave()
   }
 
   function handleRemoveSalaryRow(id) {
@@ -1109,12 +1233,13 @@ export default function L1Home() {
     setSalaryDetailList((prev) => prev.filter((s) => s.id !== id))
     setSalaryRows((prev) => prev.filter((_, idx) => idx !== removeIdx))
     setBankRows((prev) => prev.filter((_, idx) => idx !== removeIdx))
+    scheduleAutosave()
   }
 
   function handleUpdateSalaryField(id, field, value) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
+    const sIndex = salaryDetailList.findIndex((s) => s.id === id)
     setSalaryDetailList((prev) => {
-      const sIndex = prev.findIndex((s) => s.id === id)
       const updatedList = prev.map((s) => {
         if (s.id !== id) return s
         const updated = { ...s, [field]: value }
@@ -1137,10 +1262,29 @@ export default function L1Home() {
         setBankRows((prevRows) =>
           prevRows.map((r, rIdx) => (rIdx === sIndex ? { ...r, [field]: numVal } : r))
         )
+        setDocumentAudit((prevDoc) => {
+          const salKey = `salary_slip_${sIndex + 1}`
+          const bankKey = `bank_statement_${sIndex + 1}`
+          return {
+            ...prevDoc,
+            [salKey]: { ...(prevDoc?.[salKey] || {}), [field]: numVal },
+            [bankKey]: { ...(prevDoc?.[bankKey] || {}), [field]: numVal },
+          }
+        })
+      }
+
+      if (field === 'employer_id' && sIndex !== -1) {
+        setSalaryRows((prevRows) =>
+          prevRows.map((r, rIdx) => (rIdx === sIndex ? { ...r, employer_id: value } : r))
+        )
+        setBankRows((prevRows) =>
+          prevRows.map((r, rIdx) => (rIdx === sIndex ? { ...r, employer_id: value } : r))
+        )
       }
 
       return updatedList
     })
+    scheduleAutosave()
   }
 
   // --- Copy Previous Month (Same Employer) ---
@@ -1163,25 +1307,36 @@ export default function L1Home() {
       return
     }
 
+    // Automatically calculate next chronological month and year from previous month
+    const prevM = parseInt(prevRecord.month, 10) || 1
+    const prevY = parseInt(prevRecord.year, 10) || currentYear
+    let nextMonth = prevM + 1
+    let nextYear = prevY
+    if (nextMonth > 12) {
+      nextMonth = 1
+      nextYear = prevY + 1
+    }
+
     // Safety check: confirm if user already entered data in target row
     const hasData =
-      (target.working_days !== '' && target.working_days !== 26 && target.working_days !== null) ||
       (target.gross_salary !== '' && target.gross_salary !== 0 && target.gross_salary !== '0' && target.gross_salary !== null) ||
       (target.deductions !== '' && target.deductions !== 0 && target.deductions !== '0' && target.deductions !== null) ||
+      (target.amount_credited !== '' && target.amount_credited !== 0 && target.amount_credited !== '0' && target.amount_credited !== null) ||
       (target.bank_name && target.bank_name.trim().length > 0)
 
     if (hasData) {
-      const prevMonthName = MONTH_NAMES[(prevRecord.month || 1) - 1] || `Month ${prevRecord.month}`
+      const prevMonthName = MONTH_NAMES[prevM - 1] || `Month ${prevM}`
       const targetMonthName = MONTH_NAMES[(target.month || 1) - 1] || `Month ${target.month}`
       const confirmed = window.confirm(
-        `Overwrite current salary fields for ${targetMonthName} ${target.year} with reusable details from ${prevMonthName} ${prevRecord.year}?`
+        `Overwrite current salary fields for ${targetMonthName} ${target.year} with reusable details from ${prevMonthName} ${prevY}?`
       )
       if (!confirmed) return
     }
 
     // Copy eligible fields only:
-    // working_days, pay_days, leave_days, gross_salary, deductions, net_salary, bank_name
-    // Never copy credit_date, amount_credited, file attachments, remarks, or approval states.
+    // Gross Salary, Deductions, Net Salary (calculated), Credited Amount, Bank Name
+    // Automatically advance Month and Year
+    // Preserve target row's working_days, pay_days, leave_days, and credit_date
     const grossVal = prevRecord.gross_salary !== '' && prevRecord.gross_salary !== null ? prevRecord.gross_salary : ''
     const dedVal = prevRecord.deductions !== '' && prevRecord.deductions !== null ? prevRecord.deductions : ''
     let netVal = prevRecord.net_salary !== '' && prevRecord.net_salary !== null ? prevRecord.net_salary : ''
@@ -1190,29 +1345,86 @@ export default function L1Home() {
       const d = parseFloat(dedVal) || 0
       netVal = Math.max(0, g - d).toString()
     }
+    const creditedVal = prevRecord.amount_credited !== '' && prevRecord.amount_credited !== null ? prevRecord.amount_credited : ''
+    const bankNameVal = prevRecord.bank_name || ''
 
+    // 1. Update salaryDetailList
     setSalaryDetailList((prev) =>
-      prev.map((s) =>
-        s.id === targetSalId
+      prev.map((s, idx) =>
+        idx === targetIdx
           ? {
               ...s,
-              working_days: prevRecord.working_days ?? 26,
-              pay_days: prevRecord.pay_days ?? 26,
-              leave_days: prevRecord.leave_days ?? 0,
+              month: nextMonth,
+              year: nextYear,
               gross_salary: grossVal,
               deductions: dedVal,
               net_salary: netVal,
-              bank_name: prevRecord.bank_name || '',
+              amount_credited: creditedVal,
+              bank_name: bankNameVal,
+              // Preserved values:
+              working_days: s.working_days ?? 26,
+              pay_days: s.pay_days ?? 26,
+              leave_days: s.leave_days ?? 0,
+              credit_date: s.credit_date || '',
             }
           : s
       )
     )
 
-    const prevMonthName = MONTH_NAMES[(prevRecord.month || 1) - 1] || `Month ${prevRecord.month}`
+    // 2. Synchronize Salary Slips slot period
+    setSalaryRows((prevRows) =>
+      prevRows.map((r, rIdx) =>
+        rIdx === targetIdx
+          ? {
+              ...r,
+              month: nextMonth,
+              year: nextYear,
+              employer_id: targetEmpId,
+            }
+          : r
+      )
+    )
+
+    // 3. Synchronize Bank Statements slot period
+    setBankRows((prevRows) =>
+      prevRows.map((r, rIdx) =>
+        rIdx === targetIdx
+          ? {
+              ...r,
+              month: nextMonth,
+              year: nextYear,
+              employer_id: targetEmpId,
+            }
+          : r
+      )
+    )
+
+    // 4. Synchronize Document Audit metadata
+    setDocumentAudit((prevDoc) => {
+      const salKey = `salary_slip_${targetIdx + 1}`
+      const bankKey = `bank_statement_${targetIdx + 1}`
+      return {
+        ...prevDoc,
+        [salKey]: {
+          ...(prevDoc?.[salKey] || {}),
+          month: nextMonth,
+          year: nextYear,
+        },
+        [bankKey]: {
+          ...(prevDoc?.[bankKey] || {}),
+          month: nextMonth,
+          year: nextYear,
+        },
+      }
+    })
+
+    const prevMonthName = MONTH_NAMES[prevM - 1] || `Month ${prevM}`
+    const targetMonthName = MONTH_NAMES[nextMonth - 1] || `Month ${nextMonth}`
     setAuditToast({
-      message: `✓ Reusable salary fields copied from ${prevMonthName} ${prevRecord.year}. Edit and verify as needed.`,
+      message: `✓ Reusable salary details copied from ${prevMonthName} ${prevY} to ${targetMonthName} ${nextYear}.`,
       type: 'success',
     })
+    scheduleAutosave()
   }
 
   function handleUpdateDocAudit(docKey, field, value) {
@@ -1232,6 +1444,7 @@ export default function L1Home() {
         },
       }
     })
+    scheduleAutosave()
   }
 
   function prepareDocumentAuditPayload() {
@@ -1272,6 +1485,22 @@ export default function L1Home() {
     const merged = { ...documentAudit }
     for (const item of currentItems) {
       const entry = merged[item.key] && typeof merged[item.key] === 'object' ? merged[item.key] : {}
+      if (item.key.startsWith('salary_slip_')) {
+        const slipIdx = parseInt(item.key.replace('salary_slip_', ''), 10) - 1
+        const sRow = salaryRows[slipIdx]
+        if (sRow?.notAvailable || entry.available === 'No') {
+          merged[item.key] = {
+            ...entry,
+            available: 'No',
+            compliance: 'Non-Compliant',
+            remarks: entry.remarks || 'Payslip not available',
+            explicitlySet: true,
+            month: sRow?.month || entry.month || null,
+            year: sRow?.year || entry.year || null,
+          }
+          continue
+        }
+      }
       const isPresent = item.resolved ? (item.resolved.status === 'PERSISTED' || item.resolved.status === 'STAGED') : false
       if (!entry.explicitlySet && isPresent) {
         merged[item.key] = {
@@ -1285,6 +1514,156 @@ export default function L1Home() {
     }
     return merged
   }
+
+  // --- Autosave Engine & Draft Payload Builder ---
+  const buildAuditDraftPayload = useCallback((customState = null) => {
+    const s = customState || formStateRef.current
+    const { candDetail: cDetail, sel: cSel, lists: cLists, employerList: eList, salaryDetailList: sList, signoffDetails: sDetails, auditRecord: aRec } = s
+    if (!cSel?.cand || !cDetail) return null
+
+    const payloadDocAudit = prepareDocumentAuditPayload()
+    const validEmployers = (eList || [])
+      .filter((e) => e.employer_name && e.employer_name.trim())
+      .map((e) => ({
+        id: e.id,
+        employer_name: e.employer_name.trim(),
+        months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
+        appointment_date: e.appointment_date || null,
+        designation: e.designation || null,
+        place_of_work: e.place_of_work || null,
+        monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null ? parseFloat(e.monthly_ctc) : null,
+        minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
+      }))
+
+    const validSalary = (sList || []).map((sal) => ({
+      id: sal.id,
+      employer_id: sal.employer_id || (eList?.[0]?.id || 'emp_1'),
+      month: parseInt(sal.month, 10),
+      year: parseInt(sal.year, 10),
+      working_days: sal.working_days !== '' && sal.working_days !== null ? parseInt(sal.working_days, 10) : null,
+      pay_days: sal.pay_days !== '' && sal.pay_days !== null ? parseInt(sal.pay_days, 10) : null,
+      leave_days: sal.leave_days !== '' && sal.leave_days !== null ? parseInt(sal.leave_days, 10) : null,
+      credit_date: sal.credit_date || null,
+      amount_credited: sal.amount_credited !== '' && sal.amount_credited !== null ? parseFloat(sal.amount_credited) : null,
+      gross_salary: sal.gross_salary !== '' && sal.gross_salary !== null ? parseFloat(sal.gross_salary) : null,
+      deductions: sal.deductions !== '' && sal.deductions !== null ? parseFloat(sal.deductions) : null,
+      net_salary: sal.net_salary !== '' && sal.net_salary !== null ? parseFloat(sal.net_salary) : null,
+      bank_name: sal.bank_name || null,
+    }))
+
+    return {
+      candidate_snapshot: {
+        candidate_id: cDetail.candidate_id,
+        first_name: cDetail.first_name,
+        last_name: cDetail.last_name,
+        father_name: cDetail.father_name,
+        dob: cDetail.dob,
+        mobile: cDetail.mobile,
+        state: cSel.state,
+        tc_name: cLists?.tc?.find((c) => c.tc_id === cSel.tc)?.name || cSel.tc,
+        batch_code: cLists?.batch?.find((b) => b.kb_batch_id === cSel.batch)?.batch_code || cSel.batch,
+        sanction_order: cSel.order,
+      },
+      employer_details: validEmployers,
+      salary_details: validSalary,
+      document_audit: payloadDocAudit,
+      signoff_details: sDetails || createDefaultSignoffs(),
+      remarks: aRec?.remarks || null,
+    }
+  }, [prepareDocumentAuditPayload])
+
+  const performAutosave = useCallback(async (retryCount = 0) => {
+    const s = formStateRef.current
+    const candId = s.sel?.cand
+    if (!candId || !s.candDetail || s.auditRecord?.audit_status === 'SUBMITTED' || s.auditLoadError) {
+      return null
+    }
+
+    if (inFlightSavePromiseRef.current) {
+      try {
+        await inFlightSavePromiseRef.current
+      } catch {
+        // Ignore previous error, we will do a fresh save with latest state
+      }
+    }
+
+    const payload = buildAuditDraftPayload(formStateRef.current)
+    if (!payload) return null
+
+    const seq = ++saveSeqRef.current
+    setAutosaveStatus(retryCount > 0 ? 'retrying' : 'saving')
+    setAutosaveError('')
+
+    const savePromise = (async () => {
+      try {
+        const res = await api(`/candidates/${candId}/audit/draft`, null, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+
+        if (seq === saveSeqRef.current) {
+          setAuditRecord(res.audit)
+          isDirtyRef.current = false
+          setAutosaveStatus('saved')
+          setAutosaveLastSavedAt(new Date(res.audit?.updated_at || Date.now()))
+          setAutosaveError('')
+        }
+        return res.audit
+      } catch (err) {
+        if (seq !== saveSeqRef.current) return null
+        console.warn(`Autosave attempt ${retryCount + 1} failed:`, err)
+        if (retryCount < 3) {
+          setAutosaveStatus('retrying')
+          setAutosaveError(`Save failed – retrying (${retryCount + 1}/3)...`)
+          const delay = (retryCount + 1) * 1500
+          setTimeout(() => {
+            if (isDirtyRef.current && seq === saveSeqRef.current) {
+              performAutosave(retryCount + 1)
+            }
+          }, delay)
+        } else {
+          setAutosaveStatus('error')
+          setAutosaveError(err.message || 'Auto-save failed. Check connection.')
+        }
+        throw err
+      } finally {
+        if (inFlightSavePromiseRef.current === savePromise) {
+          inFlightSavePromiseRef.current = null
+        }
+      }
+    })()
+
+    inFlightSavePromiseRef.current = savePromise
+    return savePromise
+  }, [buildAuditDraftPayload])
+
+  const scheduleAutosave = useCallback(() => {
+    const s = formStateRef.current
+    if (!s.sel?.cand || !s.candDetail || s.auditRecord?.audit_status === 'SUBMITTED' || s.auditLoadError) {
+      return
+    }
+    isDirtyRef.current = true
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current)
+    }
+    autosaveTimerRef.current = setTimeout(() => {
+      performAutosave(0)
+    }, 1300) // 1.3s debounce
+  }, [performAutosave])
+
+  const flushAutosave = useCallback(async () => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current)
+      autosaveTimerRef.current = null
+    }
+    if (isDirtyRef.current) {
+      return await performAutosave(0)
+    }
+    if (inFlightSavePromiseRef.current) {
+      return await inFlightSavePromiseRef.current
+    }
+    return null
+  }, [performAutosave])
 
   // --- Audit Draft & Submit Handlers ---
   async function handleSaveDraft(isSilent = false) {
@@ -1301,62 +1680,11 @@ export default function L1Home() {
     setAuditSavingDraft(true)
     setError('')
     try {
-      const payloadDocAudit = prepareDocumentAuditPayload()
-      setDocumentAudit(payloadDocAudit)
-      const payload = {
-        candidate_snapshot: {
-          candidate_id: candDetail.candidate_id,
-          first_name: candDetail.first_name,
-          last_name: candDetail.last_name,
-          father_name: candDetail.father_name,
-          dob: candDetail.dob,
-          mobile: candDetail.mobile,
-          state: sel.state,
-          tc_name: lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc,
-          batch_code: lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch,
-          sanction_order: sel.order,
-        },
-        employer_details: employerList
-          .filter((e) => e.employer_name && e.employer_name.trim())
-          .map((e) => ({
-            id: e.id,
-            employer_name: e.employer_name.trim(),
-            months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
-            appointment_date: e.appointment_date || null,
-            designation: e.designation || null,
-            place_of_work: e.place_of_work || null,
-            monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null ? parseFloat(e.monthly_ctc) : null,
-            minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
-          })),
-        salary_details: salaryDetailList.map((s) => ({
-          id: s.id,
-          employer_id: s.employer_id || (employerList[0]?.id || 'emp_1'),
-          month: parseInt(s.month, 10),
-          year: parseInt(s.year, 10),
-          working_days: s.working_days !== '' && s.working_days !== null ? parseInt(s.working_days, 10) : null,
-          pay_days: s.pay_days !== '' && s.pay_days !== null ? parseInt(s.pay_days, 10) : null,
-          leave_days: s.leave_days !== '' && s.leave_days !== null ? parseInt(s.leave_days, 10) : null,
-          credit_date: s.credit_date || null,
-          amount_credited: s.amount_credited !== '' && s.amount_credited !== null ? parseFloat(s.amount_credited) : null,
-          gross_salary: s.gross_salary !== '' && s.gross_salary !== null ? parseFloat(s.gross_salary) : null,
-          deductions: s.deductions !== '' && s.deductions !== null ? parseFloat(s.deductions) : null,
-          net_salary: s.net_salary !== '' && s.net_salary !== null ? parseFloat(s.net_salary) : null,
-          bank_name: s.bank_name || null,
-        })),
-        document_audit: payloadDocAudit,
-        signoff_details: signoffDetails,
-        remarks: auditRecord?.remarks || null,
-      }
-
-      const res = await api(`/candidates/${sel.cand}/audit/draft`, null, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      })
-      setAuditRecord(res.audit)
+      const savedAudit = await flushAutosave()
       if (!isSilent) {
         setAuditToast({ message: '✓ Draft placement audit saved successfully.', type: 'success' })
       }
-      return res.audit
+      return savedAudit
     } catch (err) {
       setError(err.message || 'Failed to save audit draft.')
       if (!isSilent) {
@@ -1530,6 +1858,7 @@ export default function L1Home() {
       })
       setAuditToast({ message: '✓ Placement Audit Statement submitted successfully!', type: 'success' })
       fetchDashboardSummary(sel.state)
+      scheduleAutosave()
     } catch (err) {
       setError(err.message || 'Failed to submit placement audit statement.')
       setAuditToast({ message: err.message || 'Submission failed.', type: 'error' })
@@ -1555,6 +1884,9 @@ export default function L1Home() {
     if (!sel.cand) return
     setLoadingStatement(true)
     try {
+      if (isDirtyRef.current) {
+        await flushAutosave()
+      }
       const res = await api(`/candidates/${sel.cand}/audit/statement`)
       setStatementData(res)
       setStatementModalOpen(true)
@@ -2185,6 +2517,9 @@ export default function L1Home() {
     setError('')
 
     try {
+      // Flush any pending autosave first so full employer and salary state are saved before upload
+      await flushAutosave()
+
       const formData = new FormData()
 
       // Appointment Letters (Multi-Employer Support)
@@ -2331,6 +2666,12 @@ export default function L1Home() {
 
       setShowReviewModal(false)
       clearStagedFiles()
+      if (res?.audit) {
+        setAuditRecord(res.audit)
+        if (res.audit.document_audit) {
+          setDocumentAudit(normalizeDocAudit(res.audit.document_audit))
+        }
+      }
       await refreshDocuments(sel.cand)
       if (candDetail) {
         await loadAudit(sel.cand, candDetail)
@@ -2386,6 +2727,7 @@ export default function L1Home() {
         type: 'success',
       })
       fetchDashboardSummary(sel.state)
+      scheduleAutosave()
     } catch (err) {
       setShowReviewModal(false)
       setError(err.message || 'Submission failed. Any created Google Drive files were safely cleaned up.')
@@ -2421,7 +2763,7 @@ export default function L1Home() {
       {/* Dashboard Summary Error Banner with Retry */}
       {summaryError && (
         <div
-          className="l1-banner-warning"
+          className="l1-banner-warning l1-no-print"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -2457,7 +2799,7 @@ export default function L1Home() {
       {/* --------------------------------------------------------------------
          1. Compact Dashboard Summary Cards (Top of Dashboard)
          -------------------------------------------------------------------- */}
-      <section className="l1-compact-summary-row" aria-label="Candidate Summary Statistics">
+      <section className="l1-compact-summary-row l1-no-print" aria-label="Candidate Summary Statistics">
         {/* 1. Total */}
         <div
           className={`l1-compact-card total ${activeCardFilter === 'total' ? 'active' : ''}`}
@@ -2569,7 +2911,7 @@ export default function L1Home() {
 
       {/* Global Error Banner */}
       {error && (
-        <div className="l1-banner-danger" role="alert">
+        <div className="l1-banner-danger l1-no-print" role="alert">
           <strong style={{ minWidth: '70px' }}>Notice:</strong>
           <div>{error}</div>
         </div>
@@ -2712,7 +3054,7 @@ export default function L1Home() {
                 </div>
               ) : (
                 <div className="l1-popup-table-scroll">
-                  <table className="l1-cand-table">
+                  <table className="l1-cand-table l1-cand-table-8col">
                     <thead>
                       <tr>
                         <th>Candidate Name &amp; ID</th>
@@ -2847,7 +3189,7 @@ export default function L1Home() {
       {/* --------------------------------------------------------------------
          Cascading Selector Stepper Toolbar (5 Levels)
          -------------------------------------------------------------------- */}
-      <section className="l1-selector-panel">
+      <section className="l1-selector-panel l1-no-print">
         <div className="l1-selector-header">
           <h3>
             <span className="l1-step-indicator">1</span>
@@ -2988,7 +3330,7 @@ export default function L1Home() {
 
       <div id="candidate-dossier-anchor" />
       {candDetail && (
-        <section className="l1-cand-summary-card">
+        <section className="l1-cand-summary-card l1-no-print">
           <div className="l1-cand-header">
             <div className="l1-cand-identity">
               <div className="l1-cand-avatar" style={{ background: 'linear-gradient(135deg, #0284C7 0%, #0369A1 100%)' }}>📦</div>
@@ -3045,7 +3387,7 @@ export default function L1Home() {
          -------------------------------------------------------------------- */}
       {sel.cand && (
         <ErrorBoundary title="Placement Audit Statement Workflow">
-          <div className="l1-audit-workflow-container" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div className="l1-audit-workflow-container l1-no-print" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             {/* Audit Header Actions Bar */}
             <div className="l1-audit-actions-bar">
               <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
@@ -3064,6 +3406,12 @@ export default function L1Home() {
               </div>
 
               <div className="l1-audit-btn-group">
+                <AutosaveIndicator
+                  status={autosaveStatus}
+                  lastSavedAt={autosaveLastSavedAt || (auditRecord?.updated_at ? new Date(auditRecord.updated_at) : null)}
+                  error={autosaveError}
+                  onRetry={() => performAutosave(0)}
+                />
                 {auditRecord && (
                   <button
                     type="button"
@@ -5151,7 +5499,13 @@ export default function L1Home() {
                 : 'Save draft at any time. Submit statement once at least 1 employer and 3 monthly salary records are complete.'}
             </p>
           </div>
-          <div className="l1-dock-actions" style={{ display: 'flex', gap: '10px' }}>
+          <div className="l1-dock-actions" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <AutosaveIndicator
+              status={autosaveStatus}
+              lastSavedAt={autosaveLastSavedAt || (auditRecord?.updated_at ? new Date(auditRecord.updated_at) : null)}
+              error={autosaveError}
+              onRetry={() => performAutosave(0)}
+            />
             {auditRecord && (
               <button
                 type="button"
@@ -5192,7 +5546,7 @@ export default function L1Home() {
          Empty Workspace Guidance (When No Candidate Selected)
          -------------------------------------------------------------------- */}
       {!sel.cand && !loadingDetail && (
-        <section className="l1-empty-state">
+        <section className="l1-empty-state l1-no-print">
           <div className="l1-empty-icon">📁</div>
           <h3>Select a Candidate to Begin Verification</h3>
           <p>

@@ -129,4 +129,14 @@ assert.equal(allSeqMap['s4'].sequence, 1)
 assert.equal(allSeqMap['s5'].sequence, 2)
 assert.ok(allSeqMap['s4'].label.includes('Month 1 — March 2026'))
 
+// Test 9: Copy Previous Month precedence and Month 1 boundary checks
+const formSalaries = [
+  { id: 'm1', employer_id: 'emp_1', month: 3, year: 2018, gross_salary: '15620', deductions: '0', amount_credited: '18970', bank_name: 'HDFC' },
+  { id: 'm2', employer_id: 'emp_1', month: 2, year: 2026, gross_salary: '', deductions: '', amount_credited: '', bank_name: '' },
+  { id: 'm3', employer_id: 'emp_1', month: 3, year: 2026, gross_salary: '', deductions: '', amount_credited: '', bank_name: '' },
+]
+assert.equal(findPreviousSalaryRecordForEmployer(formSalaries[0], formSalaries), null, 'Month 1 must NOT have a previous record')
+assert.equal(findPreviousSalaryRecordForEmployer(formSalaries[1], formSalaries)?.id, 'm1', 'Month 2 must find Month 1 even when m2 default period > m1')
+assert.equal(findPreviousSalaryRecordForEmployer(formSalaries[2], formSalaries)?.id, 'm2', 'Month 3 must find Month 2')
+
 console.log('All salarySequenceHelper tests passed successfully!')

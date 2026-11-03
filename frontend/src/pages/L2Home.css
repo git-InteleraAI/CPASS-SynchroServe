@@ -253,13 +253,17 @@
   width: 100%;
   max-width: 1600px;
   margin: 0 auto;
-  align-items: start;
+  align-items: stretch;
+  height: calc(100vh - 160px);
+  min-height: 640px;
 }
 
 /* Tablet & Smaller Laptops: Stack into single column when cramped */
 @media (max-width: 1080px) {
   .l2-workspace {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
     gap: 24px;
   }
 }
@@ -274,7 +278,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  height: auto;
+  height: 100%;
   transition: box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
@@ -308,15 +312,52 @@
 
 .l2-panel-body {
   flex: 1;
-  overflow: visible;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px 20px;
   min-width: 0;
+  scrollbar-width: none; /* Firefox: completely hide scrollbar */
+  -ms-overflow-style: none; /* IE & Edge: completely hide scrollbar */
+}
+
+.l2-panel-body::-webkit-scrollbar {
+  display: none; /* WebKit (Chrome, Edge, Safari): hide scrollbar */
+  width: 0;
+  height: 0;
 }
 
 /* Specific styling for Left Panel: Placement Audit Statement */
 .l2-statement-panel .l2-panel-body {
   padding: 0;
-  overflow: visible;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.l2-statement-panel .l2-panel-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Specific styling for Right Panel: Document Evidence */
+.l2-doc-panel .l2-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.l2-doc-panel .l2-panel-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .l2-statement-panel .cpass-statement-sheet {
@@ -328,9 +369,11 @@
   gap: 18px;
 }
 
-.l2-statement-panel .cpass-statement-header {
-  flex-wrap: wrap;
-  gap: 12px;
+@media screen and (max-width: 768px) {
+  .l2-statement-panel .cpass-statement-header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
 }
 
 .l2-statement-panel .cpass-header-title h2 {
@@ -788,6 +831,14 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.cpass-pdf-thumb-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .cpass-pdf-thumb-card {
@@ -846,6 +897,14 @@
   align-items: center;
   position: relative;
   background: #1e293b;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.cpass-pdf-scroll-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .cpass-pdf-pages-stack {
@@ -1378,6 +1437,10 @@
 .l2-compact-card.received::before { background: #4F46E5; }
 /* Card 3: Recommended - Green */
 .l2-compact-card.recommended::before { background: #16A34A; }
+/* Card: Verified - Emerald/Teal (L3 COPS) */
+.l2-compact-card.verified::before { background: #059669; }
+/* Card: Approved - Green (L4 BL & L5 CEO) */
+.l2-compact-card.approved::before { background: #16A34A; }
 /* Card 4: Rejected - Red */
 .l2-compact-card.rejected::before { background: #DC2626; }
 /* Card 5: Pending - Amber */
@@ -1433,6 +1496,8 @@
 .l2-compact-card.total .l2-compact-card-icon { background: #EFF6FF; color: #0B4FB8; }
 .l2-compact-card.received .l2-compact-card-icon { background: #EEF2FF; color: #4F46E5; }
 .l2-compact-card.recommended .l2-compact-card-icon { background: #F0FDF4; color: #16A34A; }
+.l2-compact-card.verified .l2-compact-card-icon { background: #ECFDF5; color: #059669; }
+.l2-compact-card.approved .l2-compact-card-icon { background: #F0FDF4; color: #16A34A; }
 .l2-compact-card.rejected .l2-compact-card-icon { background: #FEF2F2; color: #DC2626; }
 .l2-compact-card.pending .l2-compact-card-icon { background: #FFFBEB; color: #D97706; }
 
@@ -1456,6 +1521,8 @@
 .l2-compact-card.total .l2-compact-card-count { color: #0E1424; }
 .l2-compact-card.received .l2-compact-card-count { color: #4338CA; }
 .l2-compact-card.recommended .l2-compact-card-count { color: #15803D; }
+.l2-compact-card.verified .l2-compact-card-count { color: #047857; }
+.l2-compact-card.approved .l2-compact-card-count { color: #15803D; }
 .l2-compact-card.rejected .l2-compact-card-count { color: #DC2626; }
 .l2-compact-card.pending .l2-compact-card-count { color: #B45309; }
 
@@ -1471,6 +1538,47 @@
   border: 1px solid #FCD34D;
   margin-bottom: 16px;
   font-size: 13.5px;
+}
+
+/* Unified Return / Reject Button */
+.l2-btn-return-reject {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.l2-btn-return-reject:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #f87171;
+  color: #991b1b;
+}
+
+.l2-btn-return-reject:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Candidate Queue State Tag */
+.l1-cand-state {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 /* Reject & Return to L1 button styles */
@@ -1496,6 +1604,32 @@
 }
 
 .l2-btn-return:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.l2-btn-reject {
+  background: #fff1f2;
+  border: 1px solid #fda4af;
+  color: #be123c;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.l2-btn-reject:hover:not(:disabled) {
+  background: #ffe4e6;
+  border-color: #f43f5e;
+  color: #9f1239;
+}
+
+.l2-btn-reject:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -1790,22 +1924,59 @@
 
 .l1-cand-popup-body {
   flex: 1;
-  overflow-y: auto;
   min-height: 220px;
   background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .l1-popup-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   width: 100%;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.l1-popup-table-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .l1-cand-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 13px;
+}
+
+/* Colgroup column widths for the 6-column review table */
+.l1-cand-table col.col-cand-name {
+  width: 28%;
+}
+
+.l1-cand-table col.col-cand-state {
+  width: 18%;
+}
+
+.l1-cand-table col.col-cand-stage {
+  width: 14%;
+}
+
+.l1-cand-table col.col-cand-action {
+  width: 12%;
+}
+
+.l1-cand-table th,
+.l1-cand-table td {
+  box-sizing: border-box;
+  vertical-align: middle;
 }
 
 .l1-cand-table th {
@@ -1816,12 +1987,12 @@
   font-weight: 700;
   text-align: left;
   padding: 11px 14px;
-  border-bottom: 1.5px solid #E2E8F0;
+  border-bottom: 2px solid #CBD5E1;
   font-size: 11.5px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  z-index: 2;
-  box-shadow: 0 1px 0 #E2E8F0;
+  z-index: 10;
+  box-shadow: 0 1px 0 #CBD5E1;
   white-space: nowrap;
 }
 
@@ -1830,6 +2001,46 @@
   border-bottom: 1px solid #F1F5F9;
   color: #1E293B;
   vertical-align: middle;
+}
+
+/* Explicit 6-Column Alignment Rules (L2, L3, L4, L5) */
+.l1-cand-table th.l1-th-name,
+.l1-cand-table td.l1-td-name {
+  text-align: left !important;
+  padding-left: 20px !important;
+  padding-right: 14px !important;
+}
+
+.l1-cand-table th.l1-th-state,
+.l1-cand-table td.l1-td-state {
+  text-align: left !important;
+  padding-left: 14px !important;
+  padding-right: 14px !important;
+}
+
+.l1-cand-table th.l1-th-stage,
+.l1-cand-table td.l1-td-stage {
+  text-align: center !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+
+.l1-cand-table td.l1-td-stage .l1-stage-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+}
+
+.l1-cand-table th.l1-th-action,
+.l1-cand-table td.l1-td-action {
+  text-align: right !important;
+  padding-left: 8px !important;
+  padding-right: 20px !important;
+}
+
+.l1-cand-table td.l1-td-action .l1-btn-open-dossier {
+  display: inline-block;
 }
 
 .l1-cand-table tbody tr:hover td {
@@ -1930,24 +2141,73 @@
 
 /* Print styling */
 @media print {
-  .l2-topbar,
-  .l2-bottom-dock,
-  .l2-doc-panel,
-  .l1-no-print {
-    display: none !important;
-  }
-  .l2-dashboard {
+  #root,
+  .app-layout,
+  .content-container,
+  .l2-dashboard,
+  .l2-workspace,
+  .l2-statement-panel,
+  .l2-statement-panel .l2-panel-body {
     padding: 0 !important;
-    background: #fff !important;
-  }
-  .l2-workspace {
-    display: block !important;
-    padding: 0 !important;
-  }
-  .l2-panel {
+    margin: 0 !important;
     border: none !important;
     box-shadow: none !important;
+    background: #fff !important;
     height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  /* Structural isolation */
+  .l2-dashboard > :not(.l2-workspace) {
+    display: none !important;
+  }
+  .l2-workspace > :not(.l2-statement-panel) {
+    display: none !important;
+  }
+  .l2-statement-panel > :not(.l2-panel-body) {
+    display: none !important;
+  }
+
+  .l1-compact-summary-row,
+  .l2-compact-summary-row,
+  .l1-compact-card,
+  .l2-compact-card,
+  .l1-compact-summary-row *,
+  .l2-compact-summary-row *,
+  section.l1-compact-summary-row,
+  section.l2-compact-summary-row,
+  .l2-compact-cards-row,
+  .l2-panel.l2-doc-panel,
+  .l2-doc-panel,
+  .l2-evidence-panel,
+  .l2-topbar,
+  .l2-selector-panel,
+  .l2-pipeline-strip,
+  .l2-panel-header,
+  .l2-bottom-dock,
+  .l2-audit-actions-bar,
+  .l2-decision-modal,
+  .l2-modal-overlay,
+  .l1-doc-checklist,
+  .l2-empty-state,
+  .l1-empty-state,
+  .l1-banner-warning,
+  .l2-banner-warning,
+  .l1-banner-danger,
+  .l2-banner-danger,
+  header.top,
+  header.top *,
+  .top,
+  .top *,
+  .logo,
+  .user,
+  .app-layout > header,
+  button,
+  .l1-no-print {
+    display: none !important;
   }
 }
 

@@ -17,8 +17,8 @@ from ..db import supabase
 
 router = APIRouter(prefix="/duplicates", tags=["duplicates"])
 
-REVIEW_ROLES = ("ADMIN", "L2_MANAGER", "L3_LEADER")
-HOLD_ROLES = ("ADMIN", "L2_MANAGER", "L3_LEADER")
+REVIEW_ROLES = ("ADMIN", "L2_MANAGER", "L3_LEADER", "L3_COPS")
+HOLD_ROLES = ("ADMIN", "L2_MANAGER", "L3_LEADER", "L3_COPS")
 
 
 class DuplicateStatus(str, Enum):

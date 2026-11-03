@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 import logging
 
-from ..auth import CurrentUser, clear_user_cache, extract_token, get_current_user, resolve_state
+from ..auth import CurrentUser, clear_user_cache, extract_token, get_current_user, resolve_state, resolve_states
 from ..config import settings
 from ..db import TRANSIENT_ERRORS, get_auth_client, retry_read_query, supabase
 
@@ -32,6 +32,7 @@ class UserProfileResponse(BaseModel):
     full_name: str
     role: str
     assigned_state: str | None = None
+    assigned_states: list[str] = Field(default_factory=list)
 
 
 class UpdateProfileRequest(BaseModel):
@@ -44,6 +45,8 @@ class UpdateProfileRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     token_type: str = "cookie"
+    access_token: str | None = None
+    refresh_token: str | None = None
     expires_in: int | None = None
     expires_at: int | None = None
     user: UserProfileResponse
@@ -145,12 +148,19 @@ def login(payload: LoginRequest, response: Response):
         raise HTTPException(403, "This account is disabled.")
 
     # The role picked on the login screen is only a check: the real role always comes from the backend.
-    if payload.expected_role and profile["role"] != payload.expected_role:
-        raise HTTPException(403, "This account does not have the selected role.")
+    # Allow L4_CEO and L5_CEO interchangeably.
+    if payload.expected_role:
+        p_role = profile["role"]
+        e_role = payload.expected_role
+        ceo_roles = {"L4_CEO", "L5_CEO"}
+        if p_role != e_role and not (p_role in ceo_roles and e_role in ceo_roles):
+            raise HTTPException(403, "This account does not have the selected role.")
 
     # Use only the explicit CPASS profile assignment for authorization scope.
-    # Email/username and auth metadata are not trusted assignment sources.
-    assigned_state = resolve_state(profile.get("assigned_state"))
+    # Supports single state string or multi-state assignment.
+    raw_states = profile.get("assigned_states") or profile.get("assigned_state")
+    resolved_list = resolve_states(raw_states)
+    assigned_state = resolved_list[0] if resolved_list else None
 
     _set_auth_cookies(
         response=response,
@@ -161,6 +171,8 @@ def login(payload: LoginRequest, response: Response):
 
     return LoginResponse(
         token_type="cookie",
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
         expires_in=session.expires_in,
         expires_at=session.expires_at,
         user=UserProfileResponse(
@@ -169,6 +181,7 @@ def login(payload: LoginRequest, response: Response):
             full_name=profile["full_name"],
             role=profile["role"],
             assigned_state=assigned_state,
+            assigned_states=resolved_list,
         ),
     )
 
@@ -182,6 +195,7 @@ def me(user: CurrentUser = Depends(get_current_user)):
         full_name=user.full_name,
         role=user.role,
         assigned_state=user.assigned_state,
+        assigned_states=user.assigned_states,
     )
 
 
@@ -226,9 +240,16 @@ def update_profile(
 
 
 @router.post("/refresh", response_model=LoginResponse)
-def refresh(request: Request, response: Response):
-    """Refresh the session using only the HttpOnly refresh-token cookie."""
+async def refresh(request: Request, response: Response):
+    """Refresh the session using HttpOnly cookie or body token."""
     refresh_token = request.cookies.get("cpass_refresh_token")
+    if not refresh_token:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                refresh_token = body.get("refresh_token")
+        except Exception:
+            pass
     if not refresh_token:
         raise HTTPException(401, "Missing refresh token.")
 
@@ -283,10 +304,14 @@ def refresh(request: Request, response: Response):
     )
 
     # Keep refresh behavior consistent with login: profile assignment only.
-    assigned_state = resolve_state(profile.get("assigned_state"))
+    raw_states = profile.get("assigned_states") or profile.get("assigned_state")
+    resolved_list = resolve_states(raw_states)
+    assigned_state = resolved_list[0] if resolved_list else None
 
     return LoginResponse(
         token_type="cookie",
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
         expires_in=session.expires_in,
         expires_at=session.expires_at,
         user=UserProfileResponse(
@@ -295,6 +320,7 @@ def refresh(request: Request, response: Response):
             full_name=profile["full_name"],
             role=profile["role"],
             assigned_state=assigned_state,
+            assigned_states=resolved_list,
         ),
     )
 

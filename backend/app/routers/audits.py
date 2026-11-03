@@ -149,7 +149,7 @@ class StageApproveRequest(BaseModel):
 
 
 def extract_review_stages(audit: dict | None) -> dict[str, Any]:
-    """Extract and normalize persisted multi-level review stages (CH - L2, COPS - L3, BL - L4).
+    """Extract and normalize persisted multi-level review stages (CH - L2, COPS - L3, BL - L4, CEO - L5).
 
     If explicit `review_stages` are stored in signoff_details, return them.
     Otherwise, derive backwards-compatible stage statuses from existing cpass_status and audit_status.
@@ -159,9 +159,11 @@ def extract_review_stages(audit: dict | None) -> dict[str, Any]:
             "ch": {"status": "Pending"},
             "cops": {"status": "Pending"},
             "bl": {"status": "Pending"},
+            "ceo": {"status": "Pending"},
             "ch_status": "Pending",
             "cops_status": "Pending",
             "bl_status": "Pending",
+            "ceo_status": "Pending",
         }
 
     signoff = audit.get("signoff_details") or {}
@@ -170,14 +172,16 @@ def extract_review_stages(audit: dict | None) -> dict[str, Any]:
     raw_status = (audit.get("cpass_status") or "").upper()
     raw_audit = (audit.get("audit_status") or "").upper()
 
-    if isinstance(stages, dict) and ("ch" in stages or "cops" in stages or "bl" in stages):
+    if isinstance(stages, dict) and ("ch" in stages or "cops" in stages or "bl" in stages or "ceo" in stages):
         ch_raw = stages.get("ch")
         cops_raw = stages.get("cops")
         bl_raw = stages.get("bl")
+        ceo_raw = stages.get("ceo")
 
         ch_obj = ch_raw if isinstance(ch_raw, dict) else {"status": str(ch_raw or "Pending")}
         cops_obj = cops_raw if isinstance(cops_raw, dict) else {"status": str(cops_raw or "Pending")}
         bl_obj = bl_raw if isinstance(bl_raw, dict) else {"status": str(bl_raw or "Pending")}
+        ceo_obj = ceo_raw if isinstance(ceo_raw, dict) else {"status": str(ceo_raw or "Pending")}
 
         ch_st = ch_obj.get("status") or "Pending"
         if ch_st in ("Returned", "Returned to L1") or raw_audit == "RETURNED_TO_L1" or raw_status == "RETURNED_TO_L1":
@@ -188,9 +192,11 @@ def extract_review_stages(audit: dict | None) -> dict[str, Any]:
             "ch": ch_obj,
             "cops": cops_obj,
             "bl": bl_obj,
+            "ceo": ceo_obj,
             "ch_status": ch_st,
             "cops_status": cops_obj.get("status") or "Pending",
             "bl_status": bl_obj.get("status") or "Pending",
+            "ceo_status": ceo_obj.get("status") or "Pending",
         }
 
     # Derive from legacy status or returned status
@@ -199,9 +205,11 @@ def extract_review_stages(audit: dict | None) -> dict[str, Any]:
             "ch": {"status": "Returned to L1"},
             "cops": {"status": "Pending"},
             "bl": {"status": "Pending"},
+            "ceo": {"status": "Pending"},
             "ch_status": "Returned to L1",
             "cops_status": "Pending",
             "bl_status": "Pending",
+            "ceo_status": "Pending",
         }
 
     l2_app = signoff.get("l2_approval") or {}
@@ -209,41 +217,60 @@ def extract_review_stages(audit: dict | None) -> dict[str, Any]:
     ch_status = "Pending"
     cops_status = "Pending"
     bl_status = "Pending"
+    ceo_status = "Pending"
 
     if raw_status in {"APPROVED", "CPASS_APPROVED"}:
         ch_status = "Recommended"
         cops_status = "Verified"
         bl_status = "Approved"
+        ceo_status = "Approved"
+    elif raw_status == "BL_APPROVED":
+        ch_status = "Recommended"
+        cops_status = "Verified"
+        bl_status = "Approved"
+        ceo_status = "Pending"
     elif raw_status == "VERIFIED":
         ch_status = "Recommended"
         cops_status = "Verified"
         bl_status = "Pending"
+        ceo_status = "Pending"
     elif raw_status == "L2_APPROVED" or l2_app.get("approved"):
         ch_status = "Recommended"
         cops_status = "Pending"
         bl_status = "Pending"
+        ceo_status = "Pending"
     elif raw_status in {"REJECTED", "L2_REJECTED", "CPASS_REJECTED"} or raw_audit == "REJECTED":
         rej_stage = signoff.get("rejected_stage") or ""
-        if rej_stage == "bl" or raw_status == "L4_REJECTED":
+        if rej_stage == "ceo" or raw_status == "L5_REJECTED":
+            ch_status = "Recommended"
+            cops_status = "Verified"
+            bl_status = "Approved"
+            ceo_status = "Rejected"
+        elif rej_stage == "bl" or raw_status == "L4_REJECTED":
             ch_status = "Recommended"
             cops_status = "Verified"
             bl_status = "Rejected"
+            ceo_status = "Pending"
         elif rej_stage == "cops" or raw_status == "L3_REJECTED":
             ch_status = "Recommended"
             cops_status = "Rejected"
             bl_status = "Pending"
+            ceo_status = "Pending"
         else:
             ch_status = "Rejected"
             cops_status = "Pending"
             bl_status = "Pending"
+            ceo_status = "Pending"
 
     return {
         "ch": {"status": ch_status},
         "cops": {"status": cops_status},
         "bl": {"status": bl_status},
+        "ceo": {"status": ceo_status},
         "ch_status": ch_status,
         "cops_status": cops_status,
         "bl_status": bl_status,
+        "ceo_status": ceo_status,
     }
 
 
@@ -557,7 +584,7 @@ def save_audit_draft(
         insert_res = _execute_audit_update(insert_q, candidate_id, "create draft")
         record = insert_res.data[0] if insert_res.data else audit_payload
 
-    return {"message": "Draft audit saved successfully", "audit": record}
+    return {"status": "saved", "message": "Draft audit saved successfully", "audit": record}
 
 
 @router.post("/submit")
@@ -1877,6 +1904,17 @@ def reject_l2_placement_audit(
     }
 
 
+@router.post("/sync-documents")
+def sync_candidate_audit_documents(
+    candidate_id: int,
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
+):
+    """Synchronize uploaded candidate documents into placement audit evidence."""
+    from .documents import sync_documents_to_placement_audit
+    return sync_documents_to_placement_audit(candidate_id, user)
+
+
+
 @router.post("/l2-review/return-to-l1")
 def return_l2_placement_audit(
     candidate_id: int,
@@ -2188,6 +2226,17 @@ def reject_l3_cops_audit(
     }
 
 
+@router.post("/sync-documents")
+def sync_candidate_audit_documents(
+    candidate_id: int,
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
+):
+    """Synchronize uploaded candidate documents into placement audit evidence."""
+    from .documents import sync_documents_to_placement_audit
+    return sync_documents_to_placement_audit(candidate_id, user)
+
+
+
 @router.post("/l4-review/approve")
 def approve_l4_bl_audit(
     candidate_id: int,
@@ -2371,4 +2420,35 @@ def reject_l4_bl_audit(
         "rejected_at": now_iso,
         "rejected_by": user.full_name,
     }
+
+
+@router.post("/sync-documents")
+def sync_candidate_audit_documents(
+    candidate_id: int,
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
+):
+    """Synchronize uploaded candidate documents into placement audit evidence."""
+    from .documents import sync_documents_to_placement_audit
+    return sync_documents_to_placement_audit(candidate_id, user)
+
+
+
+@router.post("/sync-documents")
+def sync_candidate_audit_documents(
+    candidate_id: int,
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
+):
+    """Synchronize uploaded candidate documents into placement audit evidence."""
+    from .documents import sync_documents_to_placement_audit
+    return sync_documents_to_placement_audit(candidate_id, user)
+
+@router.post("/sync-documents")
+def sync_candidate_audit_documents(
+    candidate_id: int,
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
+):
+    """Synchronize uploaded candidate documents into placement audit evidence."""
+    from .documents import sync_documents_to_placement_audit
+    return sync_documents_to_placement_audit(candidate_id, user)
+
 

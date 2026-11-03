@@ -35,12 +35,12 @@ from .audits import extract_review_stages
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 # Standardized status variants recognized across CPASS placement audit workflow
-APPROVED_STATUSES = {"APPROVED", "L2_APPROVED", "CPASS_APPROVED", "VERIFIED"}
-REJECTED_STATUSES = {"REJECTED", "L2_REJECTED", "CPASS_REJECTED"}
+APPROVED_STATUSES = {"APPROVED", "L2_APPROVED", "CPASS_APPROVED", "VERIFIED", "FINAL_APPROVED"}
+REJECTED_STATUSES = {"REJECTED", "L2_REJECTED", "CPASS_REJECTED", "L3_REJECTED", "L4_REJECTED", "L5_REJECTED"}
 
 
 def is_candidate_rejected(audit: dict | None) -> bool:
-    """Return True if candidate's current workflow state indicates rejection or return by any review level (CH, COPS, BL)."""
+    """Return True if candidate's current workflow state indicates rejection or return by any review level (CH, COPS, BL, CEO)."""
     if not audit:
         return False
     st = (audit.get("cpass_status") or "").upper()
@@ -48,21 +48,24 @@ def is_candidate_rejected(audit: dict | None) -> bool:
 
     if st in REJECTED_STATUSES or ast in REJECTED_STATUSES:
         return True
-    if st == "RETURNED_TO_L1" or ast == "RETURNED_TO_L1":
+    if st in ("RETURNED_TO_L1", "RETURNED_TO_L2", "RETURNED_TO_L3", "RETURNED_TO_L4") or ast == "RETURNED_TO_L1":
         return True
-    if st in {"L3_REJECTED", "L4_REJECTED"} or ast in {"L3_REJECTED", "L4_REJECTED"}:
+    if st in {"L3_REJECTED", "L4_REJECTED", "L5_REJECTED"} or ast in {"L3_REJECTED", "L4_REJECTED", "L5_REJECTED"}:
         return True
 
     stages = extract_review_stages(audit)
     ch_st = (stages.get("ch_status") or "").lower()
     cops_st = (stages.get("cops_status") or "").lower()
     bl_st = (stages.get("bl_status") or "").lower()
+    ceo_st = (stages.get("ceo_status") or "").lower()
 
     if ch_st in ("rejected", "returned to l1", "returned"):
         return True
     if cops_st == "rejected":
         return True
     if bl_st == "rejected":
+        return True
+    if ceo_st == "rejected":
         return True
 
     return False
@@ -79,6 +82,7 @@ def is_candidate_approved(audit: dict | None) -> bool:
         st in APPROVED_STATUSES
         or ast in {"APPROVED", "L2_APPROVED"}
         or stages.get("bl_status") == "Approved"
+        or stages.get("ceo_status") == "Approved"
     )
 
 
@@ -94,29 +98,46 @@ class PayslipAvailabilityRequest(BaseModel):
 def _get_target_state(user: CurrentUser, state_param: str | None) -> str | None:
     """Resolve and enforce state scoping for the current user.
 
-    For L1_COORDINATOR:
-    - Strictly bound to user.assigned_state.
-    - If unassigned, returns None (fail-closed).
-    - If state_param is provided, it must match user.assigned_state; otherwise 403.
+    For L1_COORDINATOR, L2_MANAGER, and L4_LEADER:
+    - Strictly bound to user permitted state(s).
+    - If state_param is provided:
+        - If "ALL", returns None (will be filtered by user's permitted states in DB queries).
+        - Otherwise must resolve to one of permitted states, else 403.
+    - If state_param is not provided:
+        - If user has exactly one permitted state, returns that state.
+        - If user has multiple permitted states, returns None (will query across all permitted states).
 
-    For Global Roles (ADMIN, L3, L4, L5):
-    - Uses state_param if given, otherwise falls back to user.assigned_state or defaults to None.
+    For Global Roles (ADMIN, L3_COPS, L3_LEADER, L4_CEO, L5_CEO):
+    - Uses state_param if given (unless "ALL", which returns None for national view).
+    - Otherwise defaults to user.assigned_state or None.
     """
     permitted_st = allowed_states(user)
 
     if permitted_st is not None:
         if not permitted_st:
-            return None  # Fail closed: unassigned coordinator sees no state
-        assigned_state = permitted_st[0]
+            return None  # Fail closed: unassigned user sees no state
         if state_param:
-            resolved_query = resolve_state(state_param) or state_param
-            if resolved_query != assigned_state and state_param != assigned_state:
-                raise HTTPException(403, f"Access to state '{state_param}' is forbidden. You are assigned to '{assigned_state}'.")
-        return assigned_state
+            clean = state_param.strip()
+            if clean.upper() in ("ALL", "ALL STATES", "ALL AUTHORIZED STATES"):
+                return None  # Will be scoped to permitted_st in queries
+            resolved_query = resolve_state(clean) or clean
+            if resolved_query not in permitted_st and clean not in permitted_st:
+                raise HTTPException(
+                    403,
+                    f"Access to state '{state_param}' is forbidden. Your authorized state(s): {', '.join(permitted_st)}."
+                )
+            return resolved_query
+        # If no state_param given
+        if len(permitted_st) == 1:
+            return permitted_st[0]
+        return None
 
-    # Global roles
+    # Global roles (national access)
     if state_param:
-        return resolve_state(state_param) or state_param
+        clean = state_param.strip()
+        if clean.upper() in ("ALL", "ALL STATES"):
+            return None
+        return resolve_state(clean) or clean
     if user.assigned_state:
         return user.assigned_state
     return None
@@ -153,8 +174,9 @@ def get_dashboard_summary(
     4. CPASS Uploaded: Candidates uploaded by the Placement Coordinator.
     5. Pending / Remaining: Total Candidates - CPASS Uploaded Candidates.
     """
+    permitted_st = allowed_states(user)
     target_state = _get_target_state(user, state)
-    if not target_state:
+    if not target_state and not user.sees_all_states and not permitted_st:
         return {
             "state": None,
             "total": 0,
@@ -171,67 +193,123 @@ def get_dashboard_summary(
             "l2_rejected": 0,
             "ch_rejected": 0,
             "l2_pending": 0,
+            "l3_received": 0,
+            "cops_received": 0,
+            "l3_verified": 0,
+            "cops_verified": 0,
+            "l3_rejected": 0,
+            "cops_rejected": 0,
+            "l3_returned": 0,
+            "cops_returned": 0,
+            "l3_rejected_returned": 0,
+            "cops_rejected_returned": 0,
+            "l3_pending": 0,
+            "cops_pending": 0,
+            "l4_received": 0,
+            "bl_received": 0,
+            "l4_approved": 0,
+            "bl_approved": 0,
+            "l4_rejected": 0,
+            "bl_rejected": 0,
+            "l4_returned": 0,
+            "bl_returned": 0,
+            "l4_rejected_returned": 0,
+            "bl_rejected_returned": 0,
+            "l4_pending": 0,
+            "bl_pending": 0,
+            "l5_received": 0,
+            "ceo_received": 0,
+            "l5_approved": 0,
+            "ceo_approved": 0,
+            "l5_rejected": 0,
+            "ceo_rejected": 0,
+            "l5_returned": 0,
+            "ceo_returned": 0,
+            "l5_rejected_returned": 0,
+            "ceo_rejected_returned": 0,
+            "l5_pending": 0,
+            "ceo_pending": 0,
         }
 
-    # 1. Total Candidates in state (Authoritative source of truth: tc_state_name)
-    total_res = retry_read_query(
-        lambda: supabase.table("ddugky_candidates")
-        .select("candidate_id", count="exact")
-        .eq("tc_state_name", target_state)
-        .limit(1)
-        .execute()
-    )
+    # 1. Total Candidates in state or national aggregate (Authoritative source of truth: tc_state_name)
+    if target_state:
+        total_res = retry_read_query(
+            lambda: supabase.table("ddugky_candidates")
+            .select("candidate_id", count="exact")
+            .eq("tc_state_name", target_state)
+            .limit(1)
+            .execute()
+        )
+    elif permitted_st is not None:
+        total_res = retry_read_query(
+            lambda: supabase.table("ddugky_candidates")
+            .select("candidate_id", count="exact")
+            .in_("tc_state_name", permitted_st)
+            .limit(1)
+            .execute()
+        )
+    else:
+        total_res = retry_read_query(
+            lambda: supabase.table("ddugky_candidates")
+            .select("candidate_id", count="exact")
+            .limit(1)
+            .execute()
+        )
     total_count = total_res.count or 0
 
-    # 2. Load only candidate IDs belonging to the authorized state, then scope
-    # document/audit reads to those IDs. Avoid scanning every state's records.
-    state_candidate_rows = retry_read_query(
-        lambda: _fetch_all_pages(
-            lambda: supabase.table("ddugky_candidates")
-            .select("candidate_id")
-            .eq("tc_state_name", target_state)
-        )
+    # 2. Uploaded Candidates (candidates in target_state having candidate_documents or placement_audits)
+    docs_res = retry_read_query(
+        lambda: supabase.table("candidate_documents")
+        .select("candidate_id")
+        .neq("upload_status", "FAILED")
+        .execute()
     )
-    state_candidate_ids = [
-        row["candidate_id"] for row in state_candidate_rows
-        if row.get("candidate_id") is not None
-    ]
+    doc_cids = {d["candidate_id"] for d in (docs_res.data or []) if d.get("candidate_id")}
 
-    doc_cids: set[int] = set()
-    audit_map = {}
-    for start in range(0, len(state_candidate_ids), 500):
-        id_chunk = state_candidate_ids[start:start + 500]
-        doc_rows = retry_read_query(
-            lambda id_chunk=id_chunk: _fetch_all_pages(
-                lambda: supabase.table("candidate_documents")
-                .select("candidate_id")
-                .in_("candidate_id", id_chunk)
-                .neq("upload_status", "FAILED")
-            )
-        )
-        doc_cids.update(
-            row["candidate_id"] for row in doc_rows if row.get("candidate_id") is not None
-        )
-
-        aud_rows = retry_read_query(
-            lambda id_chunk=id_chunk: _fetch_all_pages(
-                lambda: supabase.table("placement_audits")
-                .select("candidate_id,cpass_status,audit_status,signoff_details")
-                .in_("candidate_id", id_chunk)
-            )
-        )
-        audit_map.update(
-            {row["candidate_id"]: row for row in aud_rows if row.get("candidate_id") is not None}
-        )
-
+    aud_res = retry_read_query(
+        lambda: supabase.table("placement_audits")
+        .select("candidate_id,cpass_status,audit_status,signoff_details")
+        .execute()
+    )
+    aud_rows = aud_res.data or []
+    audit_map = {a["candidate_id"]: a for a in aud_rows if a.get("candidate_id")}
     all_uploaded_cids = doc_cids | set(audit_map.keys())
 
     uploaded_in_state: set[int] = set()
     if all_uploaded_cids:
-        # Every candidate ID came from the state-scoped candidate query above.
-        uploaded_in_state = {
-            cid for cid in all_uploaded_cids if cid in set(state_candidate_ids)
-        }
+        if target_state:
+            cand_check = retry_read_query(
+                lambda: supabase.table("ddugky_candidates")
+                .select("candidate_id,tc_state_name,state_name")
+                .in_("candidate_id", list(all_uploaded_cids))
+                .eq("tc_state_name", target_state)
+                .execute()
+            )
+        elif permitted_st is not None:
+            cand_check = retry_read_query(
+                lambda: supabase.table("ddugky_candidates")
+                .select("candidate_id,tc_state_name,state_name")
+                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("tc_state_name", permitted_st)
+                .execute()
+            )
+        else:
+            cand_check = retry_read_query(
+                lambda: supabase.table("ddugky_candidates")
+                .select("candidate_id,tc_state_name,state_name")
+                .in_("candidate_id", list(all_uploaded_cids))
+                .execute()
+            )
+        for r in (cand_check.data or []):
+            st = get_candidate_state(r)
+            if target_state:
+                if st == target_state:
+                    uploaded_in_state.add(r["candidate_id"])
+            elif permitted_st is not None:
+                if st in permitted_st:
+                    uploaded_in_state.add(r["candidate_id"])
+            else:
+                uploaded_in_state.add(r["candidate_id"])
     uploaded_count = len(uploaded_in_state)
 
     # 3. Confirmed Pending / Remaining business rule:
@@ -275,6 +353,140 @@ def get_dashboard_summary(
     # Formula: Pending = max(0, Received - Recommended - Rejected)
     l2_pending_count = max(0, len(l2_received_cids) - len(l2_recommended_cids) - len(l2_rejected_cids))
 
+    # 8. L3 COPS Multi-Level Review Metrics:
+    l3_received_cids: set[int] = set()
+    l3_verified_cids: set[int] = set()
+    l3_rejected_cids: set[int] = set()
+    l3_returned_cids: set[int] = set()
+    l3_pending_cids: set[int] = set()
+
+    for cid in uploaded_in_state:
+        audit = audit_map.get(cid)
+        if not audit:
+            continue
+        stages = extract_review_stages(audit)
+        ch_st = stages["ch_status"]
+        cops_st = stages["cops_status"]
+        cpass_st = (audit.get("cpass_status") or "").upper()
+        audit_st = (audit.get("audit_status") or "").upper()
+        signoff = audit.get("signoff_details") or {}
+        ret_to_l1 = signoff.get("return_to_l1") or {}
+
+        is_received_by_cops = (
+            ch_st == "Recommended"
+            or cops_st in ("Verified", "Rejected", "Returned to L1")
+            or cpass_st in ("VERIFIED", "APPROVED", "L3_REJECTED", "L4_REJECTED")
+            or signoff.get("rejected_stage") in ("cops", "bl")
+            or (ret_to_l1.get("stage") == "COPS" and audit_st == "RETURNED_TO_L1")
+        )
+
+        if is_received_by_cops:
+            l3_received_cids.add(cid)
+            if cops_st == "Verified" or cpass_st in ("VERIFIED", "APPROVED") or stages.get("bl_status") == "Approved":
+                if not is_candidate_rejected(audit):
+                    l3_verified_cids.add(cid)
+                else:
+                    l3_rejected_cids.add(cid)
+            elif cops_st == "Rejected" or signoff.get("rejected_stage") == "cops" or cpass_st == "L3_REJECTED":
+                l3_rejected_cids.add(cid)
+            elif cops_st in ("Returned to L1", "Returned") or (ret_to_l1.get("stage") == "COPS" and (audit_st == "RETURNED_TO_L1" or cpass_st == "RETURNED_TO_L1")):
+                l3_returned_cids.add(cid)
+            elif cops_st == "Pending" and ch_st == "Recommended" and not is_candidate_rejected(audit):
+                l3_pending_cids.add(cid)
+            else:
+                if is_candidate_rejected(audit):
+                    l3_rejected_cids.add(cid)
+                else:
+                    l3_pending_cids.add(cid)
+
+    l3_pending_count = len(l3_pending_cids)
+
+    # 9. L4 Business Leader (BL) Multi-Level Review Metrics:
+    l4_received_cids: set[int] = set()
+    l4_approved_cids: set[int] = set()
+    l4_rejected_cids: set[int] = set()
+    l4_returned_cids: set[int] = set()
+    l4_pending_cids: set[int] = set()
+
+    # 10. L5 CEO Multi-Level Review Metrics:
+    l5_received_cids: set[int] = set()
+    l5_approved_cids: set[int] = set()
+    l5_rejected_cids: set[int] = set()
+    l5_returned_cids: set[int] = set()
+    l5_pending_cids: set[int] = set()
+
+    for cid in uploaded_in_state:
+        audit = audit_map.get(cid)
+        if not audit:
+            continue
+        stages = extract_review_stages(audit)
+        cops_st = stages["cops_status"]
+        bl_st = stages["bl_status"]
+        ceo_st = stages["ceo_status"]
+        cpass_st = (audit.get("cpass_status") or "").upper()
+        audit_st = (audit.get("audit_status") or "").upper()
+        signoff = audit.get("signoff_details") or {}
+        active_ret = signoff.get("active_return") or {}
+
+        # BL Reception check
+        is_received_by_bl = (
+            cops_st == "Verified"
+            or bl_st in ("Approved", "Rejected", "Returned")
+            or cpass_st in ("BL_APPROVED", "APPROVED", "L4_REJECTED", "L5_REJECTED", "RETURNED_TO_L4")
+            or signoff.get("rejected_stage") in ("bl", "ceo")
+            or active_ret.get("stage") in ("BL", "CEO")
+        )
+
+        if is_received_by_bl:
+            l4_received_cids.add(cid)
+            if bl_st == "Rejected" or signoff.get("rejected_stage") == "bl" or cpass_st == "L4_REJECTED":
+                l4_rejected_cids.add(cid)
+            elif active_ret.get("stage") == "BL":
+                l4_returned_cids.add(cid)
+            elif bl_st == "Approved" or cpass_st in ("BL_APPROVED", "APPROVED") or ceo_st == "Approved":
+                if not is_candidate_rejected(audit):
+                    l4_approved_cids.add(cid)
+                else:
+                    l4_rejected_cids.add(cid)
+            elif bl_st == "Pending" and cops_st == "Verified" and not is_candidate_rejected(audit) and not active_ret:
+                l4_pending_cids.add(cid)
+            else:
+                if is_candidate_rejected(audit):
+                    l4_rejected_cids.add(cid)
+                else:
+                    l4_pending_cids.add(cid)
+
+        # CEO Reception check
+        is_received_by_ceo = (
+            bl_st == "Approved"
+            or cpass_st in ("BL_APPROVED", "APPROVED", "L5_REJECTED")
+            or ceo_st in ("Approved", "Rejected", "Returned")
+            or signoff.get("rejected_stage") == "ceo"
+            or active_ret.get("stage") == "CEO"
+        )
+
+        if is_received_by_ceo:
+            l5_received_cids.add(cid)
+            if ceo_st == "Rejected" or signoff.get("rejected_stage") == "ceo" or cpass_st == "L5_REJECTED":
+                l5_rejected_cids.add(cid)
+            elif active_ret.get("stage") == "CEO":
+                l5_returned_cids.add(cid)
+            elif ceo_st == "Approved" or (cpass_st == "APPROVED" and audit_st == "APPROVED"):
+                if not is_candidate_rejected(audit):
+                    l5_approved_cids.add(cid)
+                else:
+                    l5_rejected_cids.add(cid)
+            elif ceo_st == "Pending" and bl_st == "Approved" and not is_candidate_rejected(audit) and not active_ret:
+                l5_pending_cids.add(cid)
+            else:
+                if is_candidate_rejected(audit):
+                    l5_rejected_cids.add(cid)
+                else:
+                    l5_pending_cids.add(cid)
+
+    l4_pending_count = len(l4_pending_cids)
+    l5_pending_count = len(l5_pending_cids)
+
     return {
         "state": target_state,
         "total": total_count,
@@ -292,6 +504,45 @@ def get_dashboard_summary(
         "l2_rejected": len(l2_rejected_cids),
         "ch_rejected": len(l2_rejected_cids),
         "l2_pending": l2_pending_count,
+        # L3 COPS summary metrics
+        "l3_received": len(l3_received_cids),
+        "cops_received": len(l3_received_cids),
+        "l3_verified": len(l3_verified_cids),
+        "cops_verified": len(l3_verified_cids),
+        "l3_rejected": len(l3_rejected_cids),
+        "cops_rejected": len(l3_rejected_cids),
+        "l3_returned": len(l3_returned_cids),
+        "cops_returned": len(l3_returned_cids),
+        "l3_rejected_returned": len(l3_rejected_cids | l3_returned_cids),
+        "cops_rejected_returned": len(l3_rejected_cids | l3_returned_cids),
+        "l3_pending": l3_pending_count,
+        "cops_pending": l3_pending_count,
+        # L4 Business Leader summary metrics
+        "l4_received": len(l4_received_cids),
+        "bl_received": len(l4_received_cids),
+        "l4_approved": len(l4_approved_cids),
+        "bl_approved": len(l4_approved_cids),
+        "l4_rejected": len(l4_rejected_cids),
+        "bl_rejected": len(l4_rejected_cids),
+        "l4_returned": len(l4_returned_cids),
+        "bl_returned": len(l4_returned_cids),
+        "l4_rejected_returned": len(l4_rejected_cids | l4_returned_cids),
+        "bl_rejected_returned": len(l4_rejected_cids | l4_returned_cids),
+        "l4_pending": l4_pending_count,
+        "bl_pending": l4_pending_count,
+        # L5 CEO summary metrics
+        "l5_received": len(l5_received_cids),
+        "ceo_received": len(l5_received_cids),
+        "l5_approved": len(l5_approved_cids),
+        "ceo_approved": len(l5_approved_cids),
+        "l5_rejected": len(l5_rejected_cids),
+        "ceo_rejected": len(l5_rejected_cids),
+        "l5_returned": len(l5_returned_cids),
+        "ceo_returned": len(l5_returned_cids),
+        "l5_rejected_returned": len(l5_rejected_cids | l5_returned_cids),
+        "ceo_rejected_returned": len(l5_rejected_cids | l5_returned_cids),
+        "l5_pending": l5_pending_count,
+        "ceo_pending": l5_pending_count,
     }
 
 
@@ -326,6 +577,27 @@ def get_dashboard_candidates(
         "recommended", "l2_recommended",
         "rejected", "l2_rejected", "ch_rejected",
         "pending", "l2_pending",
+        # L3 COPS filters
+        "l3_received", "cops_received",
+        "l3_verified", "cops_verified",
+        "l3_rejected", "cops_rejected",
+        "l3_returned", "cops_returned",
+        "l3_rejected_returned", "cops_rejected_returned",
+        "l3_pending", "cops_pending",
+        # L4 Business Leader filters
+        "l4_received", "bl_received",
+        "l4_approved", "bl_approved",
+        "l4_rejected", "bl_rejected",
+        "l4_returned", "bl_returned",
+        "l4_rejected_returned", "bl_rejected_returned",
+        "l4_pending", "bl_pending",
+        # L5 CEO filters
+        "l5_received", "ceo_received",
+        "l5_approved", "ceo_approved",
+        "l5_rejected", "ceo_rejected",
+        "l5_returned", "ceo_returned",
+        "l5_rejected_returned", "ceo_rejected_returned",
+        "l5_pending", "ceo_pending",
     }
     if norm_filter not in valid_filters:
         raise HTTPException(
@@ -336,8 +608,9 @@ def get_dashboard_candidates(
     actual_page = int(page) if isinstance(page, (int, str)) and str(page).isdigit() and int(page) >= 1 else 1
     actual_page_size = int(page_size) if isinstance(page_size, (int, str)) and str(page_size).isdigit() and int(page_size) >= 1 else 20
 
+    permitted_st = allowed_states(user)
     target_state = _get_target_state(user, state)
-    if not target_state:
+    if not target_state and not user.sees_all_states and not permitted_st:
         return {
             "state": None,
             "filter": norm_filter,
@@ -350,42 +623,58 @@ def get_dashboard_candidates(
         }
 
     # Fetch uploaded IDs and audit statuses for state
-    doc_rows = retry_read_query(
-        lambda: _fetch_all_pages(
-            lambda: supabase.table("candidate_documents")
-            .select("candidate_id")
-            .neq("upload_status", "FAILED")
-        )
+    docs_res = retry_read_query(
+        lambda: supabase.table("candidate_documents")
+        .select("candidate_id")
+        .neq("upload_status", "FAILED")
+        .execute()
     )
-    doc_cids = {d["candidate_id"] for d in doc_rows if d.get("candidate_id")}
+    doc_cids = {d["candidate_id"] for d in (docs_res.data or []) if d.get("candidate_id")}
 
-    aud_rows = retry_read_query(
-        lambda: _fetch_all_pages(
-            lambda: supabase.table("placement_audits")
-            .select("candidate_id,cpass_status,audit_status,signoff_details")
-        )
+    aud_res = retry_read_query(
+        lambda: supabase.table("placement_audits")
+        .select("candidate_id,cpass_status,audit_status,signoff_details")
+        .execute()
     )
+    aud_rows = aud_res.data or []
     audit_map = {a["candidate_id"]: a for a in aud_rows if a.get("candidate_id")}
     all_uploaded_cids = doc_cids | set(audit_map.keys())
 
     uploaded_in_state: set[int] = set()
     if all_uploaded_cids:
-        # Bound each IN clause and paginate each chunk so large candidate sets
-        # do not create oversized requests or silently stop at the API row limit.
-        candidate_ids = list(all_uploaded_cids)
-        for start in range(0, len(candidate_ids), 500):
-            id_chunk = candidate_ids[start:start + 500]
-            cand_check_rows = retry_read_query(
-                lambda id_chunk=id_chunk: _fetch_all_pages(
-                    lambda: supabase.table("ddugky_candidates")
-                    .select("candidate_id,tc_state_name")
-                    .in_("candidate_id", id_chunk)
-                    .eq("tc_state_name", target_state)
-                )
+        if target_state:
+            cand_check = retry_read_query(
+                lambda: supabase.table("ddugky_candidates")
+                .select("candidate_id,tc_state_name,state_name")
+                .in_("candidate_id", list(all_uploaded_cids))
+                .eq("tc_state_name", target_state)
+                .execute()
             )
-            for r in cand_check_rows:
-                if get_candidate_state(r) == target_state:
+        elif permitted_st is not None:
+            cand_check = retry_read_query(
+                lambda: supabase.table("ddugky_candidates")
+                .select("candidate_id,tc_state_name,state_name")
+                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("tc_state_name", permitted_st)
+                .execute()
+            )
+        else:
+            cand_check = retry_read_query(
+                lambda: supabase.table("ddugky_candidates")
+                .select("candidate_id,tc_state_name,state_name")
+                .in_("candidate_id", list(all_uploaded_cids))
+                .execute()
+            )
+        for r in (cand_check.data or []):
+            st = get_candidate_state(r)
+            if target_state:
+                if st == target_state:
                     uploaded_in_state.add(r["candidate_id"])
+            elif permitted_st is not None:
+                if st in permitted_st:
+                    uploaded_in_state.add(r["candidate_id"])
+            else:
+                uploaded_in_state.add(r["candidate_id"])
 
     # Compute candidate ID sets for specific filters
     approved_in_state = {cid for cid in uploaded_in_state if is_candidate_approved(audit_map.get(cid))}
@@ -415,6 +704,135 @@ def get_dashboard_candidates(
             l2_rejected_in_state.add(cid)
         else:
             l2_pending_in_state.add(cid)
+
+    # L3 COPS candidate ID sets
+    l3_received_in_state: set[int] = set()
+    l3_verified_in_state: set[int] = set()
+    l3_rejected_in_state: set[int] = set()
+    l3_returned_in_state: set[int] = set()
+    l3_pending_in_state: set[int] = set()
+
+    for cid in uploaded_in_state:
+        audit = audit_map.get(cid)
+        if not audit:
+            continue
+        stages = extract_review_stages(audit)
+        ch_st = stages["ch_status"]
+        cops_st = stages["cops_status"]
+        cpass_st = (audit.get("cpass_status") or "").upper()
+        audit_st = (audit.get("audit_status") or "").upper()
+        signoff = audit.get("signoff_details") or {}
+        ret_to_l1 = signoff.get("return_to_l1") or {}
+
+        is_received_by_cops = (
+            ch_st == "Recommended"
+            or cops_st in ("Verified", "Rejected", "Returned to L1")
+            or cpass_st in ("VERIFIED", "APPROVED", "L3_REJECTED", "L4_REJECTED")
+            or signoff.get("rejected_stage") in ("cops", "bl")
+            or (ret_to_l1.get("stage") == "COPS" and audit_st == "RETURNED_TO_L1")
+        )
+
+        if is_received_by_cops:
+            l3_received_in_state.add(cid)
+            if cops_st == "Verified" or cpass_st in ("VERIFIED", "APPROVED") or stages.get("bl_status") == "Approved":
+                if not is_candidate_rejected(audit):
+                    l3_verified_in_state.add(cid)
+                else:
+                    l3_rejected_in_state.add(cid)
+            elif cops_st == "Rejected" or signoff.get("rejected_stage") == "cops" or cpass_st == "L3_REJECTED":
+                l3_rejected_in_state.add(cid)
+            elif cops_st in ("Returned to L1", "Returned") or (ret_to_l1.get("stage") == "COPS" and (audit_st == "RETURNED_TO_L1" or cpass_st == "RETURNED_TO_L1")):
+                l3_returned_in_state.add(cid)
+            elif cops_st == "Pending" and ch_st == "Recommended" and not is_candidate_rejected(audit):
+                l3_pending_in_state.add(cid)
+            else:
+                if is_candidate_rejected(audit):
+                    l3_rejected_in_state.add(cid)
+                else:
+                    l3_pending_in_state.add(cid)
+
+    # L4 BL candidate ID sets
+    l4_received_in_state: set[int] = set()
+    l4_approved_in_state: set[int] = set()
+    l4_rejected_in_state: set[int] = set()
+    l4_returned_in_state: set[int] = set()
+    l4_pending_in_state: set[int] = set()
+
+    # L5 CEO candidate ID sets
+    l5_received_in_state: set[int] = set()
+    l5_approved_in_state: set[int] = set()
+    l5_rejected_in_state: set[int] = set()
+    l5_returned_in_state: set[int] = set()
+    l5_pending_in_state: set[int] = set()
+
+    for cid in uploaded_in_state:
+        audit = audit_map.get(cid)
+        if not audit:
+            continue
+        stages = extract_review_stages(audit)
+        cops_st = stages["cops_status"]
+        bl_st = stages["bl_status"]
+        ceo_st = stages["ceo_status"]
+        cpass_st = (audit.get("cpass_status") or "").upper()
+        audit_st = (audit.get("audit_status") or "").upper()
+        signoff = audit.get("signoff_details") or {}
+        active_ret = signoff.get("active_return") or {}
+
+        # BL check
+        is_received_by_bl = (
+            cops_st == "Verified"
+            or bl_st in ("Approved", "Rejected", "Returned")
+            or cpass_st in ("BL_APPROVED", "APPROVED", "L4_REJECTED", "L5_REJECTED", "RETURNED_TO_L4")
+            or signoff.get("rejected_stage") in ("bl", "ceo")
+            or active_ret.get("stage") in ("BL", "CEO")
+        )
+
+        if is_received_by_bl:
+            l4_received_in_state.add(cid)
+            if bl_st == "Rejected" or signoff.get("rejected_stage") == "bl" or cpass_st == "L4_REJECTED":
+                l4_rejected_in_state.add(cid)
+            elif active_ret.get("stage") == "BL":
+                l4_returned_in_state.add(cid)
+            elif bl_st == "Approved" or cpass_st in ("BL_APPROVED", "APPROVED") or ceo_st == "Approved":
+                if not is_candidate_rejected(audit):
+                    l4_approved_in_state.add(cid)
+                else:
+                    l4_rejected_in_state.add(cid)
+            elif bl_st == "Pending" and cops_st == "Verified" and not is_candidate_rejected(audit) and not active_ret:
+                l4_pending_in_state.add(cid)
+            else:
+                if is_candidate_rejected(audit):
+                    l4_rejected_in_state.add(cid)
+                else:
+                    l4_pending_in_state.add(cid)
+
+        # CEO check
+        is_received_by_ceo = (
+            bl_st == "Approved"
+            or cpass_st in ("BL_APPROVED", "APPROVED", "L5_REJECTED")
+            or ceo_st in ("Approved", "Rejected", "Returned")
+            or signoff.get("rejected_stage") == "ceo"
+            or active_ret.get("stage") == "CEO"
+        )
+
+        if is_received_by_ceo:
+            l5_received_in_state.add(cid)
+            if ceo_st == "Rejected" or signoff.get("rejected_stage") == "ceo" or cpass_st == "L5_REJECTED":
+                l5_rejected_in_state.add(cid)
+            elif active_ret.get("stage") == "CEO":
+                l5_returned_in_state.add(cid)
+            elif ceo_st == "Approved" or (cpass_st == "APPROVED" and audit_st == "APPROVED"):
+                if not is_candidate_rejected(audit):
+                    l5_approved_in_state.add(cid)
+                else:
+                    l5_rejected_in_state.add(cid)
+            elif ceo_st == "Pending" and bl_st == "Approved" and not is_candidate_rejected(audit) and not active_ret:
+                l5_pending_in_state.add(cid)
+            else:
+                if is_candidate_rejected(audit):
+                    l5_rejected_in_state.add(cid)
+                else:
+                    l5_pending_in_state.add(cid)
 
     # Build base candidate query
     columns = (
@@ -520,11 +938,241 @@ def get_dashboard_candidates(
             "candidates": [],
         }
 
-    q = (
-        supabase.table("ddugky_candidates")
-        .select(columns, count="exact")
-        .eq("tc_state_name", target_state)
-    )
+    if norm_filter in {"l3_received", "cops_received"} and not l3_received_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l3_verified", "cops_verified"} and not l3_verified_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l3_rejected", "cops_rejected"} and not l3_rejected_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l3_returned", "cops_returned"} and not l3_returned_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l3_pending", "cops_pending"} and not l3_pending_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l3_rejected_returned", "cops_rejected_returned"} and not (l3_rejected_in_state | l3_returned_in_state):
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    # L4 BL short-circuits
+    if norm_filter in {"l4_received", "bl_received"} and not l4_received_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l4_approved", "bl_approved"} and not l4_approved_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l4_rejected", "bl_rejected"} and not l4_rejected_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l4_returned", "bl_returned"} and not l4_returned_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l4_rejected_returned", "bl_rejected_returned"} and not (l4_rejected_in_state | l4_returned_in_state):
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l4_pending", "bl_pending"} and not l4_pending_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    # L5 CEO short-circuits
+    if norm_filter in {"l5_received", "ceo_received"} and not l5_received_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l5_approved", "ceo_approved"} and not l5_approved_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l5_rejected", "ceo_rejected"} and not l5_rejected_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l5_returned", "ceo_returned"} and not l5_returned_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l5_rejected_returned", "ceo_rejected_returned"} and not (l5_rejected_in_state | l5_returned_in_state):
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if norm_filter in {"l5_pending", "ceo_pending"} and not l5_pending_in_state:
+        return {
+            "state": target_state,
+            "filter": norm_filter,
+            "filter_type": norm_filter,
+            "total_count": 0,
+            "page": actual_page,
+            "page_size": actual_page_size,
+            "total_pages": 0,
+            "candidates": [],
+        }
+
+    if target_state:
+        q = (
+            supabase.table("ddugky_candidates")
+            .select(columns, count="exact")
+            .eq("tc_state_name", target_state)
+        )
+    elif permitted_st is not None:
+        q = (
+            supabase.table("ddugky_candidates")
+            .select(columns, count="exact")
+            .in_("tc_state_name", permitted_st)
+        )
+    else:
+        q = (
+            supabase.table("ddugky_candidates")
+            .select(columns, count="exact")
+        )
 
     if norm_filter == "cpass_approved":
         q = q.in_("candidate_id", list(approved_in_state))
@@ -545,6 +1193,42 @@ def get_dashboard_candidates(
         q = q.in_("candidate_id", list(l2_rejected_in_state))
     elif norm_filter in {"pending", "l2_pending"}:
         q = q.in_("candidate_id", list(l2_pending_in_state))
+    elif norm_filter in {"l3_received", "cops_received"}:
+        q = q.in_("candidate_id", list(l3_received_in_state))
+    elif norm_filter in {"l3_verified", "cops_verified"}:
+        q = q.in_("candidate_id", list(l3_verified_in_state))
+    elif norm_filter in {"l3_rejected", "cops_rejected"}:
+        q = q.in_("candidate_id", list(l3_rejected_in_state))
+    elif norm_filter in {"l3_returned", "cops_returned"}:
+        q = q.in_("candidate_id", list(l3_returned_in_state))
+    elif norm_filter in {"l3_rejected_returned", "cops_rejected_returned"}:
+        q = q.in_("candidate_id", list(l3_rejected_in_state | l3_returned_in_state))
+    elif norm_filter in {"l3_pending", "cops_pending"}:
+        q = q.in_("candidate_id", list(l3_pending_in_state))
+    elif norm_filter in {"l4_received", "bl_received"}:
+        q = q.in_("candidate_id", list(l4_received_in_state))
+    elif norm_filter in {"l4_approved", "bl_approved"}:
+        q = q.in_("candidate_id", list(l4_approved_in_state))
+    elif norm_filter in {"l4_rejected", "bl_rejected"}:
+        q = q.in_("candidate_id", list(l4_rejected_in_state))
+    elif norm_filter in {"l4_returned", "bl_returned"}:
+        q = q.in_("candidate_id", list(l4_returned_in_state))
+    elif norm_filter in {"l4_rejected_returned", "bl_rejected_returned"}:
+        q = q.in_("candidate_id", list(l4_rejected_in_state | l4_returned_in_state))
+    elif norm_filter in {"l4_pending", "bl_pending"}:
+        q = q.in_("candidate_id", list(l4_pending_in_state))
+    elif norm_filter in {"l5_received", "ceo_received"}:
+        q = q.in_("candidate_id", list(l5_received_in_state))
+    elif norm_filter in {"l5_approved", "ceo_approved"}:
+        q = q.in_("candidate_id", list(l5_approved_in_state))
+    elif norm_filter in {"l5_rejected", "ceo_rejected"}:
+        q = q.in_("candidate_id", list(l5_rejected_in_state))
+    elif norm_filter in {"l5_returned", "ceo_returned"}:
+        q = q.in_("candidate_id", list(l5_returned_in_state))
+    elif norm_filter in {"l5_rejected_returned", "ceo_rejected_returned"}:
+        q = q.in_("candidate_id", list(l5_rejected_in_state | l5_returned_in_state))
+    elif norm_filter in {"l5_pending", "ceo_pending"}:
+        q = q.in_("candidate_id", list(l5_pending_in_state))
 
     # Apply search filter if provided
     if search and search.strip():
@@ -574,12 +1258,18 @@ def get_dashboard_candidates(
         raw_audit_status = (audit and audit.get("audit_status") or "").upper()
         stages = extract_review_stages(audit)
 
-        if raw_status == "RETURNED_TO_L1" or raw_audit_status == "RETURNED_TO_L1" or stages["ch_status"] == "Returned to L1":
-            normalized_cpass = "RETURNED_TO_L1"
+        if raw_status in ("RETURNED_TO_L1", "RETURNED_TO_L2", "RETURNED_TO_L3", "RETURNED_TO_L4") or raw_audit_status == "RETURNED_TO_L1" or stages["ch_status"] == "Returned to L1":
+            normalized_cpass = raw_status if raw_status.startswith("RETURNED_TO_") else "RETURNED_TO_L1"
         elif is_candidate_rejected(audit):
             normalized_cpass = "REJECTED"
         elif is_candidate_approved(audit):
             normalized_cpass = "APPROVED"
+        elif raw_status == "BL_APPROVED":
+            normalized_cpass = "BL_APPROVED"
+        elif raw_status == "VERIFIED":
+            normalized_cpass = "VERIFIED"
+        elif raw_status == "L2_APPROVED":
+            normalized_cpass = "L2_APPROVED"
         elif is_uploaded:
             normalized_cpass = "IN_PROGRESS"
         else:
@@ -588,7 +1278,8 @@ def get_dashboard_candidates(
         audit_status = (audit and audit.get("audit_status")) or ("DRAFT" if is_uploaded else "NOT_STARTED")
         signoff = (audit and audit.get("signoff_details")) or {}
         return_to_l1 = signoff.get("return_to_l1") or {}
-        ret_reason = return_to_l1.get("return_reason") or return_to_l1.get("reason")
+        active_return = signoff.get("active_return") or {}
+        ret_reason = active_return.get("return_reason") or active_return.get("reason") or return_to_l1.get("return_reason") or return_to_l1.get("reason")
         rej_reason = signoff.get("rejection_reason") or ret_reason
         rej_stage = signoff.get("rejected_stage") or ("ch" if normalized_cpass == "RETURNED_TO_L1" else None)
 
@@ -615,7 +1306,9 @@ def get_dashboard_candidates(
             "ch_status": stages["ch_status"],
             "cops_status": stages["cops_status"],
             "bl_status": stages["bl_status"],
+            "ceo_status": stages["ceo_status"],
             "review_stages": stages,
+            "active_return": active_return if active_return else None,
             "return_reason": ret_reason,
             "rejection_reason": rej_reason,
             "rejected_stage": rej_stage,

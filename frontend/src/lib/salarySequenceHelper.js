@@ -145,19 +145,23 @@ export function findPreviousSalaryRecordForEmployer(targetEntry, allSalaries) {
   if (!targetEntry || !Array.isArray(allSalaries) || allSalaries.length === 0) return null
 
   const targetEmpId = normalizeEmployerId(targetEntry.employer_id)
+  const targetIdx = allSalaries.findIndex((s) => (s.id && targetEntry.id && s.id === targetEntry.id) || s === targetEntry)
+
+  // 1. Primary check: Look immediately backwards in array order from targetIdx - 1 down to 0 for the same employer
+  if (targetIdx > 0) {
+    for (let i = targetIdx - 1; i >= 0; i--) {
+      if (normalizeEmployerId(allSalaries[i].employer_id) === targetEmpId) {
+        return allSalaries[i]
+      }
+    }
+  }
+
+  // 2. Secondary check: If not found in preceding array order, check if any other record for this employer is strictly earlier chronologically
   const targetPeriod = getPeriodValue(targetEntry.year, targetEntry.month)
-
-  // Filter strictly to the same employer, excluding the target itself
-  const sameEmpSalaries = allSalaries.filter(
-    (s) => normalizeEmployerId(s.employer_id) === targetEmpId &&
-           ((targetEntry.id && s.id !== targetEntry.id) || s !== targetEntry)
-  )
-
-  if (sameEmpSalaries.length === 0) return null
-
-  // If target has a valid period, find the record with the highest period that is strictly < targetPeriod
   if (targetPeriod > 0) {
-    const preceding = sameEmpSalaries.filter((s) => {
+    const preceding = allSalaries.filter((s) => {
+      if (s === targetEntry || (targetEntry.id && s.id === targetEntry.id)) return false
+      if (normalizeEmployerId(s.employer_id) !== targetEmpId) return false
       const p = getPeriodValue(s.year, s.month)
       return p > 0 && p < targetPeriod
     })
@@ -168,18 +172,8 @@ export function findPreviousSalaryRecordForEmployer(targetEntry, allSalaries) {
     }
   }
 
-  // Fallback: if target has no period set or is the earliest period, find record immediately preceding in array order
-  const targetIdx = allSalaries.findIndex((s) => (s.id && targetEntry.id && s.id === targetEntry.id) || s === targetEntry)
-  if (targetIdx > 0) {
-    for (let i = targetIdx - 1; i >= 0; i--) {
-      if (normalizeEmployerId(allSalaries[i].employer_id) === targetEmpId) {
-        return allSalaries[i]
-      }
-    }
-  }
-
-  // If none found before, return the latest existing record for this employer
-  return sameEmpSalaries[sameEmpSalaries.length - 1] || null
+  // 3. Target is the first record for this employer - there is no previous record to copy from
+  return null
 }
 
 /**

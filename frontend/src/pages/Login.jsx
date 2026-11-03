@@ -9,7 +9,7 @@ const ROLE_TABS = [
   { key: 'L2', value: 'L2_MANAGER', title: 'Center Head', small: 'L2', label: 'CH', pill: 'Center Head Review Portal' },
   { key: 'L3', value: 'L3_COPS', title: 'COPS', small: 'L3', label: 'COPS', pill: 'COPS Team Audit Portal' },
   { key: 'L4', value: 'L4_LEADER', title: 'Business Leader', small: 'L4', label: 'BL', pill: 'Business Leader Approval Portal' },
-  { key: 'L5', value: 'L4_CEO', title: 'Chief Executive Officer', small: 'L5', label: 'CEO', pill: 'CEO Approval Portal' },
+  { key: 'L5', value: 'L5_CEO', title: 'Chief Executive Officer', small: 'L5', label: 'CEO', pill: 'CEO Approval Portal' },
 ]
 
 const CAROUSEL_TITLES = ['Offer letter', 'Salary slips', 'Bank statements', 'Verified', 'Placed']

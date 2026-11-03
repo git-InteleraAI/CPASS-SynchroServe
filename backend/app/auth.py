@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from typing import Any
 
@@ -8,7 +8,7 @@ import httpx
 from .db import TRANSIENT_ERRORS, retry_read_query, supabase
 
 ALL_CENTRE_ROLES = {"ADMIN", "L3_LEADER", "L3_COPS", "L4_LEADER", "L4_CEO", "L5_CEO"}
-ALL_STATE_ROLES = {"ADMIN", "L3_LEADER", "L3_COPS", "L4_LEADER", "L4_CEO", "L5_CEO"}
+ALL_STATE_ROLES = {"ADMIN", "L3_LEADER", "L3_COPS", "L4_CEO", "L5_CEO"}
 
 # The canonical 12 CPASS master states
 ALL_12_STATES: tuple[str, ...] = (
@@ -58,6 +58,7 @@ STATE_ALIASES: dict[str, str] = {
     "gujarat": "GUJARAT",
     # Punjab
     "pb": "PUNJAB",
+    "pun": "PUNJAB",
     "punjab": "PUNJAB",
     # Uttar Pradesh
     "up": "UTTAR PRADESH",
@@ -133,6 +134,28 @@ def resolve_state(val: Any) -> str | None:
     return None
 
 
+def resolve_states(val: Any) -> list[str]:
+    """Normalize and resolve any state string, list, or comma-separated string to a list of canonical state names."""
+    if not val:
+        return []
+    items: list[str] = []
+    if isinstance(val, (list, tuple, set)):
+        for item in val:
+            if item:
+                items.extend(str(item).split(","))
+    elif isinstance(val, str):
+        items = val.split(",")
+    else:
+        items = [str(val)]
+
+    resolved: set[str] = set()
+    for item in items:
+        st = resolve_state(item.strip())
+        if st:
+            resolved.add(st)
+    return sorted(resolved)
+
+
 @dataclass
 class CurrentUser:
     id: str
@@ -140,11 +163,22 @@ class CurrentUser:
     full_name: str
     role: str
     assigned_state: str | None = None
+    assigned_states: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         # Authorization scope must come from the explicit profile assignment,
         # never from an email address or username convention.
-        self.assigned_state = resolve_state(self.assigned_state)
+        if self.assigned_states:
+            self.assigned_states = resolve_states(self.assigned_states)
+        elif self.assigned_state:
+            self.assigned_states = resolve_states(self.assigned_state)
+        else:
+            self.assigned_states = []
+
+        if not self.assigned_state and self.assigned_states:
+            self.assigned_state = self.assigned_states[0]
+        elif self.assigned_state:
+            self.assigned_state = resolve_state(self.assigned_state)
 
     @property
     def sees_all_centres(self) -> bool:
@@ -240,9 +274,11 @@ def get_current_user(
     if not p["is_active"]:
         raise HTTPException(403, "This account is disabled.")
 
-    # The CPASS profile's explicit assignment is authoritative. Missing or
-    # invalid assignments remain None and are handled fail-closed by allowed_states.
-    assigned_state = resolve_state(p.get("assigned_state"))
+    # The CPASS profile's explicit assignment is authoritative. Supports single
+    # state string or multi-state assignment (e.g. comma-separated string or array).
+    raw_states = p.get("assigned_states") or p.get("assigned_state")
+    resolved_list = resolve_states(raw_states)
+    assigned_state = resolved_list[0] if resolved_list else None
 
     user = CurrentUser(
         id=p["id"],
@@ -250,6 +286,7 @@ def get_current_user(
         full_name=p["full_name"],
         role=p["role"],
         assigned_state=assigned_state,
+        assigned_states=resolved_list,
     )
 
     # Cache valid session
@@ -269,14 +306,13 @@ def require_roles(*roles: str):
 def allowed_states(user: CurrentUser) -> list[str] | None:
     """None = unrestricted (sees all states).
     Otherwise returns list of permitted canonical state names.
-    For L1_COORDINATOR and L2_MANAGER: strictly limited to [user.assigned_state] if assigned, else [] (fails closed).
+    For L1_COORDINATOR and L2_MANAGER: strictly limited to assigned state(s), else [] (fails closed).
+    For L4_LEADER: strictly limited to their assigned multi-state list, else [] (fails closed).
     """
     if user.sees_all_states:
         return None
-    if user.role in ("L1_COORDINATOR", "L2_MANAGER"):
-        if user.assigned_state:
-            return [user.assigned_state]
-        return []  # Fail-closed: unassigned coordinator or manager sees zero states
+    if user.assigned_states:
+        return user.assigned_states
     if user.assigned_state:
         return [user.assigned_state]
     return []  # Fail closed: no explicit state assignment means no state access

@@ -5,6 +5,9 @@ import Login from './pages/Login'
 import L1Home from './pages/L1Home'
 import AdminHome from './pages/AdminHome'
 import L2Home from './pages/L2Home'
+import L3Home from './pages/L3Home'
+import L4Home from './pages/L4Home'
+import L5Home from './pages/L5Home'
 import UserProfileModal from './components/UserProfileModal'
 
 import logoSrc from '../assets/SynchroServeLogoHD.png'
@@ -24,6 +27,9 @@ function Shell() {
 
   const isL1 = profile.role === 'L1_COORDINATOR'
   const isL2 = profile.role === 'L2_MANAGER'
+  const isL3 = profile.role === 'L3_COPS' || profile.role === 'L3_LEADER'
+  const isL4 = profile.role === 'L4_LEADER'
+  const isL5 = profile.role === 'L5_CEO' || profile.role === 'L4_CEO'
   const isAdmin = profile.role === 'ADMIN'
 
   const initials = profile.full_name
@@ -40,13 +46,16 @@ function Shell() {
     L1_COORDINATOR: 'Placement Coordinator (L1)',
     L2_MANAGER: 'Center Head (L2)',
     L3_COPS: 'COPS (L3)',
+    L3_LEADER: 'COPS Lead (L3)',
     L4_LEADER: 'Business Leader (L4)',
     L5_CEO: 'Chief Executive Officer (L5)',
+    L4_CEO: 'Chief Executive Officer (L5)',
+    ADMIN: 'System Administrator',
   }[profile.role] || profile.role
 
   return (
     <div className="app-layout">
-      <header className="top">
+      <header className="top l1-no-print">
         <img className="logo" src={logoSrc} alt="SynchroServe" />
         <div className="user">
           <div
@@ -93,6 +102,12 @@ function Shell() {
           <L1Home />
         ) : isL2 ? (
           <L2Home />
+        ) : isL3 ? (
+          <L3Home />
+        ) : isL4 ? (
+          <L4Home />
+        ) : isL5 ? (
+          <L5Home />
         ) : isAdmin ? (
           <AdminHome />
         ) : (

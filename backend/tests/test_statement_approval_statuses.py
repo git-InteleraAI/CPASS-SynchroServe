@@ -56,7 +56,7 @@ def test_extract_review_stages_ch_approved():
     assert stages["ch"]["status"] == "Recommended"
     assert stages["cops"]["status"] == "Pending"
     assert stages["bl"]["status"] == "Pending"
-    assert "ceo" not in stages
+    assert stages["ceo"]["status"] == "Pending"
 
 
 def test_extract_review_stages_cops_rejected_preserves_ch():
@@ -152,6 +152,6 @@ def test_statement_endpoint_returns_review_stages():
                 assert data["review_stages"]["ch"]["status"] == "Recommended"
                 assert data["review_stages"]["cops"]["status"] == "Pending"
                 assert data["review_stages"]["bl"]["status"] == "Pending"
-                assert "ceo" not in data["review_stages"]
+                assert data["review_stages"]["ceo"]["status"] == "Pending"
     finally:
         app.dependency_overrides.pop(get_current_user, None)

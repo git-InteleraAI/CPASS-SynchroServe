@@ -94,7 +94,7 @@ def _validate_file_upload(file_name: str, content: bytes, mime_type: str | None)
     
     # Detect the actual format from its magic bytes rather than trusting the
     # browser-supplied Content-Type or the filename extension.
-    if content.startswith(b"%PDF-"):
+    if content.startswith(b"%PDF"):
         detected_mime = "application/pdf"
     elif content.startswith(b"\xff\xd8\xff"):
         detected_mime = "image/jpeg"
@@ -103,7 +103,7 @@ def _validate_file_upload(file_name: str, content: bytes, mime_type: str | None)
     else:
         raise HTTPException(
             400,
-            f"Unsupported or invalid file content for '{file_name}'. Allowed formats: PDF, PNG, JPG/JPEG."
+            f"Unsupported file format for '{file_name}'. Allowed formats: PDF, PNG, JPG/JPEG."
         )
 
     # Browsers may omit Content-Type or send octet-stream; allow those and
@@ -124,28 +124,112 @@ def _validate_file_upload(file_name: str, content: bytes, mime_type: str | None)
         )
     return detected_mime
 
+
+def enrich_documents_with_uploader(
+    candidate_id: int,
+    docs: list[dict[str, Any]],
+    signoff_details: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Enrich documents with uploader identity (name, role, level, label), timestamp, and remarks."""
+    if not docs:
+        return docs
+
+    doc_remarks_map: dict[str, str] = {}
+    if signoff_details is not None:
+        doc_remarks_map = signoff_details.get("document_remarks") or {}
+    else:
+        try:
+            audit_res = (
+                supabase.table("placement_audits")
+                .select("signoff_details")
+                .eq("candidate_id", candidate_id)
+                .limit(1)
+                .execute()
+            )
+            if audit_res and audit_res.data:
+                signoff = audit_res.data[0].get("signoff_details") or {}
+                doc_remarks_map = signoff.get("document_remarks") or {}
+        except Exception:
+            pass
+
+    uploader_ids = {str(d.get("uploaded_by")) for d in docs if d.get("uploaded_by")}
+    uploader_map: dict[str, dict[str, Any]] = {}
+    if uploader_ids:
+        try:
+            prof_res = (
+                supabase.table("profiles")
+                .select("id,full_name,role")
+                .in_("id", list(uploader_ids))
+                .execute()
+            )
+            if prof_res and prof_res.data:
+                for p in prof_res.data or []:
+                    uploader_map[str(p["id"])] = p
+        except Exception:
+            pass
+
+    for d in docs:
+        uid = str(d.get("uploaded_by") or "")
+        prof = uploader_map.get(uid)
+        role = prof.get("role") if prof else ""
+        full_name = prof.get("full_name") if prof else ""
+
+        # Determine level & label
+        level = "L1"
+        label = "L1 (Placement Coordinator)"
+        if "L2" in role or "MANAGER" in role:
+            level = "L2"
+            label = "L2 (Center Head)"
+        elif "L3" in role or "COPS" in role:
+            level = "L3"
+            label = "L3 (COPS Auditor)"
+        elif "L4" in role or "LEADER" in role:
+            level = "L4"
+            label = "L4 (Business Leader)"
+        elif "L5" in role or "CEO" in role:
+            level = "L5"
+            label = "L5 (CEO)"
+        elif "ADMIN" in role:
+            level = "ADMIN"
+            label = "Administrator"
+
+        doc_id_str = str(d.get("id"))
+        rem = doc_remarks_map.get(doc_id_str)
+        if not rem and d.get("document_type") != "OTHER_DOCUMENT" and d.get("document_title") and d.get("document_title") != d.get("file_name"):
+            rem = d.get("document_title")
+
+        d["uploader_name"] = full_name or ("Center Head" if level == "L2" else "Placement Coordinator")
+        d["uploader_role"] = role or ("L2_MANAGER" if level == "L2" else "L1_COORDINATOR")
+        d["uploader_level"] = level
+        d["uploader_label"] = label
+        d["remarks"] = rem or ""
+
+    return docs
+
+
 @router.get("")
 def list_documents(
     candidate_id: int,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER")),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "L3_LEADER", "L4_LEADER", "L5_CEO", "L4_CEO")),
 ):
     """List all documents uploaded for this candidate."""
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,created_at,updated_at,document_title,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
+        .select("id,candidate_id,document_type,reporting_month,reporting_year,drive_file_id,drive_folder_path,file_name,mime_type,file_size_bytes,upload_status,uploaded_by,created_at,updated_at,document_title,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .order("created_at")
         .execute()
     )
-    return res.data or []
+    docs = res.data or []
+    return enrich_documents_with_uploader(candidate_id, docs)
 
 
 @router.get("/summary")
 def get_documents_summary(
     candidate_id: int,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER")),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "L3_LEADER", "L4_LEADER", "L5_CEO", "L4_CEO")),
 ):
     """Get the checklist summary for a candidate.
 
@@ -158,12 +242,13 @@ def get_documents_summary(
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,document_title,created_at,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
+        .select("id,document_type,reporting_month,reporting_year,file_name,mime_type,file_size_bytes,upload_status,uploaded_by,document_title,created_at,employer_id,is_consolidated,coverage_start_month,coverage_start_year,coverage_end_month,coverage_end_year,covered_months")
         .eq("candidate_id", candidate_id)
         .neq("upload_status", "FAILED")
         .execute()
     )
     docs = res.data or []
+    docs = enrich_documents_with_uploader(candidate_id, docs)
 
     appointment_doc = next((d for d in docs if d["document_type"] == "APPOINTMENT_LETTER"), None)
     has_appointment = appointment_doc is not None
@@ -283,7 +368,8 @@ async def upload_document(
     coverage_end_month: int | None = Form(None),
     coverage_end_year: int | None = Form(None),
     covered_months: str | None = Form(None),
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
+    remarks: str | None = Form(None),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "ADMIN")),
 ):
     """Upload a candidate document to Google Drive and persist metadata in candidate_documents."""
     cand_ctx = _get_candidate_context(candidate_id, user)
@@ -459,7 +545,7 @@ async def upload_document(
         "upload_status": "SUCCESS",
         "uploaded_by": user.id,
         "error_message": None,
-        "document_title": document_title or (file.filename if file else "Other Document"),
+        "document_title": document_title or (remarks.strip() if remarks else None) or (file.filename if file else "Other Document"),
         "employer_id": employer_id,
         "is_consolidated": is_consolidated,
         "coverage_start_month": coverage_start_month,
@@ -499,7 +585,430 @@ async def upload_document(
             logger.exception("Failed to clean up staged Google Drive file after metadata failure")
         raise HTTPException(500, "Document metadata could not be saved. Please try again.")
 
-    return db_res.data[0] if db_res.data else doc_payload
+    saved_row = db_res.data[0] if db_res.data else doc_payload
+
+    # Store remarks in placement audit signoff_details if provided
+    if remarks and db_res.data:
+        saved_doc_id = str(db_res.data[0]["id"])
+        try:
+            audit_res = (
+                supabase.table("placement_audits")
+                .select("id,signoff_details")
+                .eq("candidate_id", candidate_id)
+                .limit(1)
+                .execute()
+            )
+            if audit_res.data:
+                audit_row = audit_res.data[0]
+                signoff = audit_row.get("signoff_details") or {}
+                doc_remarks = signoff.get("document_remarks") or {}
+                doc_remarks[saved_doc_id] = remarks.strip()
+                signoff["document_remarks"] = doc_remarks
+                supabase.table("placement_audits").update({
+                    "signoff_details": signoff,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", audit_row["id"]).execute()
+        except Exception:
+            logger.warning("Failed to store document remarks in placement audit signoff_details", exc_info=True)
+
+    enriched = enrich_documents_with_uploader(candidate_id, [saved_row])
+    return enriched[0] if enriched else saved_row
+
+
+
+def sync_documents_to_placement_audit(
+    candidate_id: int,
+    user: CurrentUser | None = None,
+    override_employer_details: list[dict[str, Any]] | None = None,
+    override_salary_details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Idempotently synchronize active candidate_documents into placement_audits.document_audit.
+
+    Ensures a placement_audits record exists (creates baseline DRAFT if missing).
+    Applies strict evidence matching rules:
+    - 1. Appointment / Offer Letter: Updates availability, filename, and drive metadata.
+    - 2. Salary Slips: Matches reporting month & year (and employer). Only updates the corresponding month.
+    - 3. Bank Statements: Matches individual statements and consolidated bank statements across all covered months.
+    - 4. Other Documents: Preserves optional documents.
+    - 5. Status Consistency: Distinguishes physical file presence from reviewer compliance endorsements.
+         Uploaded files become 'Available' ('Yes') while preserving reviewer verification state.
+         Preserves coordinator 'No' / 'Payslip not available' unless a physical file is actually uploaded.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. Check or create placement audit record
+    audit_res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+
+    cand_ctx = _get_candidate_context(candidate_id, user)
+
+    if not audit_res.data:
+        # Create baseline audit draft
+        first_name = cand_ctx.get("candidate_first_name") or ""
+        last_name = cand_ctx.get("candidate_last_name") or ""
+        full_name = f"{first_name} {last_name}".strip() or f"Candidate {candidate_id}"
+
+        snapshot = {
+            "candidate_id": candidate_id,
+            "candidate_name": full_name,
+            "full_name": full_name,
+            "first_name": first_name or None,
+            "last_name": last_name or None,
+            "father_name": "Not Available",
+            "dob": "Not Available",
+            "date_of_birth": "Not Available",
+            "gender": "Not Available",
+            "mobile": "Not Available",
+            "contact_number": "Not Available",
+            "state": cand_ctx.get("state") or cand_ctx.get("tc_state_name") or cand_ctx.get("state_name"),
+            "tc_name": cand_ctx.get("tc_name"),
+            "training_centre": cand_ctx.get("tc_name"),
+            "batch_code": cand_ctx.get("batch_code") or "Not Available",
+            "batch_start_date": "Not Available",
+            "batch_end_date": "Not Available",
+            "trade_name": "Not Available",
+            "trade": "Not Available",
+            "sector": None,
+            "candidate_email": "Not Available",
+            "candidate_qualification": "Not Available",
+            "address": "Not Available",
+            "permanent_address": "Not Available",
+            "bank_account": "Not Available",
+            "masked_bank_account": "Not Available",
+            "sanction_order": "Not Available",
+            "aadhaar_last4": None,
+            "masked_aadhaar": "Not Available",
+            "aadhaar_number": "Not Available",
+        }
+
+        if override_employer_details:
+            emp_details = override_employer_details
+        else:
+            emp_details = [{
+                "id": "emp_1",
+                "employer_name": cand_ctx.get("tc_name") or "Employer 1",
+                "months_worked": None,
+                "appointment_date": None,
+                "designation": None,
+                "place_of_work": cand_ctx.get("state") or None,
+                "monthly_ctc": None,
+                "minimum_wages": None,
+            }]
+
+        curr_y = datetime.now().year
+        if override_salary_details:
+            sal_details = override_salary_details
+        else:
+            sal_details = [
+                {
+                    "id": f"sal_{i}",
+                    "employer_id": emp_details[0].get("id") or "emp_1",
+                    "month": i,
+                    "year": curr_y,
+                    "working_days": 26,
+                    "pay_days": 26,
+                    "leave_days": 0,
+                    "credit_date": None,
+                    "amount_credited": None,
+                    "gross_salary": None,
+                    "deductions": None,
+                    "net_salary": None,
+                    "bank_name": None,
+                }
+                for i in range(1, 4)
+            ]
+
+        base_doc_audit = {
+            "appointment_letter": {"available": "Pending", "compliance": "Under Verification", "remarks": ""},
+            "other_document": {"available": "Pending", "compliance": "Under Verification", "remarks": ""},
+        }
+        for i in range(1, len(sal_details) + 1):
+            base_doc_audit[f"salary_slip_{i}"] = {"available": "Pending", "compliance": "Under Verification", "remarks": ""}
+            base_doc_audit[f"bank_statement_{i}"] = {"available": "Pending", "compliance": "Under Verification", "remarks": ""}
+
+        base_signoffs = {
+            "centre_head": {"name": None, "designation": None, "date": None, "confirmed": False},
+            "cops_team": {"name": None, "designation": None, "date": None, "confirmed": False},
+            "business_leader": {"name": None, "designation": None, "date": None, "confirmed": False},
+            "review_stages": {
+                "ch": {"status": "Pending"},
+                "cops": {"status": "Pending"},
+                "bl": {"status": "Pending"},
+                "ceo": {"status": "Pending"},
+            }
+        }
+
+        new_audit_payload = {
+            "candidate_id": candidate_id,
+            "candidate_snapshot": snapshot,
+            "employer_details": emp_details,
+            "salary_details": sal_details,
+            "document_audit": base_doc_audit,
+            "signoff_details": base_signoffs,
+            "remarks": None,
+            "audit_status": "DRAFT",
+            "cpass_status": "PENDING",
+            "created_by": user.id if user else None,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        ins_res = supabase.table("placement_audits").insert(new_audit_payload).execute()
+        audit_rec = ins_res.data[0] if ins_res.data else new_audit_payload
+    else:
+        audit_rec = audit_res.data[0]
+
+    # 2. Fetch all active candidate documents
+    docs_res = (
+        supabase.table("candidate_documents")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .neq("upload_status", "FAILED")
+        .execute()
+    )
+    active_docs = docs_res.data or []
+    valid_docs = [d for d in active_docs if d.get("drive_file_id") or d.get("upload_status") == "SUCCESS"]
+
+    # 3. Synchronize document audit
+    cur_doc_audit = dict(audit_rec.get("document_audit") or {})
+    sal_list = list(override_salary_details if override_salary_details is not None else (audit_rec.get("salary_details") or []))
+    emp_entries = list(override_employer_details if override_employer_details is not None else (audit_rec.get("employer_details") or []))
+
+    def get_canonical_emp_id(val):
+        if not val:
+            return ""
+        s = str(val).strip()
+        if emp_entries:
+            if len(emp_entries) <= 1:
+                return str(emp_entries[0].get("id") or "1")
+            norm = s.lower().replace("emp_", "").replace("employer_", "").strip()
+            if norm.isdigit():
+                idx = int(norm) - 1
+                if 0 <= idx < len(emp_entries):
+                    return str(emp_entries[idx].get("id") or str(idx + 1))
+            for emp in emp_entries:
+                e_id = str(emp.get("id") or "").strip()
+                if e_id and (e_id == s or e_id.lower().replace("emp_", "") == norm):
+                    return e_id
+        return s
+
+    def emp_matches(doc_emp, target_emp):
+        if not doc_emp or not target_emp:
+            return True
+        if len(emp_entries) <= 1:
+            return True
+        return get_canonical_emp_id(doc_emp) == get_canonical_emp_id(target_emp)
+
+    # If salary_details in DB has default dummy values and uploaded documents have specific months, align them
+    uploaded_salary_docs = [d for d in valid_docs if d.get("document_type") == "SALARY_SLIP" and d.get("reporting_month") and d.get("reporting_year")]
+    if override_salary_details is None and (not sal_list or (len(sal_list) == 3 and all(s.get("gross_salary") is None for s in sal_list))) and uploaded_salary_docs:
+        sorted_sal_docs = sorted(uploaded_salary_docs, key=lambda d: (d.get("reporting_year", 0), d.get("reporting_month", 0)))
+        new_sals = []
+        for idx, sdoc in enumerate(sorted_sal_docs):
+            new_sals.append({
+                "id": f"sal_{idx + 1}",
+                "employer_id": sdoc.get("employer_id") or "emp_1",
+                "month": int(sdoc["reporting_month"]),
+                "year": int(sdoc["reporting_year"]),
+                "working_days": 26,
+                "pay_days": 26,
+                "leave_days": 0,
+                "credit_date": None,
+                "amount_credited": None,
+                "gross_salary": None,
+                "deductions": None,
+                "net_salary": None,
+                "bank_name": None,
+            })
+        if len(new_sals) >= 3:
+            sal_list = new_sals
+        elif new_sals:
+            sal_list = new_sals
+            while len(sal_list) < 3:
+                last_m = sal_list[-1]["month"]
+                last_y = sal_list[-1]["year"]
+                next_m = last_m + 1
+                next_y = last_y
+                if next_m > 12:
+                    next_m = 1
+                    next_y += 1
+                sal_list.append({
+                    "id": f"sal_{len(sal_list) + 1}",
+                    "employer_id": sal_list[-1]["employer_id"],
+                    "month": next_m,
+                    "year": next_y,
+                    "working_days": 26,
+                    "pay_days": 26,
+                    "leave_days": 0,
+                    "credit_date": None,
+                    "amount_credited": None,
+                    "gross_salary": None,
+                    "deductions": None,
+                    "net_salary": None,
+                    "bank_name": None,
+                })
+
+    # APPOINTMENT_LETTER
+    appt_docs = [d for d in valid_docs if d.get("document_type") == "APPOINTMENT_LETTER"]
+    if appt_docs:
+        latest_appt = appt_docs[-1]
+        row = cur_doc_audit.get("appointment_letter") or {}
+        row["available"] = "Yes"
+        row["compliance"] = row.get("compliance") or "Compliant"
+        row["file_name"] = latest_appt.get("file_name")
+        row["drive_file_id"] = latest_appt.get("drive_file_id")
+        row["document_id"] = latest_appt.get("id")
+        cur_doc_audit["appointment_letter"] = row
+    else:
+        row = cur_doc_audit.get("appointment_letter") or {}
+        if row.get("available") != "No":
+            row["available"] = "Pending"
+        cur_doc_audit["appointment_letter"] = row
+
+    # OTHER_DOCUMENT
+    other_docs = [d for d in valid_docs if d.get("document_type") == "OTHER_DOCUMENT"]
+    if other_docs:
+        latest_other = other_docs[-1]
+        row = cur_doc_audit.get("other_document") or {}
+        row["available"] = "Yes"
+        row["title"] = latest_other.get("document_title") or row.get("title") or "Other Document"
+        row["file_name"] = latest_other.get("file_name")
+        row["drive_file_id"] = latest_other.get("drive_file_id")
+        row["document_id"] = latest_other.get("id")
+        cur_doc_audit["other_document"] = row
+    else:
+        row = cur_doc_audit.get("other_document") or {}
+        if row.get("available") != "No":
+            row["available"] = "Pending"
+        cur_doc_audit["other_document"] = row
+
+    # SALARY_SLIPS
+    for s_idx, s_entry in enumerate(sal_list):
+        slot_key = f"salary_slip_{s_idx + 1}"
+        s_m = int(s_entry.get("month") or 0)
+        s_y = int(s_entry.get("year") or 0)
+        s_emp = s_entry.get("employer_id")
+
+        matched_slip = next(
+            (
+                d for d in valid_docs
+                if d.get("document_type") == "SALARY_SLIP"
+                and int(d.get("reporting_month") or 0) == s_m
+                and int(d.get("reporting_year") or 0) == s_y
+                and emp_matches(d.get("employer_id"), s_emp)
+            ),
+            None
+        )
+
+        s_row = cur_doc_audit.get(slot_key) or {}
+        s_row["month"] = s_m
+        s_row["year"] = s_y
+        if matched_slip:
+            s_row["available"] = "Yes"
+            s_row["file_name"] = matched_slip.get("file_name")
+            s_row["drive_file_id"] = matched_slip.get("drive_file_id")
+            s_row["document_id"] = matched_slip.get("id")
+            s_row["compliance"] = s_row.get("compliance") or "Under Verification"
+            if s_row.get("remarks") == "Payslip not available":
+                s_row["remarks"] = ""
+        else:
+            if s_row.get("available") == "No":
+                s_row["available"] = "No"
+                s_row["remarks"] = s_row.get("remarks") or "Payslip not available"
+                s_row["compliance"] = "Non-Compliant"
+            else:
+                s_row["available"] = "Pending"
+                s_row["compliance"] = s_row.get("compliance") or "Under Verification"
+        cur_doc_audit[slot_key] = s_row
+
+    # BANK_STATEMENTS
+    for s_idx, s_entry in enumerate(sal_list):
+        slot_key = f"bank_statement_{s_idx + 1}"
+        s_m = int(s_entry.get("month") or 0)
+        s_y = int(s_entry.get("year") or 0)
+        s_emp = s_entry.get("employer_id")
+
+        # 1. Check individual bank statement
+        matched_bank = next(
+            (
+                d for d in valid_docs
+                if d.get("document_type") == "BANK_STATEMENT"
+                and not d.get("is_consolidated")
+                and int(d.get("reporting_month") or 0) == s_m
+                and int(d.get("reporting_year") or 0) == s_y
+                and emp_matches(d.get("employer_id"), s_emp)
+            ),
+            None
+        )
+
+        # 2. Check consolidated bank statement
+        if not matched_bank:
+            for d in valid_docs:
+                if d.get("document_type") == "BANK_STATEMENT" and d.get("is_consolidated") and emp_matches(d.get("employer_id"), s_emp):
+                    cov = d.get("covered_months") or []
+                    if cov and isinstance(cov, list):
+                        if any(int(c.get("month", 0)) == s_m and (not c.get("year") or int(c.get("year", 0)) == s_y) for c in cov if isinstance(c, dict)):
+                            matched_bank = d
+                            break
+                    else:
+                        st_m = int(d.get("coverage_start_month") or 0)
+                        st_y = int(d.get("coverage_start_year") or 0)
+                        end_m = int(d.get("coverage_end_month") or 0)
+                        end_y = int(d.get("coverage_end_year") or 0)
+                        if st_m and st_y and end_m and end_y:
+                            if (st_y * 12 + st_m) <= (s_y * 12 + s_m) <= (end_y * 12 + end_m):
+                                matched_bank = d
+                                break
+
+        b_row = cur_doc_audit.get(slot_key) or {}
+        b_row["month"] = s_m
+        b_row["year"] = s_y
+        if matched_bank:
+            b_row["available"] = "Yes"
+            b_row["file_name"] = matched_bank.get("file_name")
+            b_row["drive_file_id"] = matched_bank.get("drive_file_id")
+            b_row["document_id"] = matched_bank.get("id")
+            b_row["is_consolidated"] = bool(matched_bank.get("is_consolidated"))
+            if matched_bank.get("is_consolidated"):
+                b_row["coverage_start_month"] = matched_bank.get("coverage_start_month")
+                b_row["coverage_end_month"] = matched_bank.get("coverage_end_month")
+                b_row["coverage_start_year"] = matched_bank.get("coverage_start_year")
+                b_row["coverage_end_year"] = matched_bank.get("coverage_end_year")
+                b_row["covered_months"] = matched_bank.get("covered_months")
+                if not b_row.get("remarks"):
+                    b_row["remarks"] = f"Covered by consolidated statement ({matched_bank.get('file_name', '')})" 
+            b_row["compliance"] = b_row.get("compliance") or "Under Verification"
+        else:
+            if b_row.get("available") == "No":
+                b_row["available"] = "No"
+                b_row["compliance"] = "Non-Compliant"
+            else:
+                b_row["available"] = "Pending"
+                b_row["compliance"] = b_row.get("compliance") or "Under Verification"
+        cur_doc_audit[slot_key] = b_row
+
+    # 4. Save updated document_audit & salary_details to placement_audits
+    update_data = {
+        "document_audit": cur_doc_audit,
+        "salary_details": sal_list,
+        "updated_at": now_iso,
+    }
+    if override_employer_details is not None:
+        update_data["employer_details"] = emp_entries
+    up_res = supabase.table("placement_audits").update(update_data).eq("id", audit_rec["id"]).execute()
+    result_audit = up_res.data[0] if up_res.data else {**audit_rec, **update_data}
+    return {
+        "status": "success",
+        "audit_id": audit_rec.get("id"),
+        "candidate_id": candidate_id,
+        "synced_documents_count": len(valid_docs),
+        "audit": result_audit,
+        "document_audit": cur_doc_audit,
+    }
 
 
 @router.post("/submit")
@@ -517,6 +1026,8 @@ async def batch_submit_documents(
     other_document: UploadFile | None = File(None),
     other_document_title: str | None = Form(None),
     other_document_replace_id: str | None = Form(None),
+    employer_details_meta: str | None = Form(None),
+    salary_details_meta: str | None = Form(None),
     allow_partial: bool = Form(False),
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR")),
 ):
@@ -932,7 +1443,7 @@ async def batch_submit_documents(
             )
         raise HTTPException(
             500,
-            "Document changes could not be saved. Staged changes were rolled back where possible. Please try again.",
+            "Database persistence failed: document changes could not be saved. Staged changes were rolled back where possible. Please try again.",
         )
 
     # 9. Cleanup old replaced files in Google Drive
@@ -942,125 +1453,38 @@ async def batch_submit_documents(
             google_drive_service.delete_file(old_fid)
         except Exception as e:
             logger.warning("Failed to delete replaced Google Drive file %s: %s", old_fid, e)
-            cleanup_warnings.append("One or more replaced files could not be cleaned up automatically.")
+            cleanup_warnings.append(f"Failed to delete old file {old_fid} from Google Drive.")
 
-    # 10. Synchronize placement audit document availability if audit exists
+    # 10. Synchronize placement audit document availability
+    parsed_override_emps = None
+    if employer_details_meta:
+        try:
+            parsed_override_emps = json.loads(employer_details_meta)
+        except Exception:
+            pass
+    parsed_override_sals = None
+    if salary_details_meta:
+        try:
+            parsed_override_sals = json.loads(salary_details_meta)
+        except Exception:
+            pass
+
+    audit_sync_status = "SUCCESS"
+    audit_sync_message = "Placement audit document evidence synchronized successfully."
+    synced_audit = None
     try:
-        audit_res = (
-            supabase.table("placement_audits")
-            .select("id,document_audit,salary_details,employer_details")
-            .eq("candidate_id", candidate_id)
-            .limit(1)
-            .execute()
+        sync_res = sync_documents_to_placement_audit(
+            candidate_id=candidate_id,
+            user=user,
+            override_employer_details=parsed_override_emps,
+            override_salary_details=parsed_override_sals,
         )
-        if audit_res.data:
-            audit_rec = audit_res.data[0]
-            cur_doc_audit = audit_rec.get("document_audit") or {}
-            sal_list = audit_rec.get("salary_details") or []
-            now_iso = datetime.now(timezone.utc).isoformat()
-            dirty = False
-
-            emp_entries = audit_rec.get("employer_details") or []
-
-            def get_canonical_emp_id(val):
-                if not val:
-                    return ""
-                s = str(val).strip()
-                if emp_entries:
-                    if len(emp_entries) <= 1:
-                        return str(emp_entries[0].get("id") or "1")
-                    norm = s.lower().replace("emp_", "").replace("employer_", "").strip()
-                    if norm.isdigit():
-                        idx = int(norm) - 1
-                        if 0 <= idx < len(emp_entries):
-                            return str(emp_entries[idx].get("id") or str(idx + 1))
-                    for emp in emp_entries:
-                        e_id = str(emp.get("id") or "").strip()
-                        if e_id and (e_id == s or e_id.lower().replace("emp_", "") == norm):
-                            return e_id
-                return s
-
-            def emp_matches(doc_emp, target_emp):
-                if not doc_emp or not target_emp:
-                    return True
-                if len(emp_entries) <= 1:
-                    return True
-                return get_canonical_emp_id(doc_emp) == get_canonical_emp_id(target_emp)
-
-            for up in staged_uploads:
-                dtype = up.get("doc_type")
-                if dtype == "APPOINTMENT_LETTER":
-                    row = cur_doc_audit.get("appointment_letter") or {}
-                    row["available"] = "Yes"
-                    row["compliance"] = row.get("compliance") or "Compliant"
-                    cur_doc_audit["appointment_letter"] = row
-                    dirty = True
-                elif dtype == "OTHER_DOCUMENT":
-                    row = cur_doc_audit.get("other_document") or {}
-                    row["available"] = "Yes"
-                    row["title"] = up.get("title") or row.get("title") or "Other Document"
-                    cur_doc_audit["other_document"] = row
-                    dirty = True
-                elif dtype == "BANK_STATEMENT":
-                    is_consol = bool(up.get("is_consolidated"))
-                    up_emp = up.get("employer_id")
-                    st_m = up.get("coverage_start_month") or up.get("month")
-                    st_y = up.get("coverage_start_year") or up.get("year")
-                    end_m = up.get("coverage_end_month") or up.get("month")
-                    end_y = up.get("coverage_end_year") or up.get("year")
-                    cov_list = up.get("covered_months") or []
-
-                    check_salaries = sal_list if sal_list else [{"month": i, "year": st_y} for i in range(1, 4)]
-                    for s_idx, s_entry in enumerate(check_salaries):
-                        s_m = s_entry.get("month")
-                        s_y = s_entry.get("year") or st_y
-                        s_emp = s_entry.get("employer_id")
-                        if not emp_matches(up_emp, s_emp):
-                            continue
-                        covers = False
-                        if is_consol:
-                            if cov_list and any(isinstance(c, dict) and int(c.get("month", 0)) == int(s_m) and (not c.get("year") or int(c.get("year", 0)) == int(s_y)) for c in cov_list):
-                                covers = True
-                            elif st_m and st_y and end_m and end_y and s_m and s_y:
-                                try:
-                                    covers = (int(st_y) * 12 + int(st_m)) <= (int(s_y) * 12 + int(s_m)) <= (int(end_y) * 12 + int(end_m))
-                                except Exception:
-                                    covers = False
-                        else:
-                            try:
-                                covers = int(up.get("month") or 0) == int(s_m or 0) and (not up.get("year") or int(up.get("year") or 0) == int(s_y or 0))
-                            except Exception:
-                                covers = False
-
-                        if covers:
-                            slot_key = f"bank_statement_{s_idx + 1}"
-                            b_row = cur_doc_audit.get(slot_key) or {}
-                            b_row["available"] = "Yes"
-                            cur_doc_audit[slot_key] = b_row
-                            dirty = True
-                elif dtype == "SALARY_SLIP":
-                    up_emp = up.get("employer_id")
-                    up_m = up.get("month")
-                    up_y = up.get("year")
-                    check_salaries = sal_list if sal_list else [{"month": i, "year": up_y} for i in range(1, 4)]
-                    for s_idx, s_entry in enumerate(check_salaries):
-                        s_m = s_entry.get("month")
-                        s_y = s_entry.get("year") or up_y
-                        s_emp = s_entry.get("employer_id")
-                        if emp_matches(up_emp, s_emp) and int(up_m or 0) == int(s_m or 0) and (not up_y or int(up_y or 0) == int(s_y or 0)):
-                            slot_key = f"salary_slip_{s_idx + 1}"
-                            s_row = cur_doc_audit.get(slot_key) or {}
-                            s_row["available"] = "Yes"
-                            cur_doc_audit[slot_key] = s_row
-                            dirty = True
-
-            if dirty:
-                supabase.table("placement_audits").update({
-                    "document_audit": cur_doc_audit,
-                    "updated_at": now_iso,
-                }).eq("id", audit_rec["id"]).execute()
+        synced_audit = sync_res.get("audit")
+        audit_sync_status = "SUCCESS"
     except Exception as audit_sync_err:
-        logger.warning("Could not synchronize placement audit document state: %s", audit_sync_err)
+        audit_sync_status = "WARNING"
+        audit_sync_message = f"Document evidence synchronization failed: {audit_sync_err}. Files remain safe in Google Drive and can be synchronized via retry."
+        logger.exception("Could not synchronize placement audit document state for candidate %s: %s", candidate_id, audit_sync_err)
 
     # 11. Return updated summary
     summary = get_documents_summary(candidate_id, user)
@@ -1070,6 +1494,9 @@ async def batch_submit_documents(
         "candidate_id": candidate_id,
         "submitted_count": len(staged_uploads),
         "cleanup_warnings": cleanup_warnings,
+        "audit_sync_status": audit_sync_status,
+        "audit_sync_message": audit_sync_message,
+        "audit": synced_audit,
         "summary": summary,
         "documents": [op["payload"] for op in db_operations],
     }
@@ -1079,7 +1506,7 @@ async def batch_submit_documents(
 def download_document(
     candidate_id: int,
     document_id: str,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER")),
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "L3_LEADER", "L4_LEADER", "L5_CEO", "L4_CEO")),
 ):
     """Download/stream a document file securely from Google Drive."""
     _get_candidate_context(candidate_id, user)
@@ -1141,9 +1568,17 @@ def delete_document(
         supabase.table("candidate_documents")
         .delete()
         .eq("id", document_id)
-        .eq("candidate_id", candidate_id)
         .execute()
     )
     if not delete_res.data:
         raise HTTPException(404, "Document not found for this candidate.")
     return {"status": "deleted", "id": document_id}
+
+
+@router.post("/sync-audit")
+def sync_documents_audit_endpoint(
+    candidate_id: int,
+    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
+):
+    """Explicitly synchronize candidate documents into placement audit document evidence."""
+    return sync_documents_to_placement_audit(candidate_id, user)

@@ -191,6 +191,13 @@ button, select, input, textarea {
   flex: 1;
 }
 
+/* Allow L3 COPS dashboard to utilize up to 1440px wide desktop screens */
+.content-container:has(.l3-dashboard) {
+  max-width: 1440px;
+  padding-left: clamp(16px, 2.5vw, 32px);
+  padding-right: clamp(16px, 2.5vw, 32px);
+}
+
 /* ==========================================================================
    Hero Banners & Visual Accents
    ========================================================================== */
