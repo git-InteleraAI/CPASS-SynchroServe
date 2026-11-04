@@ -12,13 +12,12 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  id-token: write      # Required for AWS OIDC authentication
   contents: read       # Required to checkout the repository
   packages: write      # Required to publish container images to GHCR
 
 env:
-  # AWS Sydney Region for EC2 & Systems Manager (SSM)
-  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+  # AWS Region for EC2 & Systems Manager (SSM)
+  AWS_REGION: ${{ vars.AWS_REGION }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -150,9 +149,9 @@ jobs:
     steps:
       - name: Validate Required Deployment Configuration
         run: |
-          if [ -z "${{ vars.GHCR_USERNAME }}" ]; then
-            echo "::error::Repository variable 'GHCR_USERNAME' is required for EC2 GHCR authentication but is missing or empty."
-            echo "Please set repository variable 'GHCR_USERNAME' to the GitHub username associated with the EC2 read-only PAT."
+          if [ -z "${{ vars.AWS_REGION }}" ]; then
+            echo "::error::Repository variable 'AWS_REGION' is required for deployment but is missing or empty."
+            echo "Please set repository variable 'AWS_REGION' (e.g. 'ap-southeast-2')."
             exit 1
           fi
           if [ -z "${{ vars.EC2_INSTANCE_ID }}" ]; then
@@ -160,13 +159,19 @@ jobs:
             echo "Please set repository variable 'EC2_INSTANCE_ID' to the target AWS EC2 instance ID."
             exit 1
           fi
-          echo "Deployment configuration validated: GHCR_USERNAME is '${{ vars.GHCR_USERNAME }}'"
+          if [ -z "${{ vars.GHCR_USERNAME }}" ]; then
+            echo "::error::Repository variable 'GHCR_USERNAME' is required for EC2 GHCR authentication but is missing or empty."
+            echo "Please set repository variable 'GHCR_USERNAME' to the GitHub username associated with the EC2 read-only PAT."
+            exit 1
+          fi
+          echo "Deployment configuration validated: AWS_REGION='${{ vars.AWS_REGION }}', EC2_INSTANCE_ID='${{ vars.EC2_INSTANCE_ID }}', GHCR_USERNAME='${{ vars.GHCR_USERNAME }}'"
 
-      - name: Configure AWS Credentials via GitHub OIDC
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       # Construct remote deployment shell script and dispatch cleanly via AWS SSM
       - name: Dispatch Deployment Command via AWS SSM
