@@ -1,0 +1,373 @@
+name: CPASS Production CI/CD Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Prevent concurrent deployment collisions on the single production EC2 instance
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+permissions:
+  id-token: write      # Required for AWS OIDC authentication
+  contents: read       # Required to checkout the repository
+  packages: write      # Required to publish container images to GHCR
+
+env:
+  # AWS Sydney Region for EC2 & Systems Manager (SSM)
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Quality Gate & Automated Testing
+  # ---------------------------------------------------------------------------
+  test:
+    name: Run Automated Tests & Validations
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Backend Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest httpx
+
+      - name: Run Backend Pytest Suites (19 suites)
+        run: |
+          cd backend
+          pytest tests/
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run Frontend Helper Unit Tests
+        run: |
+          cd frontend
+          node src/components/approvalStatusHelper.test.js
+          node src/lib/bankStatementHelper.test.js
+          node src/lib/salarySequenceHelper.test.js
+
+      - name: Verify Frontend Production Build
+        run: |
+          cd frontend
+          npm run build
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Build & Push Images to GitHub Container Registry (GHCR)
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push Images to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      owner: ${{ steps.meta.outputs.owner }}
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # Compute strictly lowercased repository owner for GHCR image namespace
+      - name: Set Lowercase GHCR Owner & Image Tag
+        id: meta
+        run: |
+          RAW_OWNER="${{ vars.GHCR_OWNER || github.repository_owner }}"
+          LOWER_OWNER=$(echo "${RAW_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "owner=${LOWER_OWNER}" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "Resolved GHCR Namespace: ${LOWER_OWNER}"
+          echo "Resolved Image Tag: ${GITHUB_SHA}"
+
+      # Authenticate to GitHub Container Registry using standard GITHUB_TOKEN
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build and Push Backend Image to GHCR
+      - name: Build and Push Backend Image to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/cpass-backend:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/cpass-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build and Push Frontend Image to GHCR
+      - name: Build and Push Frontend Image to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          build-args: |
+            VITE_API_URL=/api
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/cpass-frontend:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/cpass-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Secure Deployment to AWS EC2 via AWS Systems Manager (SSM)
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to AWS EC2 via AWS Systems Manager
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate Required Deployment Configuration
+        run: |
+          if [ -z "${{ vars.GHCR_USERNAME }}" ]; then
+            echo "::error::Repository variable 'GHCR_USERNAME' is required for EC2 GHCR authentication but is missing or empty."
+            echo "Please set repository variable 'GHCR_USERNAME' to the GitHub username associated with the EC2 read-only PAT."
+            exit 1
+          fi
+          if [ -z "${{ vars.EC2_INSTANCE_ID }}" ]; then
+            echo "::error::Repository variable 'EC2_INSTANCE_ID' is required for deployment but is missing or empty."
+            echo "Please set repository variable 'EC2_INSTANCE_ID' to the target AWS EC2 instance ID."
+            exit 1
+          fi
+          echo "Deployment configuration validated: GHCR_USERNAME is '${{ vars.GHCR_USERNAME }}'"
+
+      - name: Configure AWS Credentials via GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Construct remote deployment shell script and dispatch cleanly via AWS SSM
+      - name: Dispatch Deployment Command via AWS SSM
+        id: ssm-deploy
+        env:
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          APP_DIR: ${{ vars.APP_DIR || '/home/ubuntu/CPASS' }}
+          OWNER: ${{ needs.build-and-push.outputs.owner }}
+          GHCR_USER: ${{ vars.GHCR_USERNAME }}
+          TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          echo "Preparing deployment payload for EC2 Instance: ${EC2_INSTANCE_ID}"
+
+          # Write remote deployment script (executed as root by SSM on EC2)
+          cat << 'EOF' > deploy_remote.sh
+          set -e
+
+          APP_DIR="__APP_DIR__"
+          OWNER="__OWNER__"
+          GHCR_USER="__GHCR_USER__"
+          TAG="__TAG__"
+
+          cd "${APP_DIR}"
+
+          echo "=== 1. GHCR Authentication on EC2 ==="
+          # AWS SSM commands execute as root; do not assume $HOME is /home/ubuntu.
+          # Use dedicated /etc/cpass/ghcr_token file for authentication.
+          if [ -f "/etc/cpass/ghcr_token" ]; then
+            # Read username from /etc/cpass/ghcr_user if present, or use workflow-provided username
+            if [ -f "/etc/cpass/ghcr_user" ]; then
+              AUTH_USER=$(cat /etc/cpass/ghcr_user | tr -d '[:space:]')
+            else
+              AUTH_USER="${GHCR_USER}"
+            fi
+
+            if [ -z "${AUTH_USER}" ]; then
+              echo "ERROR: GitHub username for GHCR authentication is not configured!"
+              echo "Configure /etc/cpass/ghcr_user on EC2 or repository variable GHCR_USERNAME."
+              exit 1
+            fi
+
+            echo "Authenticating Docker to ghcr.io as ${AUTH_USER}..."
+            # Authenticate without exposing the token in process lists or logs
+            if ! cat /etc/cpass/ghcr_token | tr -d '[:space:]' | docker login ghcr.io -u "${AUTH_USER}" --password-stdin >/dev/null 2>&1; then
+              echo "ERROR: GHCR authentication failed using token at /etc/cpass/ghcr_token for user ${AUTH_USER}!"
+              echo "Verify that the PAT at /etc/cpass/ghcr_token is valid and has 'read:packages' permission."
+              exit 1
+            fi
+            echo "GHCR authentication succeeded."
+          else
+            # If dedicated token file is absent, check if root is already authenticated in config.json
+            if [ ! -f /root/.docker/config.json ] || ! grep -q "ghcr.io" /root/.docker/config.json 2>/dev/null; then
+              echo "ERROR: Dedicated token file /etc/cpass/ghcr_token was not found and Docker is not authenticated to ghcr.io!"
+              echo "Please configure /etc/cpass/ghcr_token with your GitHub PAT (read:packages)."
+              exit 1
+            fi
+            echo "Using existing Docker authentication in /root/.docker/config.json."
+          fi
+
+          echo "=== 2. Recording Pre-Deployment Image State for Rollback Safety ==="
+          PREV_BACKEND=$(docker inspect --format='{{.Config.Image}}' cpass-backend 2>/dev/null || echo "")
+          PREV_FRONTEND=$(docker inspect --format='{{.Config.Image}}' cpass-frontend 2>/dev/null || echo "")
+          echo "Previous running images: Backend=${PREV_BACKEND:-none} Frontend=${PREV_FRONTEND:-none}"
+
+          NEW_BACKEND="ghcr.io/${OWNER}/cpass-backend:${TAG}"
+          NEW_FRONTEND="ghcr.io/${OWNER}/cpass-frontend:${TAG}"
+
+          echo "=== 3. Pulling Target Versioned Images (${TAG}) from GHCR ==="
+          docker pull "${NEW_BACKEND}"
+          docker pull "${NEW_FRONTEND}"
+
+          echo "=== 4. Recreating Containers with Target Images ==="
+          # Temporarily disable set -e so compose recreation or healthcheck failures trigger rollback handling
+          set +e
+
+          BACKEND_IMAGE="${NEW_BACKEND}" FRONTEND_IMAGE="${NEW_FRONTEND}" docker compose up -d --remove-orphans
+          COMPOSE_EXIT_CODE=$?
+
+          DEPLOY_SUCCESS=0
+          if [ ${COMPOSE_EXIT_CODE} -eq 0 ]; then
+            echo "=== 5. Verifying Deployment Health via /api/health ==="
+            for i in $(seq 1 12); do
+              sleep 5
+              if curl -sf http://localhost/api/health >/dev/null; then
+                DEPLOY_SUCCESS=1
+                echo "Health check passed on attempt ${i}/12."
+                break
+              fi
+              echo "Waiting for health check to pass... (${i}/12)"
+            done
+          else
+            echo "ERROR: 'docker compose up' failed with exit code ${COMPOSE_EXIT_CODE}!"
+          fi
+
+          # Rollback handling: executed if compose failed or health check failed
+          if [ ${DEPLOY_SUCCESS} -ne 1 ]; then
+            echo "=========================================================="
+            echo "DEPLOYMENT FAILURE DETECTED! INITIATING ROLLBACK PROCEDURE"
+            echo "=========================================================="
+
+            if [ -n "${PREV_BACKEND}" ] && [ -n "${PREV_FRONTEND}" ]; then
+              echo "Restoring previous working images:"
+              echo "  Backend:  ${PREV_BACKEND}"
+              echo "  Frontend: ${PREV_FRONTEND}"
+
+              BACKEND_IMAGE="${PREV_BACKEND}" FRONTEND_IMAGE="${PREV_FRONTEND}" docker compose up -d --remove-orphans
+              ROLLBACK_COMPOSE_EXIT=$?
+
+              ROLLBACK_HEALTHY=0
+              if [ ${ROLLBACK_COMPOSE_EXIT} -eq 0 ]; then
+                for i in $(seq 1 12); do
+                  sleep 5
+                  if curl -sf http://localhost/api/health >/dev/null; then
+                    ROLLBACK_HEALTHY=1
+                    break
+                  fi
+                done
+              fi
+
+              if [ ${ROLLBACK_HEALTHY} -eq 1 ]; then
+                echo "Rollback successful: Previous deployment restored and verified healthy."
+              else
+                echo "CRITICAL ALERT: Rollback executed, but application failed health check verification!"
+              fi
+            else
+              echo "Automatic rollback unavailable: No previous deployment state was recorded."
+            fi
+
+            echo "Failing deployment job to notify team of release failure."
+            exit 1
+          fi
+
+          # Re-enable set -e for final persistence
+          set -e
+
+          echo "=== 6. Persisting Verified Active Image Tags ==="
+          grep -q "^BACKEND_IMAGE=" .env 2>/dev/null && sed -i "s|^BACKEND_IMAGE=.*|BACKEND_IMAGE=${NEW_BACKEND}|" .env || echo "BACKEND_IMAGE=${NEW_BACKEND}" >> .env
+          grep -q "^FRONTEND_IMAGE=" .env 2>/dev/null && sed -i "s|^FRONTEND_IMAGE=.*|FRONTEND_IMAGE=${NEW_FRONTEND}|" .env || echo "FRONTEND_IMAGE=${NEW_FRONTEND}" >> .env
+
+          echo "Deployment completed successfully and verified healthy for commit ${TAG}."
+          EOF
+
+          # Inject runner environment variables cleanly into remote script
+          sed -i "s|__APP_DIR__|${APP_DIR}|g" deploy_remote.sh
+          sed -i "s|__OWNER__|${OWNER}|g" deploy_remote.sh
+          sed -i "s|__GHCR_USER__|${GHCR_USER}|g" deploy_remote.sh
+          sed -i "s|__TAG__|${TAG}|g" deploy_remote.sh
+
+          # Serialize script lines into valid JSON array for AWS SSM parameters
+          python3 -c '
+          import json
+          lines = [line.strip() for line in open("deploy_remote.sh").read().splitlines() if line.strip() and not line.strip().startswith("#")]
+          payload = {"commands": lines}
+          with open("ssm_payload.json", "w") as f:
+              json.dump(payload, f)
+          '
+
+          echo "Dispatching AWS SSM command to instance: ${EC2_INSTANCE_ID}..."
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy CPASS commit ${TAG} from GHCR" \
+            --parameters file://ssm_payload.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Command dispatched with ID: ${COMMAND_ID}"
+          echo "command_id=${COMMAND_ID}" >> $GITHUB_OUTPUT
+
+      # Wait for execution and stream remote stdout/stderr
+      - name: Monitor SSM Deployment Execution
+        env:
+          COMMAND_ID: ${{ steps.ssm-deploy.outputs.command_id }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          echo "Waiting for SSM command ${COMMAND_ID} on instance ${EC2_INSTANCE_ID}..."
+          STATUS="InProgress"
+          while [ "$STATUS" = "InProgress" ] || [ "$STATUS" = "Pending" ] || [ "$STATUS" = "Delayed" ]; do
+            sleep 5
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query "Status" \
+              --output text 2>/dev/null || echo "Pending")
+            echo "Current status: ${STATUS}"
+          done
+
+          echo "=== Deployment Command Standard Output ==="
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query "StandardOutputContent" \
+            --output text || true
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "=== Deployment Command Error Output ==="
+            aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query "StandardErrorContent" \
+              --output text || true
+            echo "Deployment execution failed with status: ${STATUS}"
+            exit 1
+          fi
+
+          echo "Deployment completed successfully and verified healthy on EC2!"

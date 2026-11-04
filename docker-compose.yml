@@ -1,0 +1,55 @@
+# CPASS Production Docker Compose Topology
+# Single EC2 instance topology: Edge Nginx Frontend + FastAPI Backend on private bridge network
+# Images are pulled from GitHub Container Registry (GHCR) as prebuilt artifacts
+
+services:
+  cpass-backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/git-inteleraai/cpass-backend:latest}
+    container_name: cpass-backend
+    restart: unless-stopped
+    # Internal communication only; NEVER publish port 8000 to the public EC2 host
+    expose:
+      - "8000"
+    # Runtime environment variables injected from host environment
+    env_file:
+      - path: ./backend/.env
+        required: false
+      - path: ./.env
+        required: false
+    networks:
+      - cpass-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  cpass-frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/git-inteleraai/cpass-frontend:latest}
+    container_name: cpass-frontend
+    restart: unless-stopped
+    # Public ingress ports on the EC2 host
+    ports:
+      - "80:80"
+      - "443:443"
+    # Mount points for Let's Encrypt SSL certificates and ACME webroot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      cpass-backend:
+        condition: service_healthy
+    networks:
+      - cpass-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  cpass-network:
+    name: cpass-network
+    driver: bridge
