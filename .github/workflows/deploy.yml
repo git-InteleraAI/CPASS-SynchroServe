@@ -44,9 +44,11 @@ jobs:
           pip install -r backend/requirements.txt pytest httpx
 
       - name: Run Backend Pytest Suites (19 suites)
-        run: |
-          cd backend
-          pytest tests/
+        working-directory: backend
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: pytest
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
