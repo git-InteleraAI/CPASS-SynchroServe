@@ -47,6 +47,7 @@ CANDIDATE_DATA = {
     "category": "OBC",
     "tc_id": 101,
     "tc_name": "Bhubaneswar Skill Centre",
+    "state_name": "Odisha",
     "tc_state_name": "Odisha",
     "batch_code": "BATCH-OD-2023-01",
     "sanction_order_number": "SO-2023-99",

@@ -343,18 +343,18 @@ def allowed_tc_ids(user: CurrentUser) -> list[int] | None:
 def get_candidate_state(cand: dict[str, Any]) -> str | None:
     """Extract and resolve canonical state name from candidate record.
     
-    Training Centre State (tc_state_name) is the authoritative source of truth
-    for state ownership and L1 coordinator scoping.
-    Fails safely if tc_state_name is missing or invalid.
+    Beneficiary State (state_name) is the authoritative source of truth
+    for candidate ownership and state-scoped candidate access.
+    Fails safely (fail-closed) if state_name is missing or invalid.
     """
-    tc_st = cand.get("tc_state_name")
-    if tc_st:
-        resolved = resolve_state(tc_st)
+    st = cand.get("state_name")
+    if st:
+        resolved = resolve_state(st)
         if resolved:
             return resolved
         import logging
         logging.getLogger("cpass.auth").warning(
-            "Candidate %s has unresolvable tc_state_name: %r", cand.get("candidate_id"), tc_st
+            "Candidate %s has unresolvable state_name: %r", cand.get("candidate_id"), st
         )
     return None
 

@@ -12,19 +12,18 @@ const REJECTION_REASONS = [
 
 // Circular Destination options for L3, L4, L5
 const L3_CIRCULAR_DESTINATIONS = [
-  { key: 'L1', circleText: 'L1', label: 'Coordinator' },
+  { key: 'L1', circleText: 'L1', label: 'Placement Coordinator' },
   { key: 'L2', circleText: 'L2', label: 'Center Head' },
-  { key: 'L3', circleText: 'L3', label: 'COPS' },
 ]
 
 const L4_CIRCULAR_DESTINATIONS = [
-  { key: 'L1', circleText: 'L1', label: 'Coordinator' },
+  { key: 'L1', circleText: 'L1', label: 'Placement Coordinator' },
   { key: 'L2', circleText: 'L2', label: 'Center Head' },
   { key: 'L3', circleText: 'L3', label: 'COPS' },
 ]
 
 const L5_CIRCULAR_DESTINATIONS = [
-  { key: 'L1', circleText: 'L1', label: 'Coordinator' },
+  { key: 'L1', circleText: 'L1', label: 'Placement Coordinator' },
   { key: 'L2', circleText: 'L2', label: 'Center Head' },
   { key: 'L3', circleText: 'L3', label: 'COPS' },
   { key: 'L4', circleText: 'L4', label: 'Business Leader' },

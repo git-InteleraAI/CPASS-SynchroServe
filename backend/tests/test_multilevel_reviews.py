@@ -66,6 +66,7 @@ ADMIN_USER = CurrentUser(
 
 CANDIDATE_ODISHA = {
     "candidate_id": 10482,
+    "state_name": "Odisha",
     "candidate_first_name": "Rajesh",
     "candidate_last_name": "Patel",
     "candidate_father_name": "Mohan Patel",
@@ -80,6 +81,7 @@ CANDIDATE_ODISHA = {
 
 CANDIDATE_KERALA = {
     "candidate_id": 20999,
+    "state_name": "Kerala",
     "candidate_first_name": "Rahul",
     "candidate_last_name": "Nair",
     "candidate_father_name": "Gopal Nair",

@@ -33,7 +33,7 @@ def _check_centre(user: CurrentUser, tc_id: int) -> None:
         try:
             res = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
-                .select("candidate_id,tc_state_name")
+                .select("candidate_id,state_name,tc_state_name")
                 .eq("tc_id", tc_id)
                 .limit(10)
                 .execute()
@@ -41,7 +41,7 @@ def _check_centre(user: CurrentUser, tc_id: int) -> None:
             rows = res.data or []
             if rows:
                 has_permitted = any(
-                    (resolve_state(r.get("tc_state_name")) in permitted_st)
+                    (resolve_state(r.get("state_name")) in permitted_st)
                     for r in rows
                 )
                 if not has_permitted:
@@ -103,12 +103,12 @@ def states(user: CurrentUser = Depends(get_current_user)):
             try:
                 missing_res = retry_read_query(
                     lambda: supabase.table("ddugky_candidates")
-                    .select("tc_state_name")
-                    .not_.in_("tc_state_name", tuple(rpc_states))
+                    .select("state_name")
+                    .not_.in_("state_name", tuple(rpc_states))
                     .execute()
                 )
                 for r in (missing_res.data or []):
-                    st = (r.get("tc_state_name") or "").strip()
+                    st = (r.get("state_name") or "").strip()
                     if st:
                         rpc_states.add(st)
             except Exception:
@@ -127,9 +127,9 @@ def states(user: CurrentUser = Depends(get_current_user)):
 
 @router.get("/centres")
 def centres(state: str, user: CurrentUser = Depends(get_current_user)):
-    """Return distinct training centres for the given state, respecting user state and centre scoping.
+    """Return distinct training centres for the given beneficiary state, respecting user state and centre scoping.
     
-    Training Centre State (tc_state_name) is the authoritative source of truth.
+    Beneficiary State (state_name) is the authoritative source of truth.
     """
     resolved_state = resolve_state(state) or state
     permitted_st = allowed_states(user)
@@ -141,20 +141,25 @@ def centres(state: str, user: CurrentUser = Depends(get_current_user)):
     try:
         res = retry_read_query(
             lambda: supabase.table("ddugky_candidates")
-            .select("tc_id,tc_name")
-            .eq("tc_state_name", resolved_state)
+            .select("tc_id,tc_name,tc_state_name")
+            .eq("state_name", resolved_state)
             .execute()
         )
         tc_dict = {}
         for r in (res.data or []):
             tcid = r.get("tc_id")
             name = r.get("tc_name")
+            tc_st = r.get("tc_state_name")
             if tcid and name:
                 if allowed is None or tcid in allowed:
-                    tc_dict[tcid] = name
+                    tc_dict[tcid] = {
+                        "tc_id": tcid,
+                        "name": name,
+                        "tc_state_name": tc_st,
+                    }
 
         return sorted(
-            [{"tc_id": k, "name": v} for k, v in tc_dict.items()],
+            list(tc_dict.values()),
             key=lambda c: c["name"],
         )
     except HTTPException:
@@ -239,7 +244,7 @@ def candidates(kb_batch_id: int, user: CurrentUser = Depends(get_current_user)):
     try:
         res = retry_read_query(
             lambda: supabase.table("ddugky_candidates")
-            .select("candidate_id,candidate_first_name,candidate_last_name,candidate_father_name,appointed,tc_id,tc_state_name")
+            .select("candidate_id,candidate_first_name,candidate_last_name,candidate_father_name,appointed,tc_id,state_name,tc_state_name")
             .eq("kb_batch_id", kb_batch_id)
             .execute()
         )
@@ -319,8 +324,8 @@ def candidate_detail(candidate_id: int, user: CurrentUser = Depends(get_current_
             "trade_name": r.get("trade_name") or "Not Available",
             "tc_id": r.get("tc_id"),
             "tc_name": r.get("tc_name"),
-            "tc_state_name": r.get("tc_state_name"),
-            "state_name": r.get("state_name") or r.get("tc_state_name"),
+            "tc_state_name": r.get("tc_state_name") or "Not Available",
+            "state_name": r.get("state_name") if (r.get("state_name") and resolve_state(r.get("state_name"))) else "Not Available",
             "sanction_order_number": r.get("sanction_order_number") or "Not Available",
             "monthly_ctc": r.get("monthly_ctc"),
             "candidate_email": r.get("candidate_email") or "Not Available",

@@ -15,9 +15,9 @@ import json
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from postgrest.exceptions import APIError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles
+from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles, resolve_state
 from ..db import TRANSIENT_ERRORS, retry_read_query, supabase
 
 logger = logging.getLogger("cpass.audits")
@@ -142,6 +142,72 @@ class StageRejectRequest(BaseModel):
 class StageReturnRequest(BaseModel):
     return_reason: str = Field(..., min_length=1, description="Mandatory reason for returning candidate to L1 for corrections")
     remarks: str | None = None
+
+
+class L3ReturnRequest(BaseModel):
+    destination: str = Field(..., description="Destination stage: only L1 or L2")
+    return_reason: str = Field(..., min_length=1, description="Mandatory reason for returning candidate")
+    remarks: str | None = None
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, v: str) -> str:
+        dest = (v or "").strip().upper()
+        if dest not in ("L1", "L2"):
+            raise ValueError("Destination must be either 'L1' or 'L2'.")
+        return dest
+
+    @field_validator("return_reason")
+    @classmethod
+    def validate_return_reason(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("Return reason cannot be empty or whitespace.")
+        return s
+
+
+class L4ReturnRequest(BaseModel):
+    destination: str = Field(..., description="Destination stage: only L1, L2, or L3")
+    return_reason: str = Field(..., min_length=1, description="Mandatory reason for returning candidate")
+    remarks: str | None = None
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, v: str) -> str:
+        dest = (v or "").strip().upper()
+        if dest not in ("L1", "L2", "L3"):
+            raise ValueError("Destination must be one of 'L1', 'L2', or 'L3'. L4 cannot return to itself.")
+        return dest
+
+    @field_validator("return_reason")
+    @classmethod
+    def validate_return_reason(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("Return reason cannot be empty or whitespace.")
+        return s
+
+
+class L5ReturnRequest(BaseModel):
+    destination: str = Field(..., description="Destination stage: only L1, L2, L3, or L4")
+    return_reason: str = Field(..., min_length=1, description="Mandatory reason for returning candidate")
+    remarks: str | None = None
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, v: str) -> str:
+        dest = (v or "").strip().upper()
+        if dest not in ("L1", "L2", "L3", "L4"):
+            raise ValueError("Destination must be one of 'L1', 'L2', 'L3', or 'L4'. L5 cannot return to itself.")
+        return dest
+
+    @field_validator("return_reason")
+    @classmethod
+    def validate_return_reason(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("Return reason cannot be empty or whitespace.")
+        return s
 
 
 class StageApproveRequest(BaseModel):
@@ -468,7 +534,9 @@ def _build_candidate_snapshot(cand: dict[str, Any], candidate_id: int, override:
         "gender": cand.get("gender") or "Not Available",
         "mobile": cand.get("mobile_number") or cand.get("mobile") or "Not Available",
         "contact_number": cand.get("mobile_number") or cand.get("mobile") or "Not Available",
-        "state": cand.get("tc_state_name") or cand.get("state_name"),
+        "state": cand.get("state_name") if (cand.get("state_name") and resolve_state(cand.get("state_name"))) else "Not Available",
+        "state_name": cand.get("state_name") if (cand.get("state_name") and resolve_state(cand.get("state_name"))) else "Not Available",
+        "tc_state_name": cand.get("tc_state_name") or "Not Available",
         "tc_name": cand.get("tc_name"),
         "training_centre": cand.get("tc_name"),
         "batch_code": cand.get("batch_code") or "Not Available",
@@ -2226,6 +2294,188 @@ def reject_l3_cops_audit(
     }
 
 
+@router.post("/l3-review/return")
+def return_l3_cops_audit(
+    candidate_id: int,
+    payload: L3ReturnRequest,
+    user: CurrentUser = Depends(require_roles("L3_COPS", "L3_LEADER", "ADMIN")),
+):
+    """Return candidate placement audit from L3 COPS to either L1 Coordinator or L2 Center Head.
+
+    - Destination must be either 'L1' or 'L2'. Any other destination is rejected with HTTP 422.
+    - If destination is L1:
+        - cpass_status and audit_status are set to RETURNED_TO_L1.
+        - review_stages.ch.status is set to 'Returned to L1'.
+        - COPS and BL progression are reset to 'Pending'.
+    - If destination is L2:
+        - cpass_status and audit_status are set to SUBMITTED so L2 can resume its review/approval workflow.
+        - review_stages.ch.status is reset to 'Pending'.
+        - COPS and BL progression are reset to 'Pending'.
+    - For both destinations:
+        - Prevents progression to L3 until L2 has reviewed and recommended the candidate again.
+        - Records reason, reviewer, timestamp, destination, and revision history.
+        - Preserves all existing candidate data, statement details, and uploaded documents.
+    """
+    cand = _check_candidate_centre(user, candidate_id)
+
+    dest = (payload.destination or "").strip().upper()
+    if dest not in ("L1", "L2"):
+        raise HTTPException(status_code=422, detail="Destination must be either 'L1' or 'L2'.")
+
+    reason_clean = (payload.return_reason or "").strip()
+    if not reason_clean:
+        raise HTTPException(status_code=422, detail="Return reason cannot be empty.")
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    # Cannot return if already given final approval
+    if audit.get("cpass_status") == "APPROVED":
+        raise HTTPException(400, "Cannot return: Candidate has already received final approval.")
+
+    current_stages = extract_review_stages(audit)
+
+    # Sequencing check: Candidate must be recommended by CH before COPS can review or return
+    if current_stages["ch_status"] != "Recommended":
+        raise HTTPException(400, "COPS return blocked: Candidate must first be recommended by L2 Center Head.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    previous_cpass = audit.get("cpass_status")
+    previous_audit = audit.get("audit_status")
+
+    signoff = dict(audit.get("signoff_details") or {})
+    review_stages = dict(signoff.get("review_stages") or current_stages.get("review_stages") or {})
+    doc_audit = dict(audit.get("document_audit") or {})
+
+    # Reset L2 approval flags so candidate cannot progress to L3 without fresh CH recommendation
+    if "l2_approval" in signoff:
+        signoff["l2_approval"]["approved"] = False
+    if "centre_head" in signoff:
+        signoff["centre_head"]["recommended"] = False
+    doc_audit["l2_review_completed"] = False
+
+    return_entry = {
+        "destination": dest,
+        "stage": "COPS",
+        "returned_by_stage": "L3",
+        "reason": reason_clean,
+        "return_reason": reason_clean,
+        "remarks": payload.remarks,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "returned_by_name": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    }
+
+    return_hist = list(signoff.get("return_history") or [])
+    return_hist.append(return_entry)
+    signoff["return_history"] = return_hist
+
+    history = list(signoff.get("revision_history") or [])
+    history.append({
+        "action": f"RETURNED_TO_{dest}",
+        "stage": "COPS",
+        "destination": dest,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": reason_clean,
+        "remarks": payload.remarks,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    })
+    signoff["revision_history"] = history
+
+    if dest == "L1":
+        review_stages["ch"] = {
+            "status": "Returned to L1",
+            "returned_at": now_iso,
+            "returned_by": user.full_name,
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["cops"] = {"status": "Pending"}
+        review_stages["bl"] = {"status": "Pending"}
+        if "ceo" in review_stages:
+            review_stages["ceo"] = {"status": "Pending"}
+        signoff["review_stages"] = review_stages
+        signoff["return_to_l1"] = return_entry
+        signoff["return_destination"] = "L1"
+
+        new_cpass_status = "RETURNED_TO_L1"
+        new_audit_status = "RETURNED_TO_L1"
+        success_message = "Placement audit successfully returned to L1 coordinator for corrections."
+    else:  # dest == "L2"
+        review_stages["ch"] = {
+            "status": "Pending",
+            "returned_from_l3_at": now_iso,
+            "returned_from_l3_by": user.full_name,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["cops"] = {"status": "Pending"}
+        review_stages["bl"] = {"status": "Pending"}
+        if "ceo" in review_stages:
+            review_stages["ceo"] = {"status": "Pending"}
+        signoff["review_stages"] = review_stages
+        signoff["return_to_l2"] = return_entry
+        signoff["return_destination"] = "L2"
+
+        new_cpass_status = "SUBMITTED"
+        new_audit_status = "SUBMITTED"
+        success_message = "Placement audit successfully returned to L2 Center Head for re-review."
+
+    update_payload = {
+        "cpass_status": new_cpass_status,
+        "audit_status": new_audit_status,
+        "signoff_details": signoff,
+        "document_audit": doc_audit,
+        "remarks": payload.remarks or audit.get("remarks") or reason_clean,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, f"COPS return to {dest}")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": success_message,
+        "destination": dest,
+        "cpass_status": new_cpass_status,
+        "audit_status": new_audit_status,
+        "audit": updated_record,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+    }
+
+
+@router.post("/l3-review/return-to-l1", include_in_schema=False)
+def return_l3_cops_audit_to_l1_legacy(
+    candidate_id: int,
+    payload: StageReturnRequest,
+    user: CurrentUser = Depends(require_roles("L3_COPS", "L3_LEADER", "ADMIN")),
+):
+    """Legacy alias: Return candidate placement audit from L3 COPS to L1 Coordinator."""
+    l3_payload = L3ReturnRequest(destination="L1", return_reason=payload.return_reason, remarks=payload.remarks)
+    return return_l3_cops_audit(candidate_id, l3_payload, user)
+
+
 @router.post("/sync-documents")
 def sync_candidate_audit_documents(
     candidate_id: int,
@@ -2422,6 +2672,667 @@ def reject_l4_bl_audit(
     }
 
 
+@router.post("/l4-review/return")
+def return_l4_bl_audit(
+    candidate_id: int,
+    payload: L4ReturnRequest,
+    user: CurrentUser = Depends(require_roles("L4_LEADER", "ADMIN")),
+):
+    """Return candidate placement audit from L4 Business Leader to L1, L2, or L3.
+
+    - Destination must be 'L1', 'L2', or 'L3'. L4 self-return or any other destination is rejected with HTTP 422.
+    - If destination is L1:
+        - cpass_status and audit_status are set to RETURNED_TO_L1.
+        - review_stages.ch.status is set to 'Returned to L1'.
+        - Downstream review stages reset to 'Pending'.
+    - If destination is L2:
+        - cpass_status and audit_status are set to SUBMITTED so L2 can resume review.
+        - review_stages.ch.status is reset to 'Pending'.
+        - Downstream review stages reset to 'Pending'.
+    - If destination is L3:
+        - cpass_status remains L2_APPROVED so L3 COPS can re-verify.
+        - review_stages.ch.status remains 'Recommended'.
+        - review_stages.cops.status is reset to 'Pending'.
+        - review_stages.bl.status is reset to 'Pending'.
+    - For all destinations:
+        - Prevents progression to L4 until earlier stages are completed.
+        - Records reason, reviewer, timestamp, destination, and revision history.
+        - Preserves all existing candidate data, statement details, and uploaded documents.
+    """
+    cand = _check_candidate_centre(user, candidate_id)
+
+    dest = (payload.destination or "").strip().upper()
+    if dest not in ("L1", "L2", "L3"):
+        raise HTTPException(status_code=422, detail="Destination must be 'L1', 'L2', or 'L3'. L4 cannot return to itself.")
+
+    reason_clean = (payload.return_reason or "").strip()
+    if not reason_clean:
+        raise HTTPException(status_code=422, detail="Return reason cannot be empty.")
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    current_stages = extract_review_stages(audit)
+
+    # Cannot return if already given final approval by CEO
+    if audit.get("cpass_status") == "APPROVED" and audit.get("audit_status") == "APPROVED" and current_stages.get("ceo_status") == "Approved":
+        raise HTTPException(400, "Cannot return: Candidate has already received final approval.")
+
+    # Sequencing check: Candidate must first be verified by COPS (L3) before BL can review or return
+    if current_stages["cops_status"] != "Verified":
+        raise HTTPException(400, "BL return blocked: Candidate must first be verified by L3 COPS.")
+
+    # Cannot return if already rejected at BL stage
+    if current_stages["bl_status"] == "Rejected" or audit.get("cpass_status") == "L4_REJECTED":
+        raise HTTPException(400, "BL return blocked: Candidate has already been rejected at L4 BL stage.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    previous_cpass = audit.get("cpass_status")
+    previous_audit = audit.get("audit_status")
+
+    signoff = dict(audit.get("signoff_details") or {})
+    review_stages = dict(signoff.get("review_stages") or current_stages.get("review_stages") or {})
+    doc_audit = dict(audit.get("document_audit") or {})
+
+    # Reset BL confirmation
+    if "business_leader" in signoff:
+        signoff["business_leader"]["confirmed"] = False
+
+    return_entry = {
+        "destination": dest,
+        "stage": "BL",
+        "returned_by_stage": "L4",
+        "reason": reason_clean,
+        "return_reason": reason_clean,
+        "remarks": payload.remarks,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "returned_by_name": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    }
+
+    return_hist = list(signoff.get("return_history") or [])
+    return_hist.append(return_entry)
+    signoff["return_history"] = return_hist
+
+    history = list(signoff.get("revision_history") or [])
+    history.append({
+        "action": f"RETURNED_TO_{dest}",
+        "stage": "BL",
+        "destination": dest,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": reason_clean,
+        "remarks": payload.remarks,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    })
+    signoff["revision_history"] = history
+    signoff["active_return"] = return_entry
+    signoff["return_destination"] = dest
+
+    if dest == "L1":
+        # Reset L2 and L3 approvals
+        if "l2_approval" in signoff:
+            signoff["l2_approval"]["approved"] = False
+        if "centre_head" in signoff:
+            signoff["centre_head"]["recommended"] = False
+        doc_audit["l2_review_completed"] = False
+        if "cops_team" in signoff:
+            signoff["cops_team"]["confirmed"] = False
+
+        review_stages["ch"] = {
+            "status": "Returned to L1",
+            "returned_at": now_iso,
+            "returned_by": user.full_name,
+            "returned_by_stage": "L4",
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["cops"] = {"status": "Pending"}
+        review_stages["bl"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l1"] = return_entry
+
+        new_cpass_status = "RETURNED_TO_L1"
+        new_audit_status = "RETURNED_TO_L1"
+        success_message = "Placement audit successfully returned to L1 Coordinator for corrections."
+
+    elif dest == "L2":
+        # Reset L2 and L3 approvals
+        if "l2_approval" in signoff:
+            signoff["l2_approval"]["approved"] = False
+        if "centre_head" in signoff:
+            signoff["centre_head"]["recommended"] = False
+        doc_audit["l2_review_completed"] = False
+        if "cops_team" in signoff:
+            signoff["cops_team"]["confirmed"] = False
+
+        review_stages["ch"] = {
+            "status": "Pending",
+            "returned_from_l4_at": now_iso,
+            "returned_from_l4_by": user.full_name,
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["cops"] = {"status": "Pending"}
+        review_stages["bl"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l2"] = return_entry
+
+        new_cpass_status = "SUBMITTED"
+        new_audit_status = "SUBMITTED"
+        success_message = "Placement audit successfully returned to L2 Center Head for re-review."
+
+    else:  # dest == "L3"
+        # CH recommendation remains valid; reset COPS verification
+        review_stages["ch"] = current_stages["ch"]
+        if "cops_team" in signoff:
+            signoff["cops_team"]["confirmed"] = False
+
+        review_stages["cops"] = {
+            "status": "Pending",
+            "returned_from_l4_at": now_iso,
+            "returned_from_l4_by": user.full_name,
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["bl"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l3"] = return_entry
+
+        new_cpass_status = "L2_APPROVED"
+        new_audit_status = "SUBMITTED"
+        success_message = "Placement audit successfully returned to L3 COPS team for re-verification."
+
+    signoff["review_stages"] = review_stages
+    update_payload = {
+        "cpass_status": new_cpass_status,
+        "audit_status": new_audit_status,
+        "signoff_details": signoff,
+        "document_audit": doc_audit,
+        "remarks": payload.remarks or audit.get("remarks") or reason_clean,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, f"BL return to {dest}")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": success_message,
+        "destination": dest,
+        "cpass_status": new_cpass_status,
+        "audit_status": new_audit_status,
+        "audit": updated_record,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+    }
+
+
+@router.post("/l5-review/return")
+def return_l5_ceo_audit(
+    candidate_id: int,
+    payload: L5ReturnRequest,
+    user: CurrentUser = Depends(require_roles("L5_CEO", "L4_CEO", "ADMIN")),
+):
+    """Return candidate placement audit from L5 CEO to L1, L2, L3, or L4.
+
+    - Destination must be 'L1', 'L2', 'L3', or 'L4'. L5 self-return or any other destination is rejected with HTTP 422.
+    - If destination is L1:
+        - cpass_status and audit_status are set to RETURNED_TO_L1.
+        - review_stages.ch.status is set to 'Returned to L1'.
+        - Downstream review stages reset to 'Pending'.
+    - If destination is L2:
+        - cpass_status and audit_status are set to SUBMITTED so L2 can resume review.
+        - review_stages.ch.status is reset to 'Pending'.
+        - Downstream review stages reset to 'Pending'.
+    - If destination is L3:
+        - cpass_status remains L2_APPROVED so L3 COPS can re-verify.
+        - review_stages.ch.status remains 'Recommended'.
+        - review_stages.cops.status is reset to 'Pending'.
+        - review_stages.bl and ceo reset to 'Pending'.
+    - If destination is L4:
+        - cpass_status is set to VERIFIED so L4 Business Leader can re-approve.
+        - review_stages.ch remains 'Recommended'.
+        - review_stages.cops remains 'Verified'.
+        - review_stages.bl.status is reset to 'Pending'.
+        - review_stages.ceo.status is reset to 'Pending'.
+    - For all destinations:
+        - Prevents progression to L5 until earlier stages are completed.
+        - Records reason, reviewer, timestamp, destination, and revision history.
+        - Preserves all existing candidate data, statement details, and uploaded documents.
+    """
+    cand = _check_candidate_centre(user, candidate_id)
+
+    dest = (payload.destination or "").strip().upper()
+    if dest not in ("L1", "L2", "L3", "L4"):
+        raise HTTPException(status_code=422, detail="Destination must be 'L1', 'L2', 'L3', or 'L4'. L5 cannot return to itself.")
+
+    reason_clean = (payload.return_reason or "").strip()
+    if not reason_clean:
+        raise HTTPException(status_code=422, detail="Return reason cannot be empty.")
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    current_stages = extract_review_stages(audit)
+
+    # Cannot return if already given final approval by CEO
+    if audit.get("cpass_status") == "APPROVED" and audit.get("audit_status") == "APPROVED" and current_stages.get("ceo_status") == "Approved":
+        raise HTTPException(400, "Cannot return: Candidate has already received final approval.")
+
+    # Sequencing check: Candidate must first be approved by L4 Business Leader
+    if current_stages["bl_status"] != "Approved":
+        raise HTTPException(400, "CEO return blocked: Candidate must first be approved by L4 Business Leader.")
+
+    # Cannot return if already rejected at CEO stage
+    if current_stages["ceo_status"] == "Rejected" or audit.get("cpass_status") == "L5_REJECTED":
+        raise HTTPException(400, "CEO return blocked: Candidate has already been rejected at L5 CEO stage.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    previous_cpass = audit.get("cpass_status")
+    previous_audit = audit.get("audit_status")
+
+    signoff = dict(audit.get("signoff_details") or {})
+    review_stages = dict(signoff.get("review_stages") or current_stages.get("review_stages") or {})
+    doc_audit = dict(audit.get("document_audit") or {})
+
+    # Reset CEO sanction
+    if "ceo_sanction" in signoff:
+        signoff["ceo_sanction"]["confirmed"] = False
+
+    return_entry = {
+        "destination": dest,
+        "stage": "CEO",
+        "returned_by_stage": "L5",
+        "reason": reason_clean,
+        "return_reason": reason_clean,
+        "remarks": payload.remarks,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "returned_by_name": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    }
+
+    return_hist = list(signoff.get("return_history") or [])
+    return_hist.append(return_entry)
+    signoff["return_history"] = return_hist
+
+    history = list(signoff.get("revision_history") or [])
+    history.append({
+        "action": f"RETURNED_TO_{dest}",
+        "stage": "CEO",
+        "destination": dest,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": reason_clean,
+        "remarks": payload.remarks,
+        "previous_cpass_status": previous_cpass,
+        "previous_audit_status": previous_audit,
+    })
+    signoff["revision_history"] = history
+    signoff["active_return"] = return_entry
+    signoff["return_destination"] = dest
+
+    if dest == "L1":
+        # Reset L2, L3, and L4 approvals
+        if "l2_approval" in signoff:
+            signoff["l2_approval"]["approved"] = False
+        if "centre_head" in signoff:
+            signoff["centre_head"]["recommended"] = False
+        doc_audit["l2_review_completed"] = False
+        if "cops_team" in signoff:
+            signoff["cops_team"]["confirmed"] = False
+        if "business_leader" in signoff:
+            signoff["business_leader"]["confirmed"] = False
+
+        review_stages["ch"] = {
+            "status": "Returned to L1",
+            "returned_at": now_iso,
+            "returned_by": user.full_name,
+            "returned_by_stage": "L5",
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["cops"] = {"status": "Pending"}
+        review_stages["bl"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l1"] = return_entry
+
+        new_cpass_status = "RETURNED_TO_L1"
+        new_audit_status = "RETURNED_TO_L1"
+        success_message = "Placement audit successfully returned to L1 Coordinator for corrections."
+
+    elif dest == "L2":
+        # Reset L2, L3, and L4 approvals
+        if "l2_approval" in signoff:
+            signoff["l2_approval"]["approved"] = False
+        if "centre_head" in signoff:
+            signoff["centre_head"]["recommended"] = False
+        doc_audit["l2_review_completed"] = False
+        if "cops_team" in signoff:
+            signoff["cops_team"]["confirmed"] = False
+        if "business_leader" in signoff:
+            signoff["business_leader"]["confirmed"] = False
+
+        review_stages["ch"] = {
+            "status": "Pending",
+            "returned_from_l5_at": now_iso,
+            "returned_from_l5_by": user.full_name,
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["cops"] = {"status": "Pending"}
+        review_stages["bl"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l2"] = return_entry
+
+        new_cpass_status = "SUBMITTED"
+        new_audit_status = "SUBMITTED"
+        success_message = "Placement audit successfully returned to L2 Center Head for re-review."
+
+    elif dest == "L3":
+        # CH recommendation remains valid; reset L3 and L4 approvals
+        review_stages["ch"] = current_stages["ch"]
+        if "cops_team" in signoff:
+            signoff["cops_team"]["confirmed"] = False
+        if "business_leader" in signoff:
+            signoff["business_leader"]["confirmed"] = False
+
+        review_stages["cops"] = {
+            "status": "Pending",
+            "returned_from_l5_at": now_iso,
+            "returned_from_l5_by": user.full_name,
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["bl"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l3"] = return_entry
+
+        new_cpass_status = "L2_APPROVED"
+        new_audit_status = "SUBMITTED"
+        success_message = "Placement audit successfully returned to L3 COPS team for re-verification."
+
+    else:  # dest == "L4"
+        # CH recommendation and COPS verification remain valid; reset BL approval
+        review_stages["ch"] = current_stages["ch"]
+        review_stages["cops"] = current_stages["cops"]
+        if "business_leader" in signoff:
+            signoff["business_leader"]["confirmed"] = False
+
+        review_stages["bl"] = {
+            "status": "Pending",
+            "returned_from_l5_at": now_iso,
+            "returned_from_l5_by": user.full_name,
+            "user_id": user.id,
+            "reason": reason_clean,
+            "return_reason": reason_clean,
+            "remarks": payload.remarks,
+        }
+        review_stages["ceo"] = {"status": "Pending"}
+        signoff["return_to_l4"] = return_entry
+
+        new_cpass_status = "VERIFIED"
+        new_audit_status = "SUBMITTED"
+        success_message = "Placement audit successfully returned to L4 Business Leader for re-review."
+
+    signoff["review_stages"] = review_stages
+    update_payload = {
+        "cpass_status": new_cpass_status,
+        "audit_status": new_audit_status,
+        "signoff_details": signoff,
+        "document_audit": doc_audit,
+        "remarks": payload.remarks or audit.get("remarks") or reason_clean,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, f"CEO return to {dest}")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": success_message,
+        "destination": dest,
+        "cpass_status": new_cpass_status,
+        "audit_status": new_audit_status,
+        "audit": updated_record,
+        "returned_at": now_iso,
+        "returned_by": user.full_name,
+    }
+
+
+@router.post("/l5-review/approve")
+def approve_l5_ceo_audit(
+    candidate_id: int,
+    payload: StageApproveRequest,
+    user: CurrentUser = Depends(require_roles("L5_CEO", "L4_CEO", "ADMIN")),
+):
+    """Validate L4 BL approval and record L5 CEO final sanction and approval."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    current_stages = extract_review_stages(audit)
+
+    # Blocked if candidate has been returned for corrections
+    if (
+        audit.get("cpass_status") == "RETURNED_TO_L1"
+        or audit.get("audit_status") == "RETURNED_TO_L1"
+        or current_stages["ch_status"] == "Returned to L1"
+    ):
+        raise HTTPException(400, "CEO review blocked: Candidate has been returned for corrections.")
+
+    # Blocked if rejected at any stage
+    if (
+        audit.get("cpass_status") in ("REJECTED", "L2_REJECTED", "CPASS_REJECTED", "L3_REJECTED", "L4_REJECTED", "L5_REJECTED")
+        or audit.get("audit_status") == "REJECTED"
+        or current_stages["ch_status"] == "Rejected"
+        or current_stages["cops_status"] == "Rejected"
+        or current_stages["bl_status"] == "Rejected"
+        or current_stages["ceo_status"] == "Rejected"
+    ):
+        raise HTTPException(400, "Review blocked: Candidate has already been rejected and cannot progress.")
+
+    # Sequencing check: Candidate must first be approved by L4 Business Leader
+    if current_stages["bl_status"] != "Approved":
+        raise HTTPException(400, "CEO review blocked: Candidate must first be approved by L4 Business Leader.")
+
+    # Idempotency check: Already approved by CEO
+    if current_stages["ceo_status"] == "Approved":
+        return {
+            "status": "already_approved",
+            "message": "Placement audit has already received executive sanction by CEO.",
+            "cpass_status": "APPROVED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = current_stages["ch"]
+    review_stages["cops"] = current_stages["cops"]
+    review_stages["bl"] = current_stages["bl"]
+    review_stages["ceo"] = {
+        "status": "Approved",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "remarks": payload.remarks,
+    }
+
+    signoff["review_stages"] = review_stages
+    signoff["ceo_sanction"] = {
+        "name": user.full_name,
+        "designation": "Chief Executive Officer",
+        "date": today_str,
+        "remarks": payload.remarks or "Executive sanction and final approval granted by CEO.",
+        "confirmed": True,
+        "approved_by_id": user.id,
+    }
+
+    update_payload = {
+        "cpass_status": "APPROVED",
+        "audit_status": "APPROVED",
+        "signoff_details": signoff,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "CEO approval")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement sanctioned and approved by Chief Executive Officer.",
+        "cpass_status": "APPROVED",
+        "audit": updated_record,
+        "approved_at": now_iso,
+        "approved_by": user.full_name,
+    }
+
+
+@router.post("/l5-review/reject")
+def reject_l5_ceo_audit(
+    candidate_id: int,
+    payload: StageRejectRequest,
+    user: CurrentUser = Depends(require_roles("L5_CEO", "L4_CEO", "ADMIN")),
+):
+    """Record L5 CEO rejection and stop review progression."""
+    cand = _check_candidate_centre(user, candidate_id)
+
+    res = (
+        supabase.table("placement_audits")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(404, f"Placement audit not found for candidate {candidate_id}.")
+    audit = res.data[0]
+
+    current_stages = extract_review_stages(audit)
+
+    # Sequencing check: Must be approved by BL before CEO can review
+    if current_stages["bl_status"] != "Approved":
+        raise HTTPException(400, "CEO review blocked: Candidate must first be approved by L4 Business Leader.")
+
+    # Idempotent check
+    if current_stages["ceo_status"] == "Rejected":
+        return {
+            "status": "already_rejected",
+            "message": "Placement audit has already been rejected at L5 CEO stage.",
+            "cpass_status": "REJECTED",
+            "audit": audit,
+        }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    signoff = audit.get("signoff_details") or {}
+    review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
+    review_stages["ch"] = current_stages["ch"]
+    review_stages["cops"] = current_stages["cops"]
+    review_stages["bl"] = current_stages["bl"]
+    review_stages["ceo"] = {
+        "status": "Rejected",
+        "reviewed_at": now_iso,
+        "reviewed_by": user.full_name,
+        "user_id": user.id,
+        "rejection_reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    }
+
+    signoff["review_stages"] = review_stages
+    signoff["rejected_stage"] = "ceo"
+    signoff["rejection_reason"] = payload.rejection_reason
+
+    history = signoff.get("revision_history") or []
+    history.append({
+        "action": "REJECTED_L5",
+        "stage": "CEO",
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+        "user_id": user.id,
+        "role": user.role,
+        "reason": payload.rejection_reason,
+        "remarks": payload.remarks,
+    })
+    signoff["revision_history"] = history
+
+    update_payload = {
+        "cpass_status": "REJECTED",
+        "audit_status": "REJECTED",
+        "signoff_details": signoff,
+        "remarks": payload.remarks or audit.get("remarks") or payload.rejection_reason,
+        "updated_at": now_iso,
+    }
+
+    up_q = supabase.table("placement_audits").update(update_payload).eq("id", audit["id"])
+    up_res = _execute_audit_update(up_q, candidate_id, "CEO rejection")
+    updated_record = up_res.data[0] if up_res.data else {**audit, **update_payload}
+
+    return {
+        "status": "success",
+        "message": "Placement Audit Statement rejected by Chief Executive Officer.",
+        "cpass_status": "REJECTED",
+        "audit": updated_record,
+        "rejected_at": now_iso,
+        "rejected_by": user.full_name,
+    }
+
+
 @router.post("/sync-documents")
 def sync_candidate_audit_documents(
     candidate_id: int,
@@ -2430,25 +3341,3 @@ def sync_candidate_audit_documents(
     """Synchronize uploaded candidate documents into placement audit evidence."""
     from .documents import sync_documents_to_placement_audit
     return sync_documents_to_placement_audit(candidate_id, user)
-
-
-
-@router.post("/sync-documents")
-def sync_candidate_audit_documents(
-    candidate_id: int,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
-):
-    """Synchronize uploaded candidate documents into placement audit evidence."""
-    from .documents import sync_documents_to_placement_audit
-    return sync_documents_to_placement_audit(candidate_id, user)
-
-@router.post("/sync-documents")
-def sync_candidate_audit_documents(
-    candidate_id: int,
-    user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "ADMIN")),
-):
-    """Synchronize uploaded candidate documents into placement audit evidence."""
-    from .documents import sync_documents_to_placement_audit
-    return sync_documents_to_placement_audit(candidate_id, user)
-
-

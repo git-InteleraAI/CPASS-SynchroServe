@@ -39,6 +39,7 @@ CANDIDATE_DATA = {
     "candidate_id": 99901,
     "candidate_first_name": "Ramesh",
     "candidate_last_name": "Kumar",
+    "state_name": "Odisha",
     "tc_state_name": "Odisha",
     "tc_name": "Bhubaneswar Skill Centre",
     "batch_code": "BATCH-OD-2023-01",

@@ -23,7 +23,7 @@ L1_USER = CurrentUser(
     email="ananya.sharma@synchroserve.com",
     full_name="Ananya Sharma",
     role="L1_COORDINATOR",
-    assigned_state="TELANGANA",
+    assigned_state="MIZORAM",
 )
 
 L2_USER = CurrentUser(
@@ -31,6 +31,14 @@ L2_USER = CurrentUser(
     email="ramesh.manager@synchroserve.com",
     full_name="Ramesh Patel",
     role="L2_MANAGER",
+    assigned_state="MIZORAM",
+)
+
+L1_TELANGANA_USER = CurrentUser(
+    id="l1-tg-user-uuid",
+    email="telangana.coordinator@synchroserve.com",
+    full_name="Telangana Coordinator",
+    role="L1_COORDINATOR",
     assigned_state="TELANGANA",
 )
 
@@ -118,39 +126,44 @@ def test_states_lookup_includes_mizoram():
         app.dependency_overrides.clear()
 
 
-def test_centres_lookup_strictly_uses_tc_state_name(auth_l1):
-    """Centres lookup strictly queries by tc_state_name and does not fall back to candidate state_name."""
+def test_centres_lookup_uses_beneficiary_state_name(auth_l1):
+    """Centres lookup queries by beneficiary state_name and retains real tc_state_name."""
     with patch("app.routers.lookups.supabase") as mock_sb:
         mock_tbl = MagicMock()
         mock_tbl.select.return_value.eq.return_value.execute.return_value = MagicMock(
-            data=[{"tc_id": 1005985, "tc_name": "SYNCHROSERVE - HYDERABAD"}]
+            data=[{"tc_id": 1005985, "tc_name": "SYNCHROSERVE - HYDERABAD", "tc_state_name": "TELANGANA"}]
         )
         mock_sb.table.return_value = mock_tbl
 
-        res = client.get("/lookups/centres?state=TELANGANA")
+        res = client.get("/lookups/centres?state=MIZORAM")
         assert res.status_code == 200
         centres = res.json()
         assert len(centres) == 1
         assert centres[0]["tc_id"] == 1005985
         assert centres[0]["name"] == "SYNCHROSERVE - HYDERABAD"
+        assert centres[0]["tc_state_name"] == "TELANGANA"
 
 
-def test_cross_state_candidate_blocked_for_home_state_coordinator():
-    """L1 coordinator whose assigned state matches candidate home state (MIZORAM) but NOT tc_state_name (TELANGANA) is rejected with 403."""
-    app.dependency_overrides[get_current_user] = lambda: L1_MIZORAM_USER
-    try:
-        with patch("app.routers.lookups.supabase") as mock_sb:
-            mock_tbl = MagicMock()
-            mock_tbl.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
-                data=[SAMPLE_CANDIDATE]
-            )
-            mock_sb.table.return_value = mock_tbl
+def test_cross_state_candidate_allowed_for_beneficiary_state_and_blocked_for_tc_state():
+    """Beneficiary state (MIZORAM) coordinator is granted access; Training Centre state (TELANGANA) coordinator is rejected with 403."""
+    with patch("app.routers.lookups.supabase") as mock_sb:
+        mock_tbl = MagicMock()
+        mock_tbl.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+            data=[SAMPLE_CANDIDATE]
+        )
+        mock_sb.table.return_value = mock_tbl
 
-            res = client.get("/lookups/candidates/1076617")
-            assert res.status_code == 403
-            assert "access" in res.json()["detail"].lower() or "forbidden" in res.json()["detail"].lower()
-    finally:
-        app.dependency_overrides.clear()
+        # Mizoram coordinator access granted
+        app.dependency_overrides[get_current_user] = lambda: L1_MIZORAM_USER
+        res_mz = client.get("/lookups/candidates/1076617")
+        assert res_mz.status_code == 200
+
+        # Telangana coordinator access rejected with 403
+        app.dependency_overrides[get_current_user] = lambda: L1_TELANGANA_USER
+        res_tg = client.get("/lookups/candidates/1076617")
+        assert res_tg.status_code == 403
+        assert "access" in res_tg.json()["detail"].lower() or "forbidden" in res_tg.json()["detail"].lower()
+    app.dependency_overrides.clear()
 
 
 def test_candidate_detail_returns_extended_fields_and_masks_bank(auth_l1):

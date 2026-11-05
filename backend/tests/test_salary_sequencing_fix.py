@@ -37,6 +37,7 @@ CANDIDATE_DATA = {
     "candidate_last_name": "Sharma",
     "tc_id": 101,
     "tc_name": "Bhubaneswar Skill Centre",
+    "state_name": "Odisha",
     "tc_state_name": "Odisha",
     "appointed": True,
     "employer_name": "Employer A",

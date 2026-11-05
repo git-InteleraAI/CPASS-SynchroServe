@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles
+from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles, resolve_state
 from ..db import supabase
 from ..services.google_drive import (
     ALLOWED_MIME_TYPES,
@@ -75,10 +75,13 @@ def _get_candidate_context(candidate_id: int, user: CurrentUser | None = None) -
     c = res.data[0]
     if user is not None:
         check_candidate_access(user, c)
+    beneficiary_state = c.get("state_name") if (c.get("state_name") and resolve_state(c.get("state_name"))) else "Not Available"
     return {
         "candidate_id": c["candidate_id"],
         "candidate_name": f"{c.get('candidate_first_name') or ''} {c.get('candidate_last_name') or ''}".strip() or f"Candidate {candidate_id}",
-        "state": c.get("tc_state_name") or c.get("state_name") or "State",
+        "state": beneficiary_state,
+        "state_name": beneficiary_state,
+        "tc_state_name": c.get("tc_state_name"),
         "tc_name": c.get("tc_name") or "Centre",
         "batch_code": c.get("batch_code") or "Batch",
         "tc_id": c.get("tc_id"),
@@ -665,7 +668,9 @@ def sync_documents_to_placement_audit(
             "gender": "Not Available",
             "mobile": "Not Available",
             "contact_number": "Not Available",
-            "state": cand_ctx.get("state") or cand_ctx.get("tc_state_name") or cand_ctx.get("state_name"),
+            "state": cand_ctx.get("state_name") or cand_ctx.get("state") or "Not Available",
+            "state_name": cand_ctx.get("state_name") or cand_ctx.get("state") or "Not Available",
+            "tc_state_name": cand_ctx.get("tc_state_name") or "Not Available",
             "tc_name": cand_ctx.get("tc_name"),
             "training_centre": cand_ctx.get("tc_name"),
             "batch_code": cand_ctx.get("batch_code") or "Not Available",

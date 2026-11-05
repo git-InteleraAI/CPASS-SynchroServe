@@ -172,8 +172,8 @@ const LEVEL_CONFIGS = {
     approveModalTitle: 'Verify & Endorse Dossier',
     approveModalRoleName: 'COPS Audit Reviewer',
     approveEndpoint: (cid) => `/candidates/${cid}/audit/l3-review/approve`,
-    returnType: 'simple_l1',
-    returnEndpoint: (cid) => `/candidates/${cid}/audit/l3-review/return-to-l1`,
+    returnType: 'flexible',
+    returnEndpoint: (cid) => `/candidates/${cid}/audit/l3-review/return`,
     hasReject: true,
     rejectEndpoint: (cid) => `/candidates/${cid}/audit/l3-review/reject`,
   },
@@ -1110,7 +1110,15 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
         body: JSON.stringify(bodyPayload),
       })
 
-      showToast(res?.message || `Candidate dossier rejected and sent back to Level ${destination || 'L1'} for corrections.`, 'warning')
+      const targetDest = res?.destination || destination || 'L1'
+      const destLabels = {
+        L1: 'L1 (Placement Coordinator)',
+        L2: 'L2 (Center Head)',
+        L3: 'L3 (COPS)',
+        L4: 'L4 (Business Leader)',
+      }
+      const destLabel = destLabels[targetDest] || targetDest
+      showToast(res?.message || `Candidate dossier returned to ${destLabel} for corrections.`, 'warning')
 
       setDecisionModalOpen(false)
       setHasUnsavedChanges(false)
@@ -1118,6 +1126,9 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
 
       await loadCandidateData(sel.cand)
       fetchDashboardSummary(sel.state)
+      if (activeCardFilter) {
+        fetchCardCandidates(activeCardFilter, cardCandPage, cardCandSearch, sel.state)
+      }
     } catch (err) {
       showToast(err.message || 'Action failed. Please retry.', 'error')
       throw err
@@ -2467,7 +2478,7 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
           onSubmit={handleDecisionSubmit}
           level={level}
           currentRole={level === 'L5' ? 'L5_CEO' : level === 'L4' ? 'L4_LEADER' : level === 'L3' ? 'L3_COPS' : 'L2_MANAGER'}
-          candidateName={candDetail ? `${candDetail.first_name || ''} ${candDetail.last_name || ''}`.trim() : ''}
+          candidateName={candDetail ? `${candDetail.first_name || ''} ${candDetail.last_name || ''}`.trim() : (statementData?.candidate_name || '')}
           candidateId={sel.cand}
         />
 
@@ -2479,7 +2490,7 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
           isOpen={uploadModalOpen}
           onClose={() => setUploadModalOpen(false)}
           candidateId={sel.cand}
-          candidateName={candDetail ? `${candDetail.first_name || ''} ${candDetail.last_name || ''}`.trim() : ''}
+          candidateName={candDetail ? `${candDetail.first_name || ''} ${candDetail.last_name || ''}`.trim() : (statementData?.candidate_name || '')}
           defaultDocType={uploadModalDocType}
           replaceDoc={uploadModalReplaceDoc}
           employersList={employersList}

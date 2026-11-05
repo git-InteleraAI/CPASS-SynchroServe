@@ -231,12 +231,12 @@ def get_dashboard_summary(
             "ceo_pending": 0,
         }
 
-    # 1. Total Candidates in state or national aggregate (Authoritative source of truth: tc_state_name)
+    # 1. Total Candidates in state or national aggregate (Authoritative source of truth: state_name)
     if target_state:
         total_res = retry_read_query(
             lambda: supabase.table("ddugky_candidates")
             .select("candidate_id", count="exact")
-            .eq("tc_state_name", target_state)
+            .eq("state_name", target_state)
             .limit(1)
             .execute()
         )
@@ -244,7 +244,7 @@ def get_dashboard_summary(
         total_res = retry_read_query(
             lambda: supabase.table("ddugky_candidates")
             .select("candidate_id", count="exact")
-            .in_("tc_state_name", permitted_st)
+            .in_("state_name", permitted_st)
             .limit(1)
             .execute()
         )
@@ -282,7 +282,7 @@ def get_dashboard_summary(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
                 .in_("candidate_id", list(all_uploaded_cids))
-                .eq("tc_state_name", target_state)
+                .eq("state_name", target_state)
                 .execute()
             )
         elif permitted_st is not None:
@@ -290,7 +290,7 @@ def get_dashboard_summary(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
                 .in_("candidate_id", list(all_uploaded_cids))
-                .in_("tc_state_name", permitted_st)
+                .in_("state_name", permitted_st)
                 .execute()
             )
         else:
@@ -371,6 +371,7 @@ def get_dashboard_summary(
         audit_st = (audit.get("audit_status") or "").upper()
         signoff = audit.get("signoff_details") or {}
         ret_to_l1 = signoff.get("return_to_l1") or {}
+        ret_to_l2 = signoff.get("return_to_l2") or {}
 
         is_received_by_cops = (
             ch_st == "Recommended"
@@ -378,6 +379,7 @@ def get_dashboard_summary(
             or cpass_st in ("VERIFIED", "APPROVED", "L3_REJECTED", "L4_REJECTED")
             or signoff.get("rejected_stage") in ("cops", "bl")
             or (ret_to_l1.get("stage") == "COPS" and audit_st == "RETURNED_TO_L1")
+            or (ret_to_l2.get("stage") == "COPS" and ch_st == "Pending" and audit_st == "SUBMITTED")
         )
 
         if is_received_by_cops:
@@ -389,7 +391,11 @@ def get_dashboard_summary(
                     l3_rejected_cids.add(cid)
             elif cops_st == "Rejected" or signoff.get("rejected_stage") == "cops" or cpass_st == "L3_REJECTED":
                 l3_rejected_cids.add(cid)
-            elif cops_st in ("Returned to L1", "Returned") or (ret_to_l1.get("stage") == "COPS" and (audit_st == "RETURNED_TO_L1" or cpass_st == "RETURNED_TO_L1")):
+            elif (
+                cops_st in ("Returned to L1", "Returned")
+                or (ret_to_l1.get("stage") == "COPS" and (audit_st == "RETURNED_TO_L1" or cpass_st == "RETURNED_TO_L1"))
+                or (ret_to_l2.get("stage") == "COPS" and ch_st == "Pending" and audit_st == "SUBMITTED")
+            ):
                 l3_returned_cids.add(cid)
             elif cops_st == "Pending" and ch_st == "Recommended" and not is_candidate_rejected(audit):
                 l3_pending_cids.add(cid)
@@ -647,7 +653,7 @@ def get_dashboard_candidates(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
                 .in_("candidate_id", list(all_uploaded_cids))
-                .eq("tc_state_name", target_state)
+                .eq("state_name", target_state)
                 .execute()
             )
         elif permitted_st is not None:
@@ -655,7 +661,7 @@ def get_dashboard_candidates(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
                 .in_("candidate_id", list(all_uploaded_cids))
-                .in_("tc_state_name", permitted_st)
+                .in_("state_name", permitted_st)
                 .execute()
             )
         else:
@@ -723,6 +729,7 @@ def get_dashboard_candidates(
         audit_st = (audit.get("audit_status") or "").upper()
         signoff = audit.get("signoff_details") or {}
         ret_to_l1 = signoff.get("return_to_l1") or {}
+        ret_to_l2 = signoff.get("return_to_l2") or {}
 
         is_received_by_cops = (
             ch_st == "Recommended"
@@ -730,6 +737,7 @@ def get_dashboard_candidates(
             or cpass_st in ("VERIFIED", "APPROVED", "L3_REJECTED", "L4_REJECTED")
             or signoff.get("rejected_stage") in ("cops", "bl")
             or (ret_to_l1.get("stage") == "COPS" and audit_st == "RETURNED_TO_L1")
+            or (ret_to_l2.get("stage") == "COPS" and ch_st == "Pending" and audit_st == "SUBMITTED")
         )
 
         if is_received_by_cops:
@@ -741,7 +749,11 @@ def get_dashboard_candidates(
                     l3_rejected_in_state.add(cid)
             elif cops_st == "Rejected" or signoff.get("rejected_stage") == "cops" or cpass_st == "L3_REJECTED":
                 l3_rejected_in_state.add(cid)
-            elif cops_st in ("Returned to L1", "Returned") or (ret_to_l1.get("stage") == "COPS" and (audit_st == "RETURNED_TO_L1" or cpass_st == "RETURNED_TO_L1")):
+            elif (
+                cops_st in ("Returned to L1", "Returned")
+                or (ret_to_l1.get("stage") == "COPS" and (audit_st == "RETURNED_TO_L1" or cpass_st == "RETURNED_TO_L1"))
+                or (ret_to_l2.get("stage") == "COPS" and ch_st == "Pending" and audit_st == "SUBMITTED")
+            ):
                 l3_returned_in_state.add(cid)
             elif cops_st == "Pending" and ch_st == "Recommended" and not is_candidate_rejected(audit):
                 l3_pending_in_state.add(cid)
@@ -1160,13 +1172,13 @@ def get_dashboard_candidates(
         q = (
             supabase.table("ddugky_candidates")
             .select(columns, count="exact")
-            .eq("tc_state_name", target_state)
+            .eq("state_name", target_state)
         )
     elif permitted_st is not None:
         q = (
             supabase.table("ddugky_candidates")
             .select(columns, count="exact")
-            .in_("tc_state_name", permitted_st)
+            .in_("state_name", permitted_st)
         )
     else:
         q = (
@@ -1296,7 +1308,8 @@ def get_dashboard_candidates(
             "tc_id": r.get("tc_id"),
             "tc_name": r.get("tc_name") or "—",
             "sanction_order_number": r.get("sanction_order_number") or "—",
-            "state_name": r.get("state_name") or r.get("tc_state_name") or target_state,
+            "state_name": resolve_state(r.get("state_name")) or r.get("state_name") or "—",
+            "tc_state_name": r.get("tc_state_name") or "—",
             "appointed": bool(r.get("appointed")),
             "employer_name": r.get("employer_name") or "—",
             "is_uploaded": is_uploaded,
