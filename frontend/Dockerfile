@@ -75,9 +75,6 @@ server {\n\
 \n\
     location ~* \\.mjs$ {\n\
         root /usr/share/nginx/html;\n\
-        types {\n\
-            application/javascript mjs;\n\
-        }\n\
         default_type application/javascript;\n\
         expires 1y;\n\
         add_header Cache-Control "public, immutable";\n\
@@ -86,9 +83,6 @@ server {\n\
 \n\
     location /assets/ {\n\
         root /usr/share/nginx/html;\n\
-        types {\n\
-            application/javascript mjs;\n\
-        }\n\
         expires 1y;\n\
         add_header Cache-Control "public, immutable";\n\
         access_log off;\n\
