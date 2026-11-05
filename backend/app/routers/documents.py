@@ -1535,9 +1535,9 @@ def download_document(
         file_bytes, file_name, mime_type = google_drive_service.download_file(drive_file_id)
     except GoogleDriveNotConfiguredError:
         raise HTTPException(503, "Google Drive integration is not configured.")
-    except Exception:
-        logger.exception("Failed to retrieve document from Google Drive for candidate %s", candidate_id)
-        raise HTTPException(502, "Document download failed. Please try again.")
+    except Exception as exc:
+        logger.exception("Failed to retrieve document from Google Drive for candidate %s: %s", candidate_id, exc)
+        raise HTTPException(502, f"Document download failed: {exc}")
 
     return StreamingResponse(
         io.BytesIO(file_bytes),

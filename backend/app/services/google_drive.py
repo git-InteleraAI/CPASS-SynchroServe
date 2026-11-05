@@ -134,20 +134,28 @@ class GoogleDriveService:
                 "GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN) in backend/.env."
             )
 
+        creds = None
         # Prefer OAuth2 so uploads use the authenticated personal Google account.
         if self.client_id and self.client_secret and self.refresh_token:
-            creds = Credentials(
-                None,
-                refresh_token=self.refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                scopes=SCOPES,
+            try:
+                oauth_creds = Credentials(
+                    None,
+                    refresh_token=self.refresh_token,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                    scopes=SCOPES,
                 )
-            creds.refresh(Request())
+                oauth_creds.refresh(Request())
+                creds = oauth_creds
+            except Exception as e:
+                logger.warning(
+                    "Google Drive OAuth2 token refresh failed (%s). Falling back to service account credentials.",
+                    e,
+                )
 
-        # Fall back to a service account only when OAuth2 is not configured.
-        else:
+        # Fall back to a service account when OAuth2 is not configured or refresh failed.
+        if creds is None:
             resolved_sa = _resolve_file_path(self.service_account_file)
 
             if resolved_sa and Path(resolved_sa).is_file():
@@ -162,7 +170,7 @@ class GoogleDriveService:
 
         if creds is None:
             raise GoogleDriveNotConfiguredError(
-                "Google Drive credentials are not configured."
+                "Google Drive credentials are not configured or could not be authenticated."
             )
 
         self._service = build(

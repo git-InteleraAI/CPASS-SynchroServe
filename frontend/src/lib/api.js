@@ -146,7 +146,10 @@ export async function downloadDocument(candidateId, documentId, fallbackFilename
   document.body.appendChild(a)
   a.click()
   a.remove()
-  window.URL.revokeObjectURL(url)
+  // Defer revocation so browsers have sufficient time to initiate the file save dialog
+  setTimeout(() => {
+    window.URL.revokeObjectURL(url)
+  }, 60000)
 }
 
 export async function fetchDocumentBlob(candidateId, documentId, _isRetry = false) {
