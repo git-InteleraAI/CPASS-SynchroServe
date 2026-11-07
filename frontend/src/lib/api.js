@@ -84,7 +84,8 @@ export async function api(path, params, options = {}, _isRetry = false) {
   const isAuthManagement =
     path === '/auth/login' ||
     path === '/auth/refresh' ||
-    path === '/auth/logout'
+    path === '/auth/logout' ||
+    path === '/auth/change-password'
 
   if (res.status === 401 && !isAuthManagement && !_isRetry) {
     try {

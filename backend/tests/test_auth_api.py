@@ -15,9 +15,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth import CurrentUser, clear_user_cache, get_current_user
 from app.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_client_state():
+    client.cookies.clear()
+    clear_user_cache()
+    yield
+    client.cookies.clear()
+    clear_user_cache()
 
 
 def mock_auth_user(uid="user-123", email="user@cpass.org"):
@@ -389,4 +399,295 @@ def test_role_boundary_l1_coordinator_protected_endpoint():
         )
         assert res.status_code == 403
         assert "Your role cannot do this." in res.json()["detail"]
+
+
+# =============================================================================
+# Change Password Tests (POST /auth/change-password)
+# =============================================================================
+
+@pytest.fixture
+def auth_user_override():
+    user = CurrentUser(
+        id="user-123",
+        email="coordinator@cpass.org",
+        full_name="Test Coordinator",
+        role="L1_COORDINATOR",
+        assigned_state="ODISHA",
+    )
+    app.dependency_overrides[get_current_user] = lambda: user
+    yield user
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_change_password_success(auth_user_override, mock_auth_client):
+    """Correct current password + valid new password updates password and sets rotated cookies."""
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user("user-123", "coordinator@cpass.org")
+    auth_resp.session = mock_auth_session("new-access-token", "new-refresh-token")
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+    mock_auth_client.auth.update_user.return_value = MagicMock()
+
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "NewValidPassword@2026",
+        },
+    )
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert "Password changed successfully" in data["message"]
+    mock_auth_client.auth.update_user.assert_called_once_with({"password": "NewValidPassword@2026"})
+    assert "cpass_access_token" in res.cookies
+    assert "cpass_refresh_token" in res.cookies
+
+
+def test_change_password_incorrect_current_password(auth_user_override, mock_auth_client):
+    """Incorrect current password returns 401."""
+    mock_auth_client.auth.sign_in_with_password.side_effect = Exception("Invalid login credentials")
+
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "WrongPassword123!",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "NewValidPassword@2026",
+        },
+    )
+
+    assert res.status_code == 401
+    assert "Current password is incorrect." in res.json()["detail"]
+
+
+def test_change_password_mismatch(auth_user_override):
+    """New password and confirmation mismatch returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "DifferentPassword@2026",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "do not match" in res.text
+
+
+def test_change_password_missing_current_password(auth_user_override):
+    """Missing current password returns 422 validation failure."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "NewValidPassword@2026",
+        },
+    )
+
+    assert res.status_code == 422
+
+
+def test_change_password_missing_new_password(auth_user_override):
+    """Missing new password returns 422 validation failure."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "",
+            "confirm_password": "",
+        },
+    )
+
+    assert res.status_code == 422
+
+
+def test_change_password_missing_confirmation(auth_user_override):
+    """Missing confirmation returns 422 validation failure."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "",
+        },
+    )
+
+    assert res.status_code == 422
+
+
+def test_change_password_shorter_than_8_chars(auth_user_override):
+    """Password shorter than 8 characters returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "Ab1!",
+            "confirm_password": "Ab1!",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "at least 8 characters" in res.text
+
+
+def test_change_password_missing_uppercase(auth_user_override):
+    """Password without uppercase letter returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "lowercase@1234",
+            "confirm_password": "lowercase@1234",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "uppercase letter" in res.text
+
+
+def test_change_password_missing_lowercase(auth_user_override):
+    """Password without lowercase letter returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "UPPERCASE@1234",
+            "confirm_password": "UPPERCASE@1234",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "lowercase letter" in res.text
+
+
+def test_change_password_missing_number(auth_user_override):
+    """Password without digit returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NoNumberHere@!",
+            "confirm_password": "NoNumberHere@!",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "numeric digit" in res.text
+
+
+def test_change_password_missing_special_character(auth_user_override):
+    """Password without special character returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NoSpecialChar1234",
+            "confirm_password": "NoSpecialChar1234",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "special character" in res.text
+
+
+def test_change_password_identical_to_current(auth_user_override):
+    """New password identical to current password returns 422."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "CurrentPassword123!",
+            "confirm_password": "CurrentPassword123!",
+        },
+    )
+
+    assert res.status_code == 422
+    assert "must be different from current password" in res.text
+
+
+def test_change_password_unauthenticated():
+    """Unauthenticated request returns 401."""
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "NewValidPassword@2026",
+        },
+    )
+
+    assert res.status_code == 401
+
+
+def test_change_password_user_id_mismatch(auth_user_override, mock_auth_client):
+    """If Supabase returns an ID different from the active session user, reject with 403."""
+    auth_resp = MagicMock()
+    # Different user ID returned
+    auth_resp.user = mock_auth_user("different-user-999", "coordinator@cpass.org")
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+
+    res = client.post(
+        "/auth/change-password",
+        json={
+            "current_password": "CurrentPassword123!",
+            "new_password": "NewValidPassword@2026",
+            "confirm_password": "NewValidPassword@2026",
+        },
+    )
+
+    assert res.status_code == 403
+    assert "does not match the session identity" in res.json()["detail"]
+
+
+def test_change_password_admin_fallback(auth_user_override, mock_auth_client, mock_supabase_db):
+    """If auth_client.auth.update_user encounters an issue, fallback to admin update succeeds."""
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user("user-123", "coordinator@cpass.org")
+    auth_resp.session = mock_auth_session()
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+    mock_auth_client.auth.update_user.side_effect = Exception("Client session update failed")
+
+    with patch("app.routers.auth.supabase") as mock_sb:
+        mock_sb.auth.admin.update_user_by_id.return_value = MagicMock()
+
+        res = client.post(
+            "/auth/change-password",
+            json={
+                "current_password": "CurrentPassword123!",
+                "new_password": "NewValidPassword@2026",
+                "confirm_password": "NewValidPassword@2026",
+            },
+        )
+
+        assert res.status_code == 200
+        assert res.json()["status"] == "success"
+        mock_sb.auth.admin.update_user_by_id.assert_called_once_with("user-123", {"password": "NewValidPassword@2026"})
+
+
+def test_change_password_supabase_update_failure(auth_user_override, mock_auth_client):
+    """If both auth.update_user and admin update fail, returns 500."""
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user("user-123", "coordinator@cpass.org")
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+    mock_auth_client.auth.update_user.side_effect = Exception("Update error")
+
+    with patch("app.routers.auth.supabase") as mock_sb:
+        mock_sb.auth.admin.update_user_by_id.side_effect = Exception("Admin update error")
+
+        res = client.post(
+            "/auth/change-password",
+            json={
+                "current_password": "CurrentPassword123!",
+                "new_password": "NewValidPassword@2026",
+                "confirm_password": "NewValidPassword@2026",
+            },
+        )
+
+        assert res.status_code == 500
+        assert "Failed to update password" in res.json()["detail"]
+
 

@@ -2,7 +2,13 @@ import React, { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 import './UserProfileModal.css'
 
-export default function UserProfileModal({ isOpen, onClose, profile, onProfileUpdated }) {
+export default function UserProfileModal({
+  isOpen,
+  onClose,
+  profile,
+  onProfileUpdated,
+  onOpenChangePassword,
+}) {
   const [fullName, setFullName] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
@@ -16,18 +22,30 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
     }
   }, [profile, isOpen])
 
-  if (!isOpen || !profile) return null
+  // Close on Escape key press
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && !saving) {
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, saving, onClose])
 
-  const roleDisplay = {
-    L1_COORDINATOR: 'Placement Executive (L1)',
-    L2_MANAGER: 'Centre Head (L2)',
-    L3_COPS: 'COPS Audit Team (L3)',
-    L4_LEADER: 'Business Leader (L4)',
-    L5_CEO: 'Chief Executive Officer (L5)',
-    ADMIN: 'System Administrator',
-  }[profile.role] || profile.role
+  const roleDisplay = profile
+    ? {
+        L1_COORDINATOR: 'Placement Executive (L1)',
+        L2_MANAGER: 'Centre Head (L2)',
+        L3_COPS: 'COPS Audit Team (L3)',
+        L4_LEADER: 'Business Leader (L4)',
+        L5_CEO: 'Chief Executive Officer (L5)',
+        ADMIN: 'System Administrator',
+      }[profile.role] || profile.role
+    : ''
 
-  const initials = profile.full_name
+  const initials = profile?.full_name
     ? profile.full_name
         .split(' ')
         .filter(Boolean)
@@ -36,8 +54,6 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
         .slice(0, 2)
         .toUpperCase()
     : 'CP'
-
-  const hasChanged = fullName.trim() !== (profile.full_name || '').trim()
 
   const handleSave = async (e) => {
     e.preventDefault()
@@ -78,19 +94,26 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
     }
   }
 
+  if (!isOpen || !profile) return null
+
   return (
-    <div className="cpass-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="cpass-profile-title">
+    <div
+      className="cpass-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cpass-profile-title"
+    >
       <div className="cpass-profile-card">
-        {/* Modal Header */}
+        {/* Header with Avatar, Title and Close Button */}
         <div className="cpass-profile-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="cpass-profile-header-user">
             <div className="cpass-profile-avatar-large">{initials}</div>
             <div>
-              <h3 id="cpass-profile-title" style={{ margin: 0, fontSize: '17px', color: '#0f172a', fontWeight: 600 }}>
+              <h3 id="cpass-profile-title" className="cpass-profile-title">
                 User Account Profile
               </h3>
-              <span style={{ fontSize: '12px', color: '#64748b' }}>
-                CPASS State Placement Audit System
+              <span className="cpass-profile-sub">
+                CPASS Placement Audit System
               </span>
             </div>
           </div>
@@ -104,7 +127,6 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
           </button>
         </div>
 
-        {/* Modal Body */}
         <form onSubmit={handleSave} className="cpass-profile-body">
           {error && (
             <div className="cpass-profile-alert error" role="alert">
@@ -121,7 +143,7 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
           {/* Display Name (Editable) */}
           <div className="cpass-profile-field">
             <label htmlFor="cpass-profile-fullname">
-              Display Name <span style={{ color: '#2563eb', fontSize: '11px', fontWeight: 500 }}>(Editable)</span>
+              Display Name <span className="cpass-profile-tag-edit">(Editable)</span>
             </label>
             <input
               id="cpass-profile-fullname"
@@ -136,7 +158,7 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
               className="cpass-profile-input editable"
             />
             <span className="cpass-profile-hint">
-              This name appears on placement audit review sign-offs and managerial verification records.
+              This name appears on placement audit reviews and verification sign-offs.
             </span>
           </div>
 
@@ -154,7 +176,7 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
             />
           </div>
 
-          {/* Row: Role & Assigned State (Read-only) */}
+          {/* Role & State Grid */}
           <div className="cpass-profile-grid">
             <div className="cpass-profile-field">
               <label>
@@ -176,22 +198,37 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
             </div>
           </div>
 
-          {/* Account Identity Notice */}
-          <div className="cpass-profile-notice">
-            <span style={{ fontSize: '14px' }}>🛡️</span>
-            <div>
-              <strong>Administrative Access Notice</strong>
-              <p>
-                Email, role classification, and state ownership boundaries are strictly governed by CPASS System Administration to maintain statutory compliance and data isolation.
-              </p>
+          {/* Prominent Account Security Banner (Opens Dedicated Change Password Modal) */}
+          <div className="cpass-profile-security-banner">
+            <div className="cpass-security-banner-info">
+              <div className="cpass-security-banner-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="11" width="16" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </div>
+              <div>
+                <strong className="cpass-security-banner-title">Account Password & Security</strong>
+                <p className="cpass-security-banner-desc">
+                  Update your credentials anytime for enhanced account security.
+                </p>
+              </div>
             </div>
+            <button
+              type="button"
+              className="cpass-btn-switch-password"
+              onClick={onOpenChangePassword}
+              title="Open Change Password dialog"
+            >
+              Change Password →
+            </button>
           </div>
 
-          {/* Modal Actions */}
+          {/* Actions */}
           <div className="cpass-profile-footer">
             <button
               type="button"
-              className="l1-btn-secondary"
+              className="cpass-profile-btn-cancel"
               onClick={onClose}
               disabled={saving}
             >
@@ -200,9 +237,9 @@ export default function UserProfileModal({ isOpen, onClose, profile, onProfileUp
             <button
               type="submit"
               className="cpass-profile-save-btn"
-              disabled={saving || !hasChanged}
+              disabled={saving || fullName.trim() === (profile.full_name || '').trim()}
             >
-              {saving ? 'Saving Changes…' : 'Save Display Name'}
+              {saving ? 'Saving…' : 'Save Display Name'}
             </button>
           </div>
         </form>

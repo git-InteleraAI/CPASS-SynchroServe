@@ -9,12 +9,14 @@ import L3Home from './pages/L3Home'
 import L4Home from './pages/L4Home'
 import L5Home from './pages/L5Home'
 import UserProfileModal from './components/UserProfileModal'
+import ChangePasswordModal from './components/ChangePasswordModal'
 
 import logoSrc from '../assets/SynchroServeLogoHD.png'
 
 function Shell() {
   const { profile, loading, logout, refreshProfile } = useAuth()
   const [isProfileOpen, setIsProfileOpen] = useState(false)
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false)
 
   if (loading) {
     return (
@@ -62,7 +64,7 @@ function Shell() {
             className="av"
             onClick={() => setIsProfileOpen(true)}
             style={{ cursor: 'pointer' }}
-            title="Click to view/edit user profile"
+            title="Click to view user profile"
           >
             {initials}
           </div>
@@ -70,7 +72,7 @@ function Shell() {
             className="user-info"
             onClick={() => setIsProfileOpen(true)}
             style={{ cursor: 'pointer' }}
-            title="Click to view/edit user profile"
+            title="Click to view user profile"
           >
             <b>{profile.full_name}</b>
             <small>{roleDisplay}</small>
@@ -79,10 +81,19 @@ function Shell() {
             type="button"
             className="link"
             onClick={() => setIsProfileOpen(true)}
-            title="Edit display name"
+            title="View user profile and edit display name"
             style={{ marginRight: '4px' }}
           >
             Profile
+          </button>
+          <button
+            type="button"
+            className="link cpass-topbar-pwd-btn"
+            onClick={() => setIsChangePasswordOpen(true)}
+            title="Change your account password"
+            style={{ marginRight: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+          >
+            <span>🔒</span> Password
           </button>
           <button type="button" className="link" onClick={logout} title="Sign out of CPASS">
             Sign out
@@ -96,6 +107,16 @@ function Shell() {
         onClose={() => setIsProfileOpen(false)}
         profile={profile}
         onProfileUpdated={refreshProfile}
+        onOpenChangePassword={() => {
+          setIsProfileOpen(false)
+          setIsChangePasswordOpen(true)
+        }}
+      />
+
+      {/* Standalone Change Password Modal (Exact Reference Match) */}
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
       />
       <main className="content-container">
         {isL1 ? (

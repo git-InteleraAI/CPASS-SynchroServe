@@ -8,7 +8,7 @@ Issues secure HttpOnly session cookies alongside bearer token responses.
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import logging
 
@@ -50,6 +50,60 @@ class LoginResponse(BaseModel):
     expires_in: int | None = None
     expires_at: int | None = None
     user: UserProfileResponse
+
+
+SPECIAL_CHARACTERS = set("!@#$%^&*")
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, description="Current password")
+    new_password: str = Field(..., min_length=1, description="New password")
+    confirm_password: str = Field(..., min_length=1, description="Confirm new password")
+
+    model_config = {
+        "extra": "forbid",
+    }
+
+    @model_validator(mode="after")
+    def validate_password_rules(self) -> "ChangePasswordRequest":
+        cur = self.current_password
+        new = self.new_password
+        conf = self.confirm_password
+
+        if not cur or not cur.strip():
+            raise ValueError("Current password cannot be empty.")
+        if not new or not new.strip():
+            raise ValueError("New password cannot be empty.")
+        if not conf or not conf.strip():
+            raise ValueError("Confirm password cannot be empty.")
+
+        if new != conf:
+            raise ValueError("New password and confirm password do not match.")
+
+        if new == cur:
+            raise ValueError("New password must be different from current password.")
+
+        if len(new) < 8:
+            raise ValueError("New password must be at least 8 characters long.")
+
+        if not any(c.isupper() for c in new):
+            raise ValueError("New password must contain at least one uppercase letter (A-Z).")
+
+        if not any(c.islower() for c in new):
+            raise ValueError("New password must contain at least one lowercase letter (a-z).")
+
+        if not any(c.isdigit() for c in new):
+            raise ValueError("New password must contain at least one numeric digit (0-9).")
+
+        if not any(c in SPECIAL_CHARACTERS for c in new):
+            raise ValueError("New password must contain at least one special character (!@#$%^&*).")
+
+        return self
+
+
+class ChangePasswordResponse(BaseModel):
+    status: str = "success"
+    message: str = "Password changed successfully."
 
 
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str | None, expires_in: int | None):
@@ -337,3 +391,100 @@ def logout(request: Request, response: Response):
 
     _clear_auth_cookies(response)
     return {"message": "Logged out successfully"}
+
+
+@router.post("/change-password", response_model=ChangePasswordResponse)
+def change_password(
+    payload: ChangePasswordRequest,
+    response: Response,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Change the authenticated user's password in Supabase Auth.
+
+    1. Verifies the user's current password against Supabase Auth.
+    2. Validates that the authenticated Supabase user matches the current CPASS session.
+    3. Enforces all password complexity rules (length >= 8, uppercase, lowercase, digit, special character).
+    4. Updates the password in Supabase Auth.
+    5. Re-authenticates to rotate tokens and update HttpOnly session cookies.
+    """
+    user_email = user.email
+    if not user_email:
+        try:
+            p_res = retry_read_query(
+                lambda: supabase.table("profiles").select("email").eq("id", user.id).limit(1).execute()
+            )
+            if p_res.data and p_res.data[0].get("email"):
+                user_email = p_res.data[0]["email"]
+        except Exception:
+            pass
+
+    if not user_email:
+        raise HTTPException(400, "Unable to resolve email for the authenticated user.")
+
+    auth_client = get_auth_client()
+
+    # Step 1: Verify current password via Supabase Auth sign_in_with_password
+    try:
+        auth_res = auth_client.auth.sign_in_with_password({
+            "email": user_email,
+            "password": payload.current_password,
+        })
+    except HTTPException:
+        raise
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient transport error during current password verification: %s", exc)
+        raise HTTPException(
+            503,
+            "Authentication service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
+    except Exception:
+        raise HTTPException(401, "Current password is incorrect.")
+
+    if not auth_res or not auth_res.user:
+        raise HTTPException(401, "Current password is incorrect.")
+
+    # Step 2: Confirm Supabase UID matches session user ID
+    if str(auth_res.user.id) != str(user.id):
+        raise HTTPException(403, "Authenticated user does not match the session identity.")
+
+    # Step 3: Update password in Supabase Auth via authenticated client
+    try:
+        auth_client.auth.update_user({"password": payload.new_password})
+    except TRANSIENT_ERRORS as exc:
+        logger.warning("Transient error updating password: %s", exc)
+        raise HTTPException(
+            503,
+            "Authentication service temporarily unreachable. Please retry.",
+            headers={"Retry-After": "1"},
+        )
+    except Exception as exc:
+        logger.warning("auth.update_user failed, attempting admin update fallback: %s", exc)
+        try:
+            supabase.auth.admin.update_user_by_id(user.id, {"password": payload.new_password})
+        except Exception as admin_exc:
+            logger.error("Failed to update password in Supabase: %s", admin_exc)
+            raise HTTPException(500, "Failed to update password. Please try again.")
+
+    # Step 4: Re-authenticate with new password to ensure valid session continuity
+    try:
+        new_auth = auth_client.auth.sign_in_with_password({
+            "email": user_email,
+            "password": payload.new_password,
+        })
+        if new_auth and new_auth.session:
+            _set_auth_cookies(
+                response=response,
+                access_token=new_auth.session.access_token,
+                refresh_token=new_auth.session.refresh_token,
+                expires_in=new_auth.session.expires_in,
+            )
+    except Exception as reauth_exc:
+        logger.warning("Could not refresh session cookies after password update: %s", reauth_exc)
+
+    clear_user_cache()
+
+    return ChangePasswordResponse(
+        status="success",
+        message="Password changed successfully.",
+    )
