@@ -69,14 +69,31 @@ def auth_l2():
     app.dependency_overrides.pop(get_current_user, None)
 
 
+
 @pytest.fixture
 def mock_deps():
     with patch("app.routers.audits.supabase") as m_audit, \
          patch("app.routers.documents.supabase") as m_doc, \
          patch("app.auth.supabase") as m_auth, \
-         patch("app.routers.documents.google_drive_service.get_or_create_candidate_subfolder", return_value=MOCK_FOLDER) as m_subfolder, \
-         patch("app.routers.documents.google_drive_service.upload_file", return_value=MOCK_UPLOAD) as m_upload, \
-         patch("app.routers.documents.google_drive_service.delete_file", return_value=True) as m_delete:
+         patch(
+             "app.routers.documents.google_drive_service.get_or_create_candidate_folder",
+             return_value=(
+                 "candidate-folder-mock-123",
+                 "CPASS/Odisha/TC/Batch/99001",
+             ),
+         ) as m_candidate_folder, \
+         patch(
+             "app.routers.documents.google_drive_service.get_or_create_folder",
+             return_value=MOCK_FOLDER[0],
+         ) as m_subfolder, \
+         patch(
+             "app.routers.documents.google_drive_service.upload_file",
+             return_value=MOCK_UPLOAD,
+         ) as m_upload, \
+         patch(
+             "app.routers.documents.google_drive_service.delete_file",
+             return_value=True,
+         ) as m_delete:
 
         mock_client = MagicMock()
         m_audit.table = mock_client.table
@@ -85,6 +102,7 @@ def mock_deps():
 
         yield {
             "db": mock_client,
+            "candidate_folder": m_candidate_folder,
             "upload_file": m_upload,
             "subfolder": m_subfolder,
             "delete_file": m_delete,

@@ -532,14 +532,26 @@ def test_batch_submit_success_with_compensation_tracking(mock_supabase, auth_ove
 
     with (
         patch(
-            "app.routers.documents.google_drive_service.get_or_create_candidate_subfolder",
-            return_value=("folder-xyz", "CPASS / Odisha / Bhubaneswar / BATCH-OD-2023-01 / 99901 - Ramesh Kumar / Subfolder"),
+            "app.routers.documents.google_drive_service.get_or_create_candidate_folder",
+            return_value=(
+                "candidate-folder-xyz",
+            "CPASS / Odisha / Bhubaneswar / BATCH-OD-2023-01 / 99901 - Ramesh Kumar",
+                ),    
+            ),
+        patch(
+            "app.routers.documents.google_drive_service.get_or_create_folder",
+            return_value="folder-xyz",
         ),
         patch(
             "app.routers.documents.google_drive_service.upload_file",
-            return_value={"file_id": "drive-file-new", "file_name": "uploaded.pdf", "mime_type": "application/pdf", "size": 1024},
+            return_value={
+                "file_id": "drive-file-new",
+                "file_name": "uploaded.pdf",
+                "mime_type": "application/pdf",
+                "size": 1024,
+            },
         ),
-    ):
+     ):
         res = client.post(
             "/candidates/99901/documents/submit",
             data={
@@ -573,8 +585,12 @@ def test_batch_submit_database_failure_rolls_back_drive_files(mock_supabase, aut
 
     with (
         patch(
-            "app.routers.documents.google_drive_service.get_or_create_candidate_subfolder",
-            return_value=("folder-xyz", "path"),
+            "app.routers.documents.google_drive_service.get_or_create_candidate_folder",
+            return_value=("candidate-folder-xyz", "path"),
+        ),
+        patch(
+            "app.routers.documents.google_drive_service.get_or_create_folder",
+            return_value="folder-xyz",
         ),
         patch(
             "app.routers.documents.google_drive_service.upload_file",
@@ -627,8 +643,12 @@ def test_batch_submit_database_failure_restores_replaced_document(mock_supabase,
 
     with (
         patch(
-            "app.routers.documents.google_drive_service.get_or_create_candidate_subfolder",
-            return_value=("folder-xyz", "path"),
+            "app.routers.documents.google_drive_service.get_or_create_candidate_folder",
+            return_value=("candidate-folder-xyz", "path"),
+        ),
+        patch(
+            "app.routers.documents.google_drive_service.get_or_create_folder",
+            return_value="folder-xyz",
         ),
         patch(
             "app.routers.documents.google_drive_service.upload_file",
@@ -686,8 +706,12 @@ def test_batch_submit_cleanup_warning_surfaced_when_old_drive_delete_fails(mock_
 
     with (
         patch(
-            "app.routers.documents.google_drive_service.get_or_create_candidate_subfolder",
-            return_value=("folder-xyz", "path"),
+            "app.routers.documents.google_drive_service.get_or_create_candidate_folder",
+            return_value=("candidate-folder-xyz", "path"),
+        ),
+        patch(
+            "app.routers.documents.google_drive_service.get_or_create_folder",
+            return_value="folder-xyz",
         ),
         patch(
             "app.routers.documents.google_drive_service.upload_file",
