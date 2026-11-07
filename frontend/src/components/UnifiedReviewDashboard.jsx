@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
-import { api, downloadDocument, fetchDocumentBlob } from '../lib/api'
+import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from 'react'
+import { api, downloadDocument, fetchDocumentBlob, getDocumentPreviewUrl } from '../lib/api'
 import { useAuth } from '../auth/AuthContext'
 import PlacementAuditStatement from './PlacementAuditStatement'
 import ErrorBoundary from './ErrorBoundary'
-import PdfViewer from './PdfViewer'
 import FlexibleReturnModal from './FlexibleReturnModal'
 import L2DocumentUploadModal from './L2DocumentUploadModal'
 import './L2DocumentUploadModal.css'
@@ -13,6 +12,9 @@ import {
   calculateNextSalaryPeriodForEmployer,
   getEmployerDocumentSequence,
 } from '../lib/salarySequenceHelper'
+
+// Lazy load PdfViewer so heavy pdfjs-dist (~450 KB) is code-split and only loaded when previewing
+const PdfViewer = lazy(() => import('./PdfViewer'))
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -595,10 +597,8 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
     setCandDetail(null)
     setStatementData(null)
     setDocuments([])
-    if (previewBlobUrl) {
-      window.URL.revokeObjectURL(previewBlobUrl)
-      setPreviewBlobUrl(null)
-    }
+    if (previewBlobUrl?.startsWith('blob:')) window.URL.revokeObjectURL(previewBlobUrl)
+    if (previewBlobUrl) setPreviewBlobUrl(null)
     setPreviewDoc(null)
     if (defaultState) {
       api('/lookups/centres', { state: defaultState })
@@ -620,10 +620,8 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
       setStatementData(null)
       setDocuments([])
       setDocReviews({})
-      if (previewBlobUrl) {
-        window.URL.revokeObjectURL(previewBlobUrl)
-        setPreviewBlobUrl(null)
-      }
+      if (previewBlobUrl?.startsWith('blob:')) window.URL.revokeObjectURL(previewBlobUrl)
+      if (previewBlobUrl) setPreviewBlobUrl(null)
       setPreviewDoc(null)
     }
 
@@ -753,10 +751,8 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
     }
 
     // Cleanup preview
-    if (previewBlobUrl) {
-      window.URL.revokeObjectURL(previewBlobUrl)
-      setPreviewBlobUrl(null)
-    }
+    if (previewBlobUrl?.startsWith('blob:')) window.URL.revokeObjectURL(previewBlobUrl)
+    if (previewBlobUrl) setPreviewBlobUrl(null)
     setPreviewDoc(null)
 
     if (!candId) {
@@ -817,24 +813,52 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
   }
 
   // ---------------------------------------------------------------------------
-  // 3. Document Preview Mechanism
+  // 3. Document Preview Mechanism & Bounded Session Cache
   // ---------------------------------------------------------------------------
+  const previewBlobCache = useRef(new Map())
+
+  // Revoke all cached object URLs when candidate changes or component unmounts
+  useEffect(() => {
+    return () => {
+      previewBlobCache.current.forEach((url) => {
+        if (url?.startsWith('blob:')) window.URL.revokeObjectURL(url)
+      })
+      previewBlobCache.current.clear()
+    }
+  }, [sel.cand])
+
   const handlePreviewDocument = async (doc) => {
     if (previewDoc?.id === doc.id) return
-
-    if (previewBlobUrl) {
-      window.URL.revokeObjectURL(previewBlobUrl)
-      setPreviewBlobUrl(null)
-    }
 
     setPreviewDoc(doc)
     setLoadingPreview(true)
     setPreviewError(null)
 
     try {
-      const blob = await fetchDocumentBlob(sel.cand, doc.id)
-      const url = window.URL.createObjectURL(blob)
-      setPreviewBlobUrl(url)
+      const isPdf = doc.mime_type === 'application/pdf' || /\.pdf$/i.test(doc.file_name || '')
+      if (isPdf) {
+        // Give PDF.js the protected API URL directly so it can issue HTTP Range
+        // requests instead of waiting for a complete Blob download first.
+        setPreviewBlobUrl(getDocumentPreviewUrl(sel.cand, doc.id))
+      } else {
+        const cachedUrl = previewBlobCache.current.get(doc.id)
+        if (cachedUrl) {
+          setPreviewBlobUrl(cachedUrl)
+        } else {
+          // Preserve credentialed Blob loading for image previews
+          const blob = await fetchDocumentBlob(sel.cand, doc.id)
+          const newUrl = window.URL.createObjectURL(blob)
+          // Bound memory to maximum 8 documents per session
+          if (previewBlobCache.current.size >= 8) {
+            const firstKey = previewBlobCache.current.keys().next().value
+            const oldUrl = previewBlobCache.current.get(firstKey)
+            if (oldUrl?.startsWith('blob:')) window.URL.revokeObjectURL(oldUrl)
+            previewBlobCache.current.delete(firstKey)
+          }
+          previewBlobCache.current.set(doc.id, newUrl)
+          setPreviewBlobUrl(newUrl)
+        }
+      }
     } catch (err) {
       setPreviewError(err.message || 'Failed to load document preview.')
       showToast(err.message || 'Failed to load document preview.', 'error')
@@ -844,21 +868,10 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
   }
 
   const handleClosePreview = () => {
-    if (previewBlobUrl) {
-      window.URL.revokeObjectURL(previewBlobUrl)
-      setPreviewBlobUrl(null)
-    }
+    setPreviewBlobUrl(null)
     setPreviewDoc(null)
     setPreviewError(null)
   }
-
-  useEffect(() => {
-    return () => {
-      if (previewBlobUrl) {
-        window.URL.revokeObjectURL(previewBlobUrl)
-      }
-    }
-  }, [previewBlobUrl])
 
   // ---------------------------------------------------------------------------
   // 4. Document Verification Checklist Persistence
@@ -1179,11 +1192,30 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
   const cpassStatus = (statementData?.cpass_status || '').toUpperCase()
   const reviewStages = statementData?.review_stages || {}
 
-  const isReturned =
-    auditStatus.includes('RETURN') ||
-    cpassStatus.includes('RETURN') ||
-    Boolean(statementData?.active_return) ||
-    Boolean(statementData?.return_to_l1)
+  const activeReturn =
+    statementData?.active_return ||
+    (auditStatus === 'RETURNED_TO_L1' || cpassStatus === 'RETURNED_TO_L1'
+      ? statementData?.return_to_l1
+      : null)
+  const returnDestination =
+    activeReturn?.destination ||
+    (auditStatus === 'RETURNED_TO_L1' || cpassStatus === 'RETURNED_TO_L1' ? 'L1' : null)
+
+  const isReturnedToL1 =
+    returnDestination === 'L1' ||
+    auditStatus === 'RETURNED_TO_L1' ||
+    cpassStatus === 'RETURNED_TO_L1' ||
+    reviewStages.ch_status === 'Returned to L1'
+
+  // Is candidate currently returned and awaiting action?
+  const isReturned = Boolean(activeReturn || isReturnedToL1)
+
+  // Is candidate currently returned to the current review level?
+  const isReturnedToCurrentLevel = activeReturn?.destination === level
+
+  // Is candidate returned to an upstream/downstream level and waiting there?
+  const isWaitingOnOtherLevelReturn = isReturned && !isReturnedToCurrentLevel
+
   const isRejected =
     auditStatus.includes('REJECT') ||
     cpassStatus.includes('REJECT') ||
@@ -1237,9 +1269,12 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
   } else if (hasActiveHold) {
     canApprove = false
     approvalBlockReason = 'Approval blocked: Candidate has an active administrative hold.'
-  } else if (isReturned) {
+  } else if (isReturnedToL1) {
     canApprove = false
-    approvalBlockReason = 'Candidate is returned for corrections. Awaiting resubmission.'
+    approvalBlockReason = 'Candidate is returned to L1 for corrections. Awaiting coordinator resubmission.'
+  } else if (isWaitingOnOtherLevelReturn) {
+    canApprove = false
+    approvalBlockReason = `Candidate is returned to ${returnDestination || 'earlier stage'} for corrections. Awaiting action.`
   } else if (isRejected) {
     canApprove = false
     approvalBlockReason = 'Candidate placement audit has been rejected.'
@@ -1362,16 +1397,16 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
               {sel.cand && statementData && (
                 <>
                   <span
-                    className={`l2-status-badge ${isReturned ? 'draft' : isL1Submitted ? 'submitted' : 'draft'}`}
-                    style={isReturned ? { background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' } : {}}
+                    className={`l2-status-badge ${isReturnedToL1 ? 'draft' : isL1Submitted ? 'submitted' : 'draft'}`}
+                    style={isReturnedToL1 ? { background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' } : {}}
                   >
                     L1 Audit: {auditStatus || 'DRAFT'}
                   </span>
                   <span
-                    className={`l2-status-badge ${isReturned ? 'draft' : isAlreadyApproved ? 'approved' : 'pending'}`}
-                    style={isReturned ? { background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' } : {}}
+                    className={`l2-status-badge ${isReturnedToL1 ? 'draft' : isAlreadyApproved ? 'approved' : 'pending'}`}
+                    style={isReturnedToL1 ? { background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' } : {}}
                   >
-                    Review: {isAlreadyApproved ? config.approvedBadgeText : isReturned ? '↩ RETURNED' : isRejected ? '✕ REJECTED' : 'Pending Review'}
+                    Review: {isAlreadyApproved ? config.approvedBadgeText : isReturned ? `↩ RETURNED TO ${returnDestination || 'L1'}` : isRejected ? '✕ REJECTED' : 'Pending Review'}
                   </span>
                 </>
               )}
@@ -1764,12 +1799,18 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
             }}
           >
             <div>
-              <strong>⚠️ Candidate Dossier Returned for Corrections</strong>
+              <strong>
+                {isReturnedToCurrentLevel
+                  ? `⚠️ Candidate Dossier Returned to ${config.roleLabel} for Re-Review`
+                  : `⚠️ Candidate Dossier Returned to ${returnDestination || 'L1'} for Corrections`}
+              </strong>
               <div style={{ fontSize: '13px', marginTop: '4px' }}>
-                This placement audit has been returned for corrections. Further approvals are paused until updated records are resubmitted.
-                {(statementData?.return_to_l1?.return_reason || statementData?.active_return?.return_reason || statementData?.return_reason) && (
+                {isReturnedToCurrentLevel
+                  ? `This placement audit has been returned to ${config.roleLabel} by ${activeReturn?.returned_by_stage || activeReturn?.stage || 'higher authority'}. Please review, update if necessary, and submit your decision.`
+                  : `This placement audit has been returned to ${returnDestination || 'earlier stage'} for corrections. Further approvals are paused until updated records are resubmitted.`}
+                {(activeReturn?.return_reason || activeReturn?.reason || statementData?.return_to_l1?.return_reason || statementData?.return_reason) && (
                   <div style={{ marginTop: '2px', fontStyle: 'italic' }}>
-                    Reason: "{statementData.return_to_l1?.return_reason || statementData.active_return?.return_reason || statementData.return_reason}"
+                    Reason: "{activeReturn?.return_reason || activeReturn?.reason || statementData?.return_to_l1?.return_reason || statementData?.return_reason}"
                   </div>
                 )}
               </div>
@@ -1942,19 +1983,28 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
 
               <div className="l2-panel-body" ref={docBodyRef} style={{ padding: previewDoc ? 0 : '16px' }}>
                 {previewDoc ? (
-                  <PdfViewer
-                    fileUrl={previewBlobUrl}
-                    fileName={previewDoc.file_name}
-                    fileMeta={previewDoc.type || previewDoc.category || 'Document Evidence'}
-                    mimeType={previewDoc.mime_type}
-                    isLoading={loadingPreview}
-                    errorMessage={previewError}
-                    isReviewed={Boolean(docReviews[String(previewDoc.id)]?.reviewed)}
-                    reviewedAt={docReviews[String(previewDoc.id)]?.reviewed_at}
-                    onToggleReview={config.hasChecklistToggle ? (checked) => handleToggleDocReview(previewDoc.id, checked) : undefined}
-                    onDownload={() => downloadDocument(sel.cand, previewDoc.id, previewDoc.file_name)}
-                    onClose={handleClosePreview}
-                  />
+                  <Suspense
+                    fallback={
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '340px', gap: '12px' }}>
+                        <div className="cpass-mini-spinner" style={{ width: '28px', height: '28px' }} />
+                        <span style={{ fontSize: '13.5px', color: '#64748b', fontWeight: 500 }}>Initializing Document Viewer…</span>
+                      </div>
+                    }
+                  >
+                    <PdfViewer
+                      fileUrl={previewBlobUrl}
+                      fileName={previewDoc.file_name}
+                      fileMeta={previewDoc.type || previewDoc.category || 'Document Evidence'}
+                      mimeType={previewDoc.mime_type}
+                      isLoading={loadingPreview}
+                      errorMessage={previewError}
+                      isReviewed={Boolean(docReviews[String(previewDoc.id)]?.reviewed)}
+                      reviewedAt={docReviews[String(previewDoc.id)]?.reviewed_at}
+                      onToggleReview={config.hasChecklistToggle ? (checked) => handleToggleDocReview(previewDoc.id, checked) : undefined}
+                      onDownload={() => downloadDocument(sel.cand, previewDoc.id, previewDoc.file_name)}
+                      onClose={handleClosePreview}
+                    />
+                  </Suspense>
                 ) : (
                   <div className="l2-doc-list">
                     {/* Appointment Letter Section */}
@@ -2507,4 +2557,3 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
     </ErrorBoundary>
   )
 }
-

@@ -321,6 +321,65 @@ runTest('12. Four signoff stages verified — CH, COPS, BL, CEO all present in r
   assert.ok('ceoStage' in res)
 })
 
+runTest('13. Resubmission after Return — resets all stages to Pending without stale return status', () => {
+  const statement = {
+    cpass_status: 'PENDING',
+    audit_status: 'SUBMITTED',
+    review_stages: {
+      ch: { status: 'Pending' },
+      cops: { status: 'Pending' },
+      bl: { status: 'Pending' },
+      ceo: { status: 'Pending' },
+    },
+    signoff_details: {
+      centre_head: { confirmed: false },
+      cops_team: { confirmed: false },
+      business_leader: { confirmed: false },
+      ceo_sanction: { confirmed: false },
+      last_return: { reason: 'Incorrect payslip date', stage: 'CH' },
+      return_history: [{ reason: 'Incorrect payslip date', stage: 'CH' }],
+      active_return: null,
+    },
+  }
+  const res = getApprovalStatusDetails(statement)
+  assert.strictEqual(res.overallStatus, 'Pending CH Review')
+  assert.strictEqual(res.overallBadgeClass, 'pending')
+  assert.strictEqual(res.reviewStatusDetail, 'Awaiting CH Verification')
+  assert.strictEqual(res.chStage.decision, 'Pending')
+  assert.strictEqual(res.copsStage.decision, 'Pending')
+  assert.strictEqual(res.blStage.decision, 'Pending')
+  assert.strictEqual(res.ceoStage.decision, 'Pending')
+  assert.strictEqual(res.activeReturn, null)
+})
+
+runTest('14. L2 Re-approval after L3 Return — transitions cleanly to CH Recommended and Awaiting COPS Audit', () => {
+  const statement = {
+    cpass_status: 'L2_APPROVED',
+    audit_status: 'SUBMITTED',
+    review_stages: {
+      ch: { status: 'Recommended', reviewer_name: 'Centre Head User' },
+      cops: { status: 'Pending' },
+      bl: { status: 'Pending' },
+      ceo: { status: 'Pending' },
+    },
+    signoff_details: {
+      centre_head: { confirmed: true, recommended: true, name: 'Centre Head User' },
+      l2_approval: { approved: true },
+      cops_team: { confirmed: false },
+      last_return: { reason: 'Missing appointment seal', stage: 'COPS' },
+      return_history: [{ reason: 'Missing appointment seal', stage: 'COPS' }],
+      active_return: null,
+    },
+  }
+  const res = getApprovalStatusDetails(statement)
+  assert.strictEqual(res.overallStatus, 'CH Approved')
+  assert.strictEqual(res.overallBadgeClass, 'approved')
+  assert.strictEqual(res.reviewStatusDetail, 'Awaiting COPS Audit')
+  assert.strictEqual(res.chStage.decision, 'Recommended')
+  assert.strictEqual(res.copsStage.decision, 'Pending')
+  assert.strictEqual(res.activeReturn, null)
+})
+
 console.log(`\n========================================`)
 console.log(`All ${passedTests}/${totalTests} unit tests passed successfully!`)
 console.log(`========================================\n`)

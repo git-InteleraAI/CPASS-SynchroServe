@@ -840,36 +840,51 @@ def submit_audit(
         "submitted_at": now_iso,
     }
 
-    # Section 5 read-only enforcement: Retain existing corporate signoff endorsements from database
-    existing_review_stages = None
-    if existing_res.data and existing_res.data[0].get("signoff_details"):
-        existing_signoff = existing_res.data[0]["signoff_details"]
-        for key in ("centre_head", "cops_team", "business_leader"):
-            if key in existing_signoff and existing_signoff[key]:
-                signoff_dict[key] = existing_signoff[key]
-        existing_review_stages = existing_signoff.get("review_stages")
-    else:
-        for key in ("centre_head", "cops_team", "business_leader"):
-            if key in signoff_dict and isinstance(signoff_dict[key], dict):
-                signoff_dict[key]["confirmed"] = False
-
     existing_record = existing_res.data[0] if existing_res.data else None
     existing_signoff = existing_record.get("signoff_details") or {} if existing_record else {}
     is_resubmission = existing_record and (
         existing_record.get("audit_status") == "RETURNED_TO_L1"
         or existing_record.get("cpass_status") == "RETURNED_TO_L1"
+        or existing_signoff.get("active_return", {}).get("destination") == "L1"
+        or existing_signoff.get("return_destination") == "L1"
+        or bool(existing_signoff.get("return_to_l1"))
+        or existing_signoff.get("review_stages", {}).get("ch", {}).get("status") in ("Returned", "Returned to L1")
     )
 
+    # Section 5 read-only enforcement: Retain existing corporate signoff endorsements only if not resubmission
+    existing_review_stages = None
+    if existing_res.data and existing_res.data[0].get("signoff_details") and not is_resubmission:
+        existing_signoff = existing_res.data[0]["signoff_details"]
+        for key in ("centre_head", "cops_team", "business_leader", "ceo_sanction"):
+            if key in existing_signoff and existing_signoff[key]:
+                signoff_dict[key] = existing_signoff[key]
+        existing_review_stages = existing_signoff.get("review_stages")
+    else:
+        for key in ("centre_head", "cops_team", "business_leader", "ceo_sanction"):
+            if key in signoff_dict and isinstance(signoff_dict[key], dict):
+                signoff_dict[key]["confirmed"] = False
+                signoff_dict[key]["recommended"] = False
+        signoff_dict.pop("l2_approval", None)
+
     if is_resubmission:
-        # Reset CH and subsequent stages to Pending for fresh review upon coordinator resubmission
+        # Reset CH and all subsequent stages to Pending for fresh review upon coordinator resubmission
         signoff_dict["review_stages"] = {
             "ch": {"status": "Pending"},
             "cops": {"status": "Pending"},
             "bl": {"status": "Pending"},
+            "ceo": {"status": "Pending"},
         }
-        # Preserve previous return-to-L1 metadata and return history
-        if "return_to_l1" in existing_signoff:
-            signoff_dict["return_to_l1"] = existing_signoff["return_to_l1"]
+        # Clear active return flags while preserving historical return record and return history
+        last_return = existing_signoff.get("active_return") or existing_signoff.get("return_to_l1")
+        if last_return:
+            signoff_dict["last_return"] = last_return
+        signoff_dict["active_return"] = None
+        signoff_dict.pop("return_destination", None)
+        signoff_dict.pop("return_to_l1", None)
+        signoff_dict.pop("return_to_l2", None)
+        signoff_dict.pop("return_to_l3", None)
+        signoff_dict.pop("return_to_l4", None)
+
         if "return_history" in existing_signoff:
             signoff_dict["return_history"] = existing_signoff["return_history"]
         rev_history = list(existing_signoff.get("revision_history") or [])
@@ -889,9 +904,13 @@ def submit_audit(
             "ch": {"status": "Pending"},
             "cops": {"status": "Pending"},
             "bl": {"status": "Pending"},
+            "ceo": {"status": "Pending"},
         }
+        signoff_dict["active_return"] = None
 
     doc_audit_data = payload.document_audit.model_dump()
+    if is_resubmission:
+        doc_audit_data["l2_review_completed"] = False
 
     # Submission by L1 coordinator makes candidate eligible for L2/CH review while keeping review stages Pending
     computed_cpass_status = "PENDING"
@@ -1477,7 +1496,13 @@ def get_audit_statement(
         "submitter": ((audit and audit.get("signoff_details")) or {}).get("submitter") or None,
         "placement_executive": ((audit and audit.get("signoff_details")) or {}).get("placement_executive") or None,
         "revision_history": ((audit and audit.get("signoff_details")) or {}).get("revision_history") or [],
+        "active_return": ((audit and audit.get("signoff_details")) or {}).get("active_return") or None,
+        "return_destination": ((audit and audit.get("signoff_details")) or {}).get("return_destination") or None,
+        "last_return": ((audit and audit.get("signoff_details")) or {}).get("last_return") or None,
         "return_to_l1": ((audit and audit.get("signoff_details")) or {}).get("return_to_l1") or None,
+        "return_to_l2": ((audit and audit.get("signoff_details")) or {}).get("return_to_l2") or None,
+        "return_to_l3": ((audit and audit.get("signoff_details")) or {}).get("return_to_l3") or None,
+        "return_to_l4": ((audit and audit.get("signoff_details")) or {}).get("return_to_l4") or None,
         "return_history": ((audit and audit.get("signoff_details")) or {}).get("return_history") or [],
         "review_stages": extract_review_stages(audit),
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1832,11 +1857,28 @@ def approve_placement_audit(
         "user_id": user.id,
         "remarks": payload.remarks,
     }
-    if "cops" not in review_stages:
-        review_stages["cops"] = {"status": "Pending"}
-    if "bl" not in review_stages:
-        review_stages["bl"] = {"status": "Pending"}
+    # Reset subsequent stages to Pending to enforce strict sequential progression
+    review_stages["cops"] = {"status": "Pending"}
+    review_stages["bl"] = {"status": "Pending"}
+    review_stages["ceo"] = {"status": "Pending"}
     signoff["review_stages"] = review_stages
+
+    # Clear active return state and reset downstream endorsements if re-approved after return
+    if signoff.get("active_return"):
+        signoff["last_return"] = signoff.get("active_return")
+    signoff["active_return"] = None
+    signoff.pop("return_destination", None)
+    signoff.pop("return_to_l1", None)
+    signoff.pop("return_to_l2", None)
+    signoff.pop("return_to_l3", None)
+    signoff.pop("return_to_l4", None)
+
+    if "cops_team" in signoff and isinstance(signoff["cops_team"], dict):
+        signoff["cops_team"]["confirmed"] = False
+    if "business_leader" in signoff and isinstance(signoff["business_leader"], dict):
+        signoff["business_leader"]["confirmed"] = False
+    if "ceo_sanction" in signoff and isinstance(signoff["ceo_sanction"], dict):
+        signoff["ceo_sanction"]["confirmed"] = False
 
     signoff["centre_head"] = {
         "name": user.full_name,
@@ -2046,9 +2088,13 @@ def return_l2_placement_audit(
     }
     review_stages["cops"] = {"status": "Pending"}
     review_stages["bl"] = {"status": "Pending"}
+    review_stages["ceo"] = {"status": "Pending"}
     signoff["review_stages"] = review_stages
 
     return_entry = {
+        "destination": "L1",
+        "stage": "CH",
+        "returned_by_stage": "L2",
         "reason": reason_clean,
         "return_reason": reason_clean,
         "remarks": payload.remarks,
@@ -2061,6 +2107,14 @@ def return_l2_placement_audit(
         "previous_audit_status": previous_audit,
     }
     signoff["return_to_l1"] = return_entry
+    signoff["active_return"] = return_entry
+    signoff["return_destination"] = "L1"
+
+    if "centre_head" in signoff and isinstance(signoff["centre_head"], dict):
+        signoff["centre_head"]["recommended"] = False
+        signoff["centre_head"]["confirmed"] = False
+    if "l2_approval" in signoff and isinstance(signoff["l2_approval"], dict):
+        signoff["l2_approval"]["approved"] = False
 
     return_hist = list(signoff.get("return_history") or [])
     return_hist.append(return_entry)
@@ -2129,12 +2183,17 @@ def approve_l3_cops_audit(
 
     # Blocked if candidate has been returned for corrections
     current_stages = extract_review_stages(audit)
+    signoff = audit.get("signoff_details") or {}
     if (
         audit.get("cpass_status") == "RETURNED_TO_L1"
         or audit.get("audit_status") == "RETURNED_TO_L1"
         or current_stages["ch_status"] == "Returned to L1"
+        or (signoff.get("active_return") and signoff["active_return"].get("destination") == "L1")
     ):
         raise HTTPException(400, "COPS review blocked: Candidate has been returned to L1 for corrections and cannot progress until resubmitted and recommended by CH.")
+
+    if signoff.get("active_return") and signoff["active_return"].get("destination") == "L2":
+        raise HTTPException(400, "COPS review blocked: Candidate has been returned to L2 for re-review and cannot progress until recommended by CH.")
 
     # Blocked if rejected at any stage
     if (
@@ -2162,7 +2221,6 @@ def approve_l3_cops_audit(
     now_iso = datetime.now(timezone.utc).isoformat()
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    signoff = audit.get("signoff_details") or {}
     review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
     review_stages["ch"] = current_stages["ch"]
     review_stages["cops"] = {
@@ -2172,8 +2230,23 @@ def approve_l3_cops_audit(
         "user_id": user.id,
         "remarks": payload.remarks,
     }
-    if "bl" not in review_stages:
-        review_stages["bl"] = {"status": "Pending"}
+    review_stages["bl"] = {"status": "Pending"}
+    review_stages["ceo"] = {"status": "Pending"}
+
+    # Clear active return state and reset downstream endorsements if re-verified after return
+    if signoff.get("active_return"):
+        signoff["last_return"] = signoff.get("active_return")
+    signoff["active_return"] = None
+    signoff.pop("return_destination", None)
+    signoff.pop("return_to_l1", None)
+    signoff.pop("return_to_l2", None)
+    signoff.pop("return_to_l3", None)
+    signoff.pop("return_to_l4", None)
+
+    if "business_leader" in signoff and isinstance(signoff["business_leader"], dict):
+        signoff["business_leader"]["confirmed"] = False
+    if "ceo_sanction" in signoff and isinstance(signoff["ceo_sanction"], dict):
+        signoff["ceo_sanction"]["confirmed"] = False
 
     signoff["review_stages"] = review_stages
     signoff["cops_team"] = {
@@ -2397,6 +2470,8 @@ def return_l3_cops_audit(
         "previous_audit_status": previous_audit,
     })
     signoff["revision_history"] = history
+    signoff["active_return"] = return_entry
+    signoff["return_destination"] = dest
 
     if dest == "L1":
         review_stages["ch"] = {
@@ -2410,11 +2485,10 @@ def return_l3_cops_audit(
         }
         review_stages["cops"] = {"status": "Pending"}
         review_stages["bl"] = {"status": "Pending"}
-        if "ceo" in review_stages:
-            review_stages["ceo"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
         signoff["review_stages"] = review_stages
         signoff["return_to_l1"] = return_entry
-        signoff["return_destination"] = "L1"
+        signoff.pop("return_to_l2", None)
 
         new_cpass_status = "RETURNED_TO_L1"
         new_audit_status = "RETURNED_TO_L1"
@@ -2430,11 +2504,10 @@ def return_l3_cops_audit(
         }
         review_stages["cops"] = {"status": "Pending"}
         review_stages["bl"] = {"status": "Pending"}
-        if "ceo" in review_stages:
-            review_stages["ceo"] = {"status": "Pending"}
+        review_stages["ceo"] = {"status": "Pending"}
         signoff["review_stages"] = review_stages
         signoff["return_to_l2"] = return_entry
-        signoff["return_destination"] = "L2"
+        signoff.pop("return_to_l1", None)
 
         new_cpass_status = "SUBMITTED"
         new_audit_status = "SUBMITTED"
@@ -2509,12 +2582,18 @@ def approve_l4_bl_audit(
 
     # Blocked if candidate has been returned for corrections
     current_stages = extract_review_stages(audit)
+    signoff = audit.get("signoff_details") or {}
     if (
         audit.get("cpass_status") == "RETURNED_TO_L1"
         or audit.get("audit_status") == "RETURNED_TO_L1"
         or current_stages["ch_status"] == "Returned to L1"
+        or (signoff.get("active_return") and signoff["active_return"].get("destination") == "L1")
     ):
         raise HTTPException(400, "BL review blocked: Candidate has been returned to L1 for corrections and cannot progress until resubmitted and recommended by CH.")
+
+    if signoff.get("active_return") and signoff["active_return"].get("destination") in ("L2", "L3"):
+        dest = signoff["active_return"].get("destination")
+        raise HTTPException(400, f"BL review blocked: Candidate has been returned to {dest} for corrections/re-review and cannot progress until earlier stages are approved.")
 
     # Blocked if rejected at any stage
     if (
@@ -2542,7 +2621,6 @@ def approve_l4_bl_audit(
     now_iso = datetime.now(timezone.utc).isoformat()
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    signoff = audit.get("signoff_details") or {}
     review_stages = signoff.get("review_stages") or current_stages.get("review_stages") or {}
     review_stages["ch"] = current_stages["ch"]
     review_stages["cops"] = current_stages["cops"]
@@ -2553,6 +2631,20 @@ def approve_l4_bl_audit(
         "user_id": user.id,
         "remarks": payload.remarks,
     }
+    review_stages["ceo"] = {"status": "Pending"}
+
+    # Clear active return state and reset downstream CEO endorsement if re-approved after return
+    if signoff.get("active_return"):
+        signoff["last_return"] = signoff.get("active_return")
+    signoff["active_return"] = None
+    signoff.pop("return_destination", None)
+    signoff.pop("return_to_l1", None)
+    signoff.pop("return_to_l2", None)
+    signoff.pop("return_to_l3", None)
+    signoff.pop("return_to_l4", None)
+
+    if "ceo_sanction" in signoff and isinstance(signoff["ceo_sanction"], dict):
+        signoff["ceo_sanction"]["confirmed"] = False
 
     signoff["review_stages"] = review_stages
     signoff["business_leader"] = {
@@ -3164,12 +3256,14 @@ def approve_l5_ceo_audit(
     audit = res.data[0]
 
     current_stages = extract_review_stages(audit)
+    signoff = audit.get("signoff_details") or {}
 
     # Blocked if candidate has been returned for corrections
     if (
         audit.get("cpass_status") == "RETURNED_TO_L1"
         or audit.get("audit_status") == "RETURNED_TO_L1"
         or current_stages["ch_status"] == "Returned to L1"
+        or bool(signoff.get("active_return"))
     ):
         raise HTTPException(400, "CEO review blocked: Candidate has been returned for corrections.")
 
@@ -3214,6 +3308,17 @@ def approve_l5_ceo_audit(
     }
 
     signoff["review_stages"] = review_stages
+
+    # Clear active return state upon final CEO approval
+    if signoff.get("active_return"):
+        signoff["last_return"] = signoff.get("active_return")
+    signoff["active_return"] = None
+    signoff.pop("return_destination", None)
+    signoff.pop("return_to_l1", None)
+    signoff.pop("return_to_l2", None)
+    signoff.pop("return_to_l3", None)
+    signoff.pop("return_to_l4", None)
+
     signoff["ceo_sanction"] = {
         "name": user.full_name,
         "designation": "Chief Executive Officer",

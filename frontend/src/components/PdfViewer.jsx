@@ -14,6 +14,7 @@ function PdfPageItem({ pdfDoc, pageNum, scale, rotation, onVisible }) {
   const renderTaskRef = useRef(null)
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 })
   const [rendering, setRendering] = useState(true)
+  const [isNearViewport, setIsNearViewport] = useState(false)
 
   // Intersection Observer to detect active page during vertical scroll
   useEffect(() => {
@@ -31,12 +32,39 @@ function PdfPageItem({ pdfDoc, pageNum, scale, rotation, onVisible }) {
     return () => observer.disconnect()
   }, [pageNum, onVisible])
 
-  // Render page to canvas
+  // Only render pages near the visible scroll area. Keep the page's layout
+  // dimensions reserved so lazy rendering does not cause scroll-position jumps.
+  useEffect(() => {
+    if (!containerRef.current) return
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsNearViewport(Boolean(entry?.isIntersecting)),
+      { rootMargin: '1200px 0px', threshold: 0 }
+    )
+    observer.observe(containerRef.current)
+    return () => observer.disconnect()
+  }, [pageNum])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!pdfDoc) return
+    pdfDoc.getPage(pageNum).then((page) => {
+      if (cancelled) return
+      const viewport = page.getViewport({ scale, rotation })
+      setPageSize({ width: viewport.width, height: viewport.height })
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [pdfDoc, pageNum, scale, rotation])
+
+  // Render page to canvas only when it is visible or close to the viewport.
   useEffect(() => {
     let isCancelled = false
 
     async function renderPage() {
       if (!pdfDoc || !canvasRef.current) return
+      if (!isNearViewport) {
+        setRendering(false)
+        return
+      }
 
       try {
         setRendering(true)
@@ -53,10 +81,10 @@ function PdfPageItem({ pdfDoc, pageNum, scale, rotation, onVisible }) {
         }
 
         const viewport = page.getViewport({ scale, rotation })
-        setPageSize({ width: viewport.width, height: viewport.height })
 
         const canvas = canvasRef.current
-        const dpr = window.devicePixelRatio || 1
+        // Avoid oversized canvases on high-DPI monitors; PDF remains zoomable.
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
         canvas.width = Math.floor(viewport.width * dpr)
         canvas.height = Math.floor(viewport.height * dpr)
         canvas.style.width = `${Math.floor(viewport.width)}px`
@@ -97,7 +125,7 @@ function PdfPageItem({ pdfDoc, pageNum, scale, rotation, onVisible }) {
         }
       }
     }
-  }, [pdfDoc, pageNum, scale, rotation])
+  }, [pdfDoc, pageNum, scale, rotation, isNearViewport])
 
   return (
     <div
@@ -358,6 +386,11 @@ export default function PdfViewer({
     const loadingTask = pdfjsLib.getDocument({
       url: fileUrl,
       cMapPacked: true,
+      // Preview endpoint is protected by HttpOnly session cookies.
+      withCredentials: true,
+      // Allow PDF.js to request byte ranges instead of buffering the full PDF.
+      disableRange: false,
+      disableStream: false,
     })
 
     loadingTask.promise

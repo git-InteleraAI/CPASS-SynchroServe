@@ -12,7 +12,9 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,7 @@ ALLOWED_MIME_TYPES = {
     "image/jpg",
 }
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+RESUMABLE_UPLOAD_THRESHOLD_BYTES = int(os.getenv("GDRIVE_RESUMABLE_THRESHOLD_BYTES", str(5 * 1024 * 1024)))  # 5 MB
 
 
 def _clean_folder_id(val: str | None) -> str | None:
@@ -106,6 +109,12 @@ class GoogleDriveService:
         self.refresh_token = refresh_token or settings.google_refresh_token
         self._custom_client = custom_client
         self._service: Resource | None = None
+        # googleapiclient's httplib2 transport is not thread-safe. Build one
+        # Resource per worker thread when bounded uploads run concurrently.
+        self._service_local = threading.local()
+        # Per-process cache avoids repeating Drive list() calls for the same hierarchy.
+        self._folder_cache: dict[tuple[str | None, str], str] = {}
+        self._folder_cache_lock = threading.RLock()
 
     def is_configured(self) -> bool:
         """Check whether Google Drive authentication credentials are configured."""
@@ -124,8 +133,9 @@ class GoogleDriveService:
         """Initialize or return the cached Google Drive v3 Resource."""
         if self._custom_client is not None:
             return self._custom_client
-        if self._service is not None:
-            return self._service
+        thread_service = getattr(self._service_local, "service", None)
+        if thread_service is not None:
+            return thread_service
 
         if not self.is_configured():
             raise GoogleDriveNotConfiguredError(
@@ -173,18 +183,29 @@ class GoogleDriveService:
                 "Google Drive credentials are not configured or could not be authenticated."
             )
 
-        self._service = build(
+        thread_service = build(
             "drive",
             "v3",
             credentials=creds,
             cache_discovery=False,
         )
-        return self._service
+        self._service_local.service = thread_service
+        # Retain a reference to the first client for diagnostics/backward compatibility.
+        if self._service is None:
+            self._service = thread_service
+        return thread_service
 
     def get_or_create_folder(self, folder_name: str, parent_id: str | None = None) -> str:
         """Find an existing folder by name under parent_id, or create it if not found."""
         service = self.get_service()
-        clean_name = folder_name.replace("'", "\\'").strip() or "Unnamed"
+        normalized_name = folder_name.strip() or "Unnamed"
+        cache_key = (parent_id, normalized_name)
+        with self._folder_cache_lock:
+            cached_id = self._folder_cache.get(cache_key)
+            if cached_id:
+                return cached_id
+
+        clean_name = normalized_name.replace("'", "\\'")
 
         q_parts = [
             f"name = '{clean_name}'",
@@ -202,35 +223,38 @@ class GoogleDriveService:
         )
         files = response.get("files", [])
         if files:
-            return files[0]["id"]
+            folder_id = files[0]["id"]
+            with self._folder_cache_lock:
+                self._folder_cache[cache_key] = folder_id
+            return folder_id
 
         body: dict[str, Any] = {
-            "name": folder_name.strip() or "Unnamed",
+            "name": normalized_name,
             "mimeType": "application/vnd.google-apps.folder",
         }
         if parent_id:
             body["parents"] = [parent_id]
 
         folder = service.files().create(body=body, fields="id").execute()
-        return folder["id"]
+        folder_id = folder["id"]
+        with self._folder_cache_lock:
+            self._folder_cache[cache_key] = folder_id
+        return folder_id
 
-    def get_or_create_candidate_subfolder(
+    def get_or_create_candidate_folder(
         self,
         state: str,
         tc_name: str,
         batch_code: str,
         candidate_id: int | str,
         candidate_name: str,
-        doc_type: str,
     ) -> tuple[str, str]:
-        """Traverse or create the full folder hierarchy:
-        CPASS / State / Training Centre / Batch / Candidate ID - Candidate Name / [Subfolder]
+        """Traverse or create candidate parent folder hierarchy:
+        CPASS / State / Training Centre / Batch / Candidate ID - Candidate Name
 
-        Returns (folder_id, folder_path).
+        Returns (candidate_folder_id, candidate_folder_path).
         """
-        subfolder_title = SUBFOLDER_MAP.get(doc_type, "General Documents")
         cand_folder_title = f"{candidate_id} - {candidate_name.strip()}"
-
         root_id = self.root_folder_id
         path_segments = []
 
@@ -261,12 +285,33 @@ class GoogleDriveService:
         cand_id = self.get_or_create_folder(cand_folder_title, batch_id)
         path_segments.append(cand_folder_title)
 
-        # 5. Document Type Subfolder
-        final_folder_id = self.get_or_create_folder(subfolder_title, cand_id)
-        path_segments.append(subfolder_title)
-
         folder_path = " / ".join(path_segments)
-        return final_folder_id, folder_path
+        return cand_id, folder_path
+
+    def get_or_create_candidate_subfolder(
+        self,
+        state: str,
+        tc_name: str,
+        batch_code: str,
+        candidate_id: int | str,
+        candidate_name: str,
+        doc_type: str,
+    ) -> tuple[str, str]:
+        """Traverse or create the full folder hierarchy:
+        CPASS / State / Training Centre / Batch / Candidate ID - Candidate Name / [Subfolder]
+
+        Returns (folder_id, folder_path).
+        """
+        cand_id, cand_path = self.get_or_create_candidate_folder(
+            state=state,
+            tc_name=tc_name,
+            batch_code=batch_code,
+            candidate_id=candidate_id,
+            candidate_name=candidate_name,
+        )
+        subfolder_title = SUBFOLDER_MAP.get(doc_type, "General Documents")
+        final_folder_id = self.get_or_create_folder(subfolder_title, cand_id)
+        return final_folder_id, f"{cand_path} / {subfolder_title}"
 
     def upload_file(
         self,
@@ -290,8 +335,11 @@ class GoogleDriveService:
             max_mb = MAX_FILE_SIZE_BYTES // (1024 * 1024)
             raise ValueError(f"File size exceeds maximum allowed limit of {max_mb} MB.")
 
+        # Use efficient single-request multipart upload for files <= threshold (default 5 MB),
+        # retaining resumable chunked upload for larger files.
+        is_resumable = len(content_bytes) > RESUMABLE_UPLOAD_THRESHOLD_BYTES
         media = MediaIoBaseUpload(
-            io.BytesIO(content_bytes), mimetype=mime_type, resumable=True
+            io.BytesIO(content_bytes), mimetype=mime_type, resumable=is_resumable
         )
         file_metadata = {
             "name": file_name,
@@ -318,6 +366,38 @@ class GoogleDriveService:
             "mime_type": drive_file.get("mimeType", mime_type),
             "size": int(drive_file.get("size", len(content_bytes))),
         }
+
+    def get_file_metadata(self, file_id: str) -> dict[str, Any]:
+        """Fetch the small metadata set required for authorized preview responses."""
+        return self.get_service().files().get(
+            fileId=file_id, fields="id,name,mimeType,size"
+        ).execute()
+
+    def download_file_range(self, file_id: str, start: int, end: int) -> bytes:
+        """Fetch only the requested inclusive byte range from Drive."""
+        request = self.get_service().files().get_media(fileId=file_id)
+        request.headers["Range"] = f"bytes={start}-{end}"
+        content = request.execute()
+        expected_length = end - start + 1
+        if len(content) != expected_length:
+            raise GoogleDriveError(
+                f"Google Drive returned {len(content)} bytes for a {expected_length}-byte range."
+            )
+        return content
+
+    def iter_download_file(self, file_id: str, chunk_size: int = 1024 * 1024):
+        """Yield Drive media chunks without buffering the complete document in RAM."""
+        request = self.get_service().files().get_media(fileId=file_id)
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request, chunksize=chunk_size)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+            chunk = buffer.getvalue()
+            if chunk:
+                yield chunk
+                buffer.seek(0)
+                buffer.truncate(0)
 
     def download_file(self, file_id: str) -> tuple[bytes, str, str]:
         """Download file content from Google Drive for authorized streaming.

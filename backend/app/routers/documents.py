@@ -15,10 +15,12 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from urllib.parse import quote
 from typing import Any
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -27,6 +29,7 @@ from ..db import supabase
 from ..services.google_drive import (
     ALLOWED_MIME_TYPES,
     MAX_FILE_SIZE_BYTES,
+    SUBFOLDER_MAP,
     GoogleDriveNotConfiguredError,
     GoogleDriveService,
     google_drive_service,
@@ -1314,6 +1317,18 @@ async def batch_submit_documents(
     db_operations: list[dict[str, Any]] = []
 
     try:
+        # Validate every replacement and resolve the candidate folder once for the entire batch.
+        # Subfolders for each document type are created under this single candidate folder ID,
+        # avoiding repetitive 5-level hierarchy traversals for each staged document.
+        cand_folder_id, cand_folder_path = google_drive_service.get_or_create_candidate_folder(
+            state=cand_ctx["state"],
+            tc_name=cand_ctx["tc_name"],
+            batch_code=cand_ctx["batch_code"],
+            candidate_id=cand_ctx["candidate_id"],
+            candidate_name=cand_ctx["candidate_name"],
+        )
+
+        folder_by_type: dict[str, tuple[str, str]] = {}
         for item in staged_uploads:
             if item.get("replace_id"):
                 old_row = existing_docs_by_id.get(item["replace_id"])
@@ -1324,23 +1339,47 @@ async def batch_submit_documents(
                 if old_row.get("drive_file_id"):
                     old_drive_files_to_delete.append(old_row["drive_file_id"])
 
-            dest_folder_id, folder_path = google_drive_service.get_or_create_candidate_subfolder(
-                state=cand_ctx["state"],
-                tc_name=cand_ctx["tc_name"],
-                batch_code=cand_ctx["batch_code"],
-                candidate_id=cand_ctx["candidate_id"],
-                candidate_name=cand_ctx["candidate_name"],
-                doc_type=item["doc_type"],
-            )
+            if item["doc_type"] not in folder_by_type:
+                subfolder_title = SUBFOLDER_MAP.get(item["doc_type"], "General Documents")
+                subfolder_id = google_drive_service.get_or_create_folder(subfolder_title, parent_id=cand_folder_id)
+                folder_by_type[item["doc_type"]] = (subfolder_id, f"{cand_folder_path} / {subfolder_title}")
 
-            drive_res = google_drive_service.upload_file(
+        def _upload_staged_item(item: dict[str, Any]) -> dict[str, Any]:
+            dest_folder_id, folder_path = folder_by_type[item["doc_type"]]
+            drive_result = google_drive_service.upload_file(
                 content_bytes=item["bytes"],
                 file_name=item["file_name"],
                 mime_type=item["mime_type"],
                 destination_folder_id=dest_folder_id,
             )
-            created_drive_file_ids.append(drive_res["file_id"])
+            return {"drive_result": drive_result, "folder_id": dest_folder_id, "folder_path": folder_path}
 
+        default_workers = 5
+        try:
+            max_workers_cfg = int(os.getenv("DOCUMENTS_UPLOAD_MAX_WORKERS", str(default_workers)))
+        except Exception:
+            max_workers_cfg = default_workers
+        upload_workers = max(1, min(max_workers_cfg, len(staged_uploads)))
+        with ThreadPoolExecutor(max_workers=upload_workers) as executor:
+            futures = [executor.submit(_upload_staged_item, item) for item in staged_uploads]
+            wait(futures)
+            upload_results: list[dict[str, Any]] = []
+            upload_errors: list[Exception] = []
+            for future in futures:
+                try:
+                    result = future.result()
+                    upload_results.append(result)
+                    created_drive_file_ids.append(result["drive_result"]["file_id"])
+                except Exception as upload_error:
+                    upload_errors.append(upload_error)
+            if upload_errors:
+                raise upload_errors[0]
+
+        # Preserve the original request order when building database operations.
+        for item, result in zip(staged_uploads, upload_results):
+            drive_res = result["drive_result"]
+            dest_folder_id = result["folder_id"]
+            folder_path = result["folder_path"]
             db_operations.append({
                 "replace_id": item.get("replace_id"),
                 "payload": {
@@ -1511,13 +1550,14 @@ async def batch_submit_documents(
 def download_document(
     candidate_id: int,
     document_id: str,
+    request: Request,
     user: CurrentUser = Depends(require_roles("L1_COORDINATOR", "L2_MANAGER", "L3_COPS", "L3_LEADER", "L4_LEADER", "L5_CEO", "L4_CEO")),
 ):
-    """Download/stream a document file securely from Google Drive."""
+    """Serve private Drive documents with byte-range support for PDF.js."""
     _get_candidate_context(candidate_id, user)
     res = (
         supabase.table("candidate_documents")
-        .select("id,candidate_id,drive_file_id,file_name,mime_type")
+        .select("id,candidate_id,drive_file_id,file_name,mime_type,file_size_bytes")
         .eq("id", document_id)
         .eq("candidate_id", candidate_id)
         .limit(1)
@@ -1532,18 +1572,72 @@ def download_document(
         raise HTTPException(404, "File identifier is missing from document record.")
 
     try:
-        file_bytes, file_name, mime_type = google_drive_service.download_file(drive_file_id)
+        file_name = doc.get("file_name")
+        mime_type = doc.get("mime_type")
+        file_size = int(doc.get("file_size_bytes") or 0)
+
+        # Fall back to Google Drive metadata only when trusted DB metadata is incomplete
+        if not file_size or not file_name or not mime_type:
+            meta = google_drive_service.get_file_metadata(drive_file_id)
+            file_name = file_name or meta.get("name", "document")
+            mime_type = mime_type or meta.get("mimeType", "application/octet-stream")
+            file_size = file_size or int(meta.get("size") or 0)
+        else:
+            file_name = file_name or "document"
+            mime_type = mime_type or "application/octet-stream"
+        disposition = _content_disposition_header(file_name)
+        common_headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": disposition,
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+
+        range_header = request.headers.get("range")
+        if range_header:
+            # A single byte range is sufficient for PDF.js. Reject malformed or
+            # multi-range requests rather than silently returning incorrect bytes.
+            import re
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+            if not match or not file_size:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+            first, last = match.groups()
+            if not first and not last:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+            if not first:
+                suffix_length = int(last)
+                if suffix_length <= 0:
+                    return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+                start_byte = max(file_size - suffix_length, 0)
+                end_byte = file_size - 1
+            else:
+                start_byte = int(first)
+                end_byte = min(int(last), file_size - 1) if last else file_size - 1
+            if start_byte >= file_size or end_byte < start_byte:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+            chunk = google_drive_service.download_file_range(drive_file_id, start_byte, end_byte)
+            headers = {
+                **common_headers,
+                "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
+                "Content-Length": str(len(chunk)),
+            }
+            return Response(content=chunk, status_code=206, media_type=mime_type, headers=headers)
+
+        headers = {**common_headers}
+        if file_size:
+            headers["Content-Length"] = str(file_size)
+        return StreamingResponse(
+            google_drive_service.iter_download_file(drive_file_id),
+            media_type=mime_type,
+            headers=headers,
+        )
     except GoogleDriveNotConfiguredError:
         raise HTTPException(503, "Google Drive integration is not configured.")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Failed to retrieve document from Google Drive for candidate %s: %s", candidate_id, exc)
-        raise HTTPException(502, f"Document download failed: {exc}")
-
-    return StreamingResponse(
-        io.BytesIO(file_bytes),
-        media_type=mime_type or "application/octet-stream",
-        headers={"Content-Disposition": _content_disposition_header(file_name)},
-    )
+        raise HTTPException(502, "Document download failed. Please try again.") from exc
 
 
 @router.delete("/{document_id}")

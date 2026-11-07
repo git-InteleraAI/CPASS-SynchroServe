@@ -72,6 +72,8 @@ export function getApprovalStatusDetails(statementData, currentSignoffs) {
     chDecision = 'Rejected'
   } else if (chStatusNorm === 'rejected' || norm(chSignoff.status) === 'rejected' || (rawAudit === 'REJECTED' && !signoff.rejected_stage && rawCpass !== 'L3_REJECTED' && rawCpass !== 'L4_REJECTED' && rawCpass !== 'L5_REJECTED')) {
     chDecision = 'Rejected'
+  } else if (chStatusNorm === 'pending' || (rawAudit === 'SUBMITTED' && rawCpass === 'PENDING')) {
+    chDecision = 'Pending'
   } else if (
     chStatusNorm === 'recommended' ||
     chStatusNorm === 'approved' ||
@@ -100,6 +102,8 @@ export function getApprovalStatusDetails(statementData, currentSignoffs) {
   let copsDecision = 'Pending'
   if (copsStatusNorm === 'rejected' || norm(copsSignoff.status) === 'rejected' || signoff.rejected_stage === 'cops' || rawCpass === 'L3_REJECTED') {
     copsDecision = 'Rejected'
+  } else if (copsStatusNorm === 'pending' || chDecision === 'Pending' || isReturnedToL1) {
+    copsDecision = 'Pending'
   } else if (
     copsStatusNorm === 'verified' ||
     copsStatusNorm === 'approved' ||
@@ -121,6 +125,8 @@ export function getApprovalStatusDetails(statementData, currentSignoffs) {
   let blDecision = 'Pending'
   if (blStatusNorm === 'rejected' || norm(blSignoff.status) === 'rejected' || signoff.rejected_stage === 'bl' || rawCpass === 'L4_REJECTED') {
     blDecision = 'Rejected'
+  } else if (blStatusNorm === 'pending' || copsDecision === 'Pending' || chDecision === 'Pending' || isReturnedToL1) {
+    blDecision = 'Pending'
   } else if (
     blStatusNorm === 'approved' ||
     blSignoff.confirmed ||
@@ -137,6 +143,8 @@ export function getApprovalStatusDetails(statementData, currentSignoffs) {
   let ceoDecision = 'Pending'
   if (ceoStatusNorm === 'rejected' || norm(ceoSignoff.status) === 'rejected' || signoff.rejected_stage === 'ceo' || rawCpass === 'L5_REJECTED') {
     ceoDecision = 'Rejected'
+  } else if (ceoStatusNorm === 'pending' || blDecision === 'Pending' || copsDecision === 'Pending' || chDecision === 'Pending' || isReturnedToL1) {
+    ceoDecision = 'Pending'
   } else if (
     ceoStatusNorm === 'approved' ||
     ceoSignoff.confirmed ||

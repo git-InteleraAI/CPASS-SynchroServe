@@ -1,0 +1,454 @@
+/* ==========================================================================
+   CPASS Premium Glassmorphism Document Upload Progress UI (Light Theme)
+   ========================================================================== */
+
+.cpass-upload-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 20px;
+  animation: cpassFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes cpassFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.cpass-upload-modal-card {
+  width: 100%;
+  max-width: 520px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 20px;
+  box-shadow: 
+    0 25px 50px -12px rgba(15, 23, 42, 0.16),
+    0 4px 16px 0 rgba(99, 102, 241, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+  padding: 32px 28px 26px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  animation: cpassSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes cpassSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Background ambient light glow (lavender/indigo tint) */
+.cpass-upload-modal-card::before {
+  content: '';
+  position: absolute;
+  top: -80px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  height: 180px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.14) 0%, rgba(59, 130, 246, 0.05) 50%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.cpass-upload-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* Folder Illustration Icon */
+.cpass-upload-folder-wrap {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgba(238, 242, 255, 0.9) 0%, rgba(224, 231, 255, 0.6) 100%);
+  border: 1px solid rgba(199, 210, 254, 0.6);
+  border-radius: 20px;
+  box-shadow: 0 8px 20px -4px rgba(99, 102, 241, 0.2);
+}
+
+.cpass-upload-folder-icon {
+  width: 42px;
+  height: 42px;
+  filter: drop-shadow(0 4px 6px rgba(79, 70, 229, 0.25));
+}
+
+/* Header Typography */
+.cpass-upload-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+
+.cpass-upload-subtitle-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 22px;
+}
+
+.cpass-upload-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.cpass-upload-badge.destination {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
+}
+
+/* Progress Box */
+.cpass-upload-progress-box {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+  text-align: left;
+}
+
+.cpass-upload-status-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cpass-upload-status-label {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cpass-upload-percent-text {
+  font-size: 16px;
+  font-weight: 700;
+  color: #4f46e5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Progress Bar */
+.cpass-progress-track {
+  width: 100%;
+  height: 9px;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.cpass-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #3b82f6 50%, #2563eb 100%);
+  border-radius: 9999px;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.4);
+}
+
+.cpass-progress-fill.indeterminate {
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(99, 102, 241, 0.2) 0%,
+    rgba(59, 130, 246, 0.8) 50%,
+    rgba(99, 102, 241, 0.2) 100%
+  );
+  background-size: 200% 100%;
+  animation: cpassShimmer 1.8s infinite linear;
+}
+
+@keyframes cpassShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.cpass-upload-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: #64748b;
+}
+
+.cpass-upload-current-file {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: #334155;
+}
+
+.cpass-upload-count-tag {
+  font-weight: 600;
+  color: #475569;
+}
+
+/* Expandable Documents List */
+.cpass-file-list-toggle {
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s ease;
+  margin-bottom: 8px;
+}
+
+.cpass-file-list-toggle:hover {
+  background: #f1f5f9;
+}
+
+.cpass-expandable-file-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 6px 8px;
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.cpass-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.cpass-file-row:not(:last-child) {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.cpass-file-row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cpass-file-status-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.cpass-file-name-span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+  color: #1e293b;
+  font-weight: 500;
+}
+
+.cpass-file-size-span {
+  font-size: 11.5px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+/* Spinner Icon */
+.cpass-mini-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #c7d2fe;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: cpassSpin 0.75s infinite linear;
+}
+
+@keyframes cpassSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Complete State */
+.cpass-upload-success-badge {
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 50%;
+  color: #16a34a;
+  font-size: 28px;
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.15);
+}
+
+.cpass-upload-success-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: #166534;
+  margin-bottom: 6px;
+}
+
+.cpass-upload-success-text {
+  font-size: 14px;
+  color: #475569;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+/* Failure State */
+.cpass-upload-error-badge {
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 50%;
+  color: #dc2626;
+  font-size: 28px;
+  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.12);
+}
+
+.cpass-upload-error-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: #991b1b;
+  margin-bottom: 6px;
+}
+
+.cpass-upload-error-text {
+  font-size: 13.5px;
+  color: #64748b;
+  background: #fff1f2;
+  border: 1px solid #ffe4e6;
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+/* Action Buttons */
+.cpass-upload-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.cpass-btn-primary {
+  padding: 9px 20px;
+  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.25);
+  transition: all 0.15s ease;
+}
+
+.cpass-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4338ca 0%, #3730a3 100%);
+  box-shadow: 0 6px 14px rgba(79, 70, 229, 0.35);
+  transform: translateY(-1px);
+}
+
+.cpass-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.cpass-btn-secondary {
+  padding: 9px 18px;
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cpass-btn-secondary:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.cpass-btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Responsive adjustments */
+@media (max-width: 580px) {
+  .cpass-upload-modal-card {
+    padding: 24px 18px 20px;
+    border-radius: 16px;
+  }
+  .cpass-file-name-span {
+    max-width: 170px;
+  }
+  .cpass-upload-current-file {
+    max-width: 180px;
+  }
+}
+

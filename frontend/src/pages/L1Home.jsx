@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { api, downloadDocument } from '../lib/api'
+import { api, downloadDocument, uploadDocumentBatchWithProgress } from '../lib/api'
 import synchroLogo from '../../assets/SynchroServeLogoHD.png'
 import './L1Home.css'
 import ErrorBoundary from '../components/ErrorBoundary'
 import PlacementAuditStatement from '../components/PlacementAuditStatement'
+import UploadProgressModal from '../components/UploadProgressModal'
 import {
   MONTH_NAMES,
   getEmployerSalarySequence,
@@ -562,6 +563,18 @@ export default function L1Home() {
   // Modal dialog states
   const [showReviewModal, setShowReviewModal] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [uploadProgressState, setUploadProgressState] = useState({
+    isOpen: false,
+    stage: 'preparing',
+    percent: 0,
+    files: [],
+    activeFileName: '',
+    completedCount: 0,
+    totalCount: 0,
+    totalBytes: 0,
+    errorMessage: '',
+    submitResult: null,
+  })
   const [submitSuccessData, setSubmitSuccessData] = useState(null)
   const [downloadingDocId, setDownloadingDocId] = useState(null)
   const [finalSubmitSuccessData, setFinalSubmitSuccessData] = useState(null)
@@ -2659,12 +2672,110 @@ export default function L1Home() {
       }
       formData.append('allow_partial', 'true')
 
-      const res = await api(`/candidates/${sel.cand}/documents/submit`, null, {
-        method: 'POST',
-        body: formData,
+      // Assemble list of staged files for real-time multi-file progress tracking
+      const filesToUpload = []
+      if (stagedApptList.length > 0) {
+        for (const [empId, staged] of stagedApptList) {
+          filesToUpload.push({ id: `appt_${empId}`, name: staged.file.name, size: staged.file.size, docType: 'Appointment Letter' })
+        }
+      } else if (stagedAppointment?.file) {
+        filesToUpload.push({ id: 'appt_single', name: stagedAppointment.file.name, size: stagedAppointment.file.size, docType: 'Appointment Letter' })
+      }
+      for (let i = 0; i < salaryRows.length; i++) {
+        if (salaryRows[i].file) {
+          filesToUpload.push({ id: `sal_${i}`, name: salaryRows[i].file.name, size: salaryRows[i].file.size, docType: 'Salary Slip' })
+        }
+      }
+      for (const [replaceId, repl] of Object.entries(stagedSalaryReplacements)) {
+        if (repl.file) {
+          filesToUpload.push({ id: `sal_repl_${replaceId}`, name: repl.file.name, size: repl.file.size, docType: 'Salary Slip (Replacement)' })
+        }
+      }
+      for (let i = 0; i < bankRows.length; i++) {
+        if (bankRows[i].file) {
+          filesToUpload.push({ id: `bank_${i}`, name: bankRows[i].file.name, size: bankRows[i].file.size, docType: 'Bank Statement' })
+        }
+      }
+      for (const [replaceId, repl] of Object.entries(stagedBankReplacements)) {
+        if (repl.file) {
+          filesToUpload.push({ id: `bank_repl_${replaceId}`, name: repl.file.name, size: repl.file.size, docType: 'Bank Statement (Replacement)' })
+        }
+      }
+      for (const c of stagedConsolidatedBankDocs) {
+        if (c.file) {
+          filesToUpload.push({ id: `bank_consol_${c.id || Math.random()}`, name: c.file.name, size: c.file.size, docType: 'Consolidated Bank Statement' })
+        }
+      }
+      if (stagedOtherDoc?.file) {
+        filesToUpload.push({ id: 'other_doc', name: stagedOtherDoc.file.name, size: stagedOtherDoc.file.size, docType: otherDocTitle || 'Other Document' })
+      }
+
+      const totalUploadBytes = filesToUpload.reduce((acc, f) => acc + (f.size || 0), 0)
+      setShowReviewModal(false)
+      setUploadProgressState({
+        isOpen: true,
+        stage: 'uploading',
+        percent: 0,
+        files: filesToUpload.map((f) => ({ ...f, status: 'pending' })),
+        activeFileName: filesToUpload[0]?.name || '',
+        completedCount: 0,
+        totalCount: filesToUpload.length,
+        totalBytes: totalUploadBytes,
+        errorMessage: '',
+        submitResult: null,
       })
 
-      setShowReviewModal(false)
+      const res = await uploadDocumentBatchWithProgress(
+        sel.cand,
+        formData,
+        (prog) => {
+          if (prog.stage === 'uploading') {
+            let cumBytes = 0
+            let activeName = filesToUpload[0]?.name || ''
+            let completed = 0
+            const updatedFiles = filesToUpload.map((f) => {
+              const prevCum = cumBytes
+              cumBytes += (f.size || 0)
+              if (prog.loadedBytes >= cumBytes) {
+                completed++
+                return { ...f, status: 'completed' }
+              } else if (prog.loadedBytes > prevCum) {
+                activeName = f.name
+                return { ...f, status: 'uploading' }
+              } else {
+                return { ...f, status: 'pending' }
+              }
+            })
+            setUploadProgressState((prev) => ({
+              ...prev,
+              stage: 'uploading',
+              percent: prog.percent,
+              files: updatedFiles,
+              activeFileName: activeName,
+              completedCount: completed,
+            }))
+          } else if (prog.stage === 'processing') {
+            setUploadProgressState((prev) => ({
+              ...prev,
+              stage: 'processing',
+              percent: 100,
+              activeFileName: 'Google Drive & Database Persistence…',
+              completedCount: filesToUpload.length,
+              files: filesToUpload.map((f) => ({ ...f, status: 'completed' })),
+            }))
+          }
+        }
+      )
+
+      setUploadProgressState((prev) => ({
+        ...prev,
+        stage: 'completed',
+        percent: 100,
+        completedCount: filesToUpload.length,
+        files: filesToUpload.map((f) => ({ ...f, status: 'completed' })),
+        submitResult: res,
+      }))
+
       clearStagedFiles()
       if (res?.audit) {
         setAuditRecord(res.audit)
@@ -2729,7 +2840,11 @@ export default function L1Home() {
       fetchDashboardSummary(sel.state)
       scheduleAutosave()
     } catch (err) {
-      setShowReviewModal(false)
+      setUploadProgressState((prev) => ({
+        ...prev,
+        stage: 'error',
+        errorMessage: err.message || 'Submission failed. Any staged files were preserved for retry.',
+      }))
       setError(err.message || 'Submission failed. Any created Google Drive files were safely cleaned up.')
       setAuditToast({
         message: err.message || 'Drive sync failed. Staged files preserved for retry.',
@@ -5704,6 +5819,25 @@ export default function L1Home() {
           </div>
         </div>
       )}
+
+      {/* ====================================================================
+         PREMIUM GLASSMORPHISM UPLOAD PROGRESS MODAL
+         ==================================================================== */}
+      <UploadProgressModal
+        isOpen={uploadProgressState.isOpen}
+        stage={uploadProgressState.stage}
+        percent={uploadProgressState.percent}
+        files={uploadProgressState.files}
+        activeFileName={uploadProgressState.activeFileName}
+        completedCount={uploadProgressState.completedCount}
+        totalCount={uploadProgressState.totalCount}
+        totalBytes={uploadProgressState.totalBytes}
+        errorMessage={uploadProgressState.errorMessage}
+        submitResult={uploadProgressState.submitResult}
+        onDone={() => setUploadProgressState((prev) => ({ ...prev, isOpen: false }))}
+        onClose={() => setUploadProgressState((prev) => ({ ...prev, isOpen: false }))}
+        onRetry={handleFinalSubmit}
+      />
 
       {/* ====================================================================
          SUCCESS MODAL & WORKFLOW RESET

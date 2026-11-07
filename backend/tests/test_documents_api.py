@@ -326,13 +326,49 @@ def test_download_document_streams_file(mock_supabase, auth_override):
     mock_supabase.table.side_effect = table_mock
 
     with patch(
-        "app.routers.documents.google_drive_service.download_file",
-        return_value=(b"%PDF-1.4 payload content", "appointment.pdf", "application/pdf"),
+        "app.routers.documents.google_drive_service.get_file_metadata",
+        return_value={"name": "appointment.pdf", "mimeType": "application/pdf", "size": "25"},
+    ), patch(
+        "app.routers.documents.google_drive_service.iter_download_file",
+        return_value=iter([b"%PDF-1.4 payload content"]),
     ):
         res = client.get("/candidates/99901/documents/doc-uuid-1/download")
         assert res.status_code == 200
         assert res.headers["content-type"] == "application/pdf"
+        assert res.headers["accept-ranges"] == "bytes"
         assert b"%PDF-1.4 payload content" in res.content
+
+
+def test_download_document_supports_byte_ranges(mock_supabase, auth_override):
+    """PDF.js byte-range requests return a valid 206 response."""
+    def table_mock(tbl):
+        m = MagicMock()
+        if tbl == "ddugky_candidates":
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [CANDIDATE_DATA]
+        elif tbl == "candidate_documents":
+            m.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": "doc-uuid-1", "candidate_id": 99901, "drive_file_id": "drive-file-xyz",
+                 "file_name": "appointment.pdf", "mime_type": "application/pdf"}
+            ]
+        return m
+    mock_supabase.table.side_effect = table_mock
+
+    with patch(
+        "app.routers.documents.google_drive_service.get_file_metadata",
+        return_value={"name": "appointment.pdf", "mimeType": "application/pdf", "size": "25"},
+    ), patch(
+        "app.routers.documents.google_drive_service.download_file_range",
+        return_value=b"%PDF-1.4",
+    ) as range_download:
+        res = client.get(
+            "/candidates/99901/documents/doc-uuid-1/download",
+            headers={"Range": "bytes=0-7"},
+        )
+        assert res.status_code == 206
+        assert res.headers["content-range"] == "bytes 0-7/25"
+        assert res.headers["accept-ranges"] == "bytes"
+        assert res.content == b"%PDF-1.4"
+        range_download.assert_called_once_with("drive-file-xyz", 0, 7)
 
 
 def test_delete_document_removes_from_drive_and_db(mock_supabase, auth_override):
@@ -722,15 +758,104 @@ def test_l2_manager_can_list_and_download_documents(mock_supabase):
                 "drive_file_id": "drive-file-abc",
                 "file_name": "appointment.pdf",
                 "mime_type": "application/pdf",
+                "file_size_bytes": 21,
             }
         ]
         with patch(
-            "app.routers.documents.google_drive_service.download_file",
-            return_value=(b"%PDF-1.4 file content", "appointment.pdf", "application/pdf"),
+            "app.routers.documents.google_drive_service.iter_download_file",
+            return_value=iter([b"%PDF-1.4 file content"]),
+        ), patch(
+            "app.routers.documents.google_drive_service.get_file_metadata",
+            return_value={"name": "appointment.pdf", "mimeType": "application/pdf", "size": "21"},
         ):
             res_dl = client.get("/candidates/99901/documents/doc-1/download")
             assert res_dl.status_code == 200
             assert res_dl.content == b"%PDF-1.4 file content"
+            assert res_dl.headers["content-type"] == "application/pdf"
+            assert res_dl.headers["accept-ranges"] == "bytes"
+            assert res_dl.headers["content-length"] == "21"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_download_document_byte_range_and_validation(mock_supabase):
+    """Verify HTTP 206 Partial Content, Content-Range headers, and 416 range errors."""
+    l2_user = CurrentUser(
+        id="l2-manager-uuid",
+        email="l2@cpass.org",
+        full_name="Suresh Kumar",
+        role="L2_MANAGER",
+        assigned_state="ODISHA",
+    )
+
+    app.dependency_overrides[get_current_user] = lambda: l2_user
+    try:
+        mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            CANDIDATE_DATA
+        ]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                "id": "doc-1",
+                "candidate_id": 99901,
+                "drive_file_id": "drive-file-abc",
+                "file_name": "appointment.pdf",
+                "mime_type": "application/pdf",
+                "file_size_bytes": 100,
+            }
+        ]
+
+        # 1. Valid range request
+        with patch(
+            "app.routers.documents.google_drive_service.download_file_range",
+            return_value=b"0123456789",
+        ) as mock_range:
+            res_range = client.get(
+                "/candidates/99901/documents/doc-1/download",
+                headers={"Range": "bytes=0-9"},
+            )
+            assert res_range.status_code == 206
+            assert res_range.headers["content-range"] == "bytes 0-9/100"
+            assert res_range.headers["content-length"] == "10"
+            assert res_range.content == b"0123456789"
+            mock_range.assert_called_once_with("drive-file-abc", 0, 9)
+
+        # 2. Unsatisfiable range request (start >= file_size) -> 416
+        res_416 = client.get(
+            "/candidates/99901/documents/doc-1/download",
+            headers={"Range": "bytes=150-200"},
+        )
+        assert res_416.status_code == 416
+        assert res_416.headers["content-range"] == "bytes */100"
+
+        # 3. Malformed range request -> 416
+        res_malformed = client.get(
+            "/candidates/99901/documents/doc-1/download",
+            headers={"Range": "bytes=abc-xyz"},
+        )
+        assert res_malformed.status_code == 416
+        assert res_malformed.headers["content-range"] == "bytes */100"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_download_document_state_authorization_enforced(mock_supabase):
+    """L2 Manager assigned to another state is strictly rejected with 403."""
+    bihar_user = CurrentUser(
+        id="l2-bihar-uuid",
+        email="l2bihar@cpass.org",
+        full_name="Rajesh Sharma",
+        role="L2_MANAGER",
+        assigned_state="BIHAR",  # Candidate is in ODISHA
+    )
+
+    app.dependency_overrides[get_current_user] = lambda: bihar_user
+    try:
+        mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            CANDIDATE_DATA  # state_name="ODISHA"
+        ]
+        res = client.get("/candidates/99901/documents/doc-1/download")
+        assert res.status_code == 403
+        assert "state" in res.json()["detail"].lower()
     finally:
         app.dependency_overrides.clear()
 
@@ -756,6 +881,3 @@ def test_l2_manager_denied_batch_submit_and_delete(mock_supabase):
         assert "Your role cannot do this." in res2.json()["detail"]
     finally:
         app.dependency_overrides.clear()
-
-
-
