@@ -178,8 +178,9 @@ def test_dashboard_summary_state_scoping_for_l1(auth_l1_tn):
         assert data["pending_remaining"] == 47
         assert data["cpass_approved"] == 1
         assert data["cpass_rejected"] == 1
-        assert data["in_progress"] == 1
-        assert data["cpass_in_progress"] == 1
+        assert data["in_progress"] == 0
+        assert data["cpass_in_progress"] == 0
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
 
 
 def test_dashboard_summary_state_tampering_blocked(auth_l1_tn):
@@ -202,9 +203,9 @@ def test_dashboard_summary_unassigned_fails_closed(auth_l1_unassigned):
 
 
 def test_confirmed_pending_formula_strict_verification(auth_l1_tn):
-    """Pending count MUST equal Total - Uploaded and never Total - (Approved + Rejected)."""
+    """Verify invariant: Total = Pending + In Progress + Uploaded, with sets mutually exclusive."""
     with patch("app.routers.dashboard.supabase") as mock_sb:
-        # Total = 100, Uploaded = 20, Approved = 1, Rejected = 1
+        # Total = 100, Uploaded = 2 (submitted: 1 approved, 1 rejected), In Progress = 18 (doc-only), Pending = 80
         mock_total_res = MagicMock(count=100)
         uploaded_cids = [1000 + i for i in range(20)]
         mock_docs_res = MagicMock(data=[{"candidate_id": cid} for cid in uploaded_cids])
@@ -235,13 +236,16 @@ def test_confirmed_pending_formula_strict_verification(auth_l1_tn):
         data = res.json()
 
         assert data["total"] == 100
-        assert data["cpass_uploaded"] == 20
-        # Pending MUST BE 100 - 20 = 80, NOT 100 - (10 + 5) = 85
-        assert data["pending_remaining"] == 80
-        assert data["pending_remaining"] == data["total"] - data["cpass_uploaded"]
-        # In Progress MUST BE Uploaded - Approved - Rejected = 20 - 1 - 1 = 18
+        assert data["cpass_uploaded"] == 2
+        assert data["cpass_approved"] == 1
+        assert data["cpass_rejected"] == 1
         assert data["in_progress"] == 18
-        assert data["cpass_uploaded"] == data["cpass_approved"] + data["cpass_rejected"] + data["in_progress"]
+        assert data["cpass_in_progress"] == 18
+        # Pending MUST BE 100 - 2 (Uploaded) - 18 (In Progress) = 80
+        assert data["pending_remaining"] == 80
+        # Invariant checks:
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
+        assert data["cpass_uploaded"] == data["cpass_approved"] + data["cpass_rejected"]
 
 
 # -----------------------------------------------------------------------------
@@ -383,10 +387,10 @@ def test_dashboard_candidates_rejected_filter(auth_l1_tn):
 
 
 def test_dashboard_candidates_uploaded_filter(auth_l1_tn):
-    """'cpass_uploaded' filter returns all candidates with documents/audits in coordinator's state."""
+    """'cpass_uploaded' filter returns candidates with submitted placement audits in coordinator's state."""
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_docs = MagicMock(data=[{"candidate_id": 99001}])
-        mock_auds = MagicMock(data=[])
+        mock_auds = MagicMock(data=[{"candidate_id": 99001, "audit_status": "SUBMITTED", "cpass_status": "PENDING"}])
         mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
 
         upl_cand = {**TN_CANDIDATE, "candidate_id": 99001}
@@ -414,7 +418,7 @@ def test_dashboard_candidates_uploaded_filter(auth_l1_tn):
 
 
 def test_dashboard_candidates_in_progress_filter(auth_l1_tn):
-    """'in_progress' filter returns uploaded candidates whose verification is neither approved nor rejected."""
+    """'in_progress' filter returns candidates whose placement audit is drafted/documented but not yet submitted."""
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_docs = MagicMock(data=[{"candidate_id": 99001}])
         mock_auds = MagicMock(data=[{"candidate_id": 99001, "cpass_status": "PENDING", "audit_status": "DRAFT"}])
@@ -441,8 +445,10 @@ def test_dashboard_candidates_in_progress_filter(auth_l1_tn):
         data = res.json()
         assert data["filter"] == "in_progress"
         assert data["total_count"] == 1
-        assert data["candidates"][0]["is_uploaded"] is True
+        assert data["candidates"][0]["is_uploaded"] is False
+        assert data["candidates"][0]["is_in_progress"] is True
         assert data["candidates"][0]["cpass_status"] == "IN_PROGRESS"
+        assert data["candidates"][0]["audit_status"] == "DRAFT"
 
 
 def test_dashboard_candidates_search_and_pagination(auth_l1_tn):
@@ -523,16 +529,20 @@ def test_dashboard_status_variants_recognition(auth_l1_tn):
         data = res.json()
         assert data["cpass_approved"] == 4
         assert data["cpass_rejected"] == 3
-        assert data["cpass_uploaded"] == 8
+        # Uploaded is strictly submitted candidates (4 approved + 3 rejected = 7)
+        assert data["cpass_uploaded"] == 7
         assert data["in_progress"] == 1
-        assert data["pending_remaining"] == 2  # Total 10 - Uploaded 8 = 2
+        # Pending = Total (10) - Uploaded (7) - In Progress (1) = 2
+        assert data["pending_remaining"] == 2
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
 
 
 def test_dashboard_uploaded_candidate_deduplication(auth_l1_tn):
     """Candidates appearing in multiple documents and an audit record are deduplicated to 1."""
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_total_res = MagicMock(count=5)
-        # Candidate 99001 appears 4 times in documents and once in placement_audits
+        # Candidate 99001 appears 4 times in documents and once in placement_audits (DRAFT)
+        # Candidate 99002 appears once in documents and once in placement_audits (DRAFT)
         mock_docs = MagicMock(data=[
             {"candidate_id": 99001},
             {"candidate_id": 99001},
@@ -565,9 +575,11 @@ def test_dashboard_uploaded_candidate_deduplication(auth_l1_tn):
         res = client.get("/dashboard/summary")
         assert res.status_code == 200
         data = res.json()
-        assert data["cpass_uploaded"] == 2
+        # Neither candidate is submitted, so Uploaded = 0, In Progress = 2 (deduplicated)
+        assert data["cpass_uploaded"] == 0
         assert data["in_progress"] == 2
-        assert data["pending_remaining"] == 3  # 5 - 2 = 3
+        assert data["pending_remaining"] == 3  # Total 5 - Uploaded 0 - In Progress 2 = 3
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
 
 
 def test_dashboard_empty_approved_and_rejected_short_circuit(auth_l1_tn):
@@ -966,19 +978,21 @@ def test_l1_dashboard_summary_multi_stage_rejection_and_return_counting(auth_l1_
         data = res.json()
 
         assert data["total"] == 100
-        assert data["cpass_uploaded"] == 7
+        # 6 Submitted candidates (99010 approved, 99011, 99012, 99013, 99014, 99016 rejected/returned)
+        assert data["cpass_uploaded"] == 6
         # 1 Approved (99010)
         assert data["cpass_approved"] == 1
         # 5 Rejected unique candidates: 99011 (CH return), 99012 (CH reject), 99013 (COPS reject), 99014 (BL reject), 99016 (Multi-reject counted once)
         assert data["cpass_rejected"] == 5
-        # 1 In Progress: 99015
+        # 1 In Progress: 99015 (DRAFT)
         assert data["in_progress"] == 1
         assert data["cpass_in_progress"] == 1
-        # Consistency checks:
-        # Uploaded = Approved + Rejected + In Progress -> 7 = 1 + 5 + 1
-        assert data["cpass_uploaded"] == data["cpass_approved"] + data["cpass_rejected"] + data["in_progress"]
-        # Pending = Total - Uploaded -> 100 - 7 = 93
+        # Invariant checks:
+        # Uploaded = Approved + Rejected -> 6 = 1 + 5
+        assert data["cpass_uploaded"] == data["cpass_approved"] + data["cpass_rejected"]
+        # Pending = Total - Uploaded - In Progress -> 100 - 6 - 1 = 93
         assert data["pending_remaining"] == 93
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
 
 
 def test_l1_dashboard_summary_state_isolation_rejection_scope(auth_l1_tn):
@@ -986,7 +1000,7 @@ def test_l1_dashboard_summary_state_isolation_rejection_scope(auth_l1_tn):
     with patch("app.routers.dashboard.supabase") as mock_sb:
         mock_total_res = MagicMock(count=50)
 
-        # 99020 is in TN (In Progress), 1076623 is in AP (Returned to L1)
+        # 99020 is in TN (In Progress - DRAFT), 1076623 is in AP (Returned to L1)
         mock_docs_res = MagicMock(data=[
             {"candidate_id": 99020},
             {"candidate_id": 1076623},
@@ -1018,10 +1032,13 @@ def test_l1_dashboard_summary_state_isolation_rejection_scope(auth_l1_tn):
         data = res.json()
 
         assert data["state"] == "TAMIL NADU"
-        assert data["cpass_uploaded"] == 1
+        # 99020 is in DRAFT -> Uploaded = 0, In Progress = 1
+        assert data["cpass_uploaded"] == 0
         assert data["cpass_approved"] == 0
         assert data["cpass_rejected"] == 0
         assert data["in_progress"] == 1
+        assert data["pending_remaining"] == 49
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
 
 
 def test_l1_dashboard_candidates_returned_candidate_in_rejected_filter(auth_l1_tn):
@@ -1115,5 +1132,248 @@ def test_l1_resubmission_resets_rejected_count(auth_l1_tn):
         assert data["cpass_uploaded"] == 1
         assert data["cpass_approved"] == 0
         assert data["cpass_rejected"] == 0
+        assert data["in_progress"] == 0
+        assert data["pending_remaining"] == 49
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
+
+
+# -----------------------------------------------------------------------------
+# 5. L1 Dashboard Metrics Correction - Forensic Verification Tests
+# -----------------------------------------------------------------------------
+
+def test_scenario_candidate_not_started_is_pending(auth_l1_tn):
+    """Scenario 1: Candidate not started -> Pending = 1, Uploaded = 0, In Progress = 0."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=1)
+        mock_docs_res = MagicMock(data=[])
+        mock_aud_res = MagicMock(data=[])
+        mock_cand_check = MagicMock(data=[])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1
+        assert data["cpass_uploaded"] == 0
+        assert data["in_progress"] == 0
+        assert data["pending_remaining"] == 1
+
+
+def test_scenario_details_saved_as_draft_is_in_progress(auth_l1_tn):
+    """Scenario 3: Candidate details saved as draft -> In Progress = 1, Uploaded = 0, Pending = 0."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=1)
+        mock_docs_res = MagicMock(data=[])
+        mock_aud_res = MagicMock(data=[{"candidate_id": 99001, "audit_status": "DRAFT", "cpass_status": "PENDING"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1
+        assert data["cpass_uploaded"] == 0
         assert data["in_progress"] == 1
+        assert data["pending_remaining"] == 0
+
+
+def test_scenario_documents_synced_to_drive_without_draft_is_in_progress(auth_l1_tn):
+    """Scenario 5: Documents synced to Google Drive (no draft) -> In Progress = 1, Uploaded = 0."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=1)
+        mock_docs_res = MagicMock(data=[{"candidate_id": 99001}])
+        mock_aud_res = MagicMock(data=[])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1
+        assert data["cpass_uploaded"] == 0
+        assert data["in_progress"] == 1
+        assert data["pending_remaining"] == 0
+
+
+def test_scenario_documents_in_drive_plus_audit_draft_saved_is_in_progress(auth_l1_tn):
+    """Scenario 6 (User Scenario): Documents in Drive + Audit draft saved -> In Progress = 1, Uploaded = 0."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=1529)
+        mock_docs_res = MagicMock(data=[{"candidate_id": 99001}])
+        mock_aud_res = MagicMock(data=[{"candidate_id": 99001, "audit_status": "DRAFT", "cpass_status": "PENDING"}])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1529
+        assert data["cpass_uploaded"] == 0
+        assert data["in_progress"] == 1
+        assert data["pending_remaining"] == 1528
+        assert data["l2_received"] == 0
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
+
+
+def test_scenario_final_submission_completed_is_uploaded(auth_l1_tn):
+    """Scenario 8: Final submission completed -> Uploaded = 1, In Progress = 0, Pending = 1528, L2 Received = 1."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        mock_total_res = MagicMock(count=1529)
+        mock_docs_res = MagicMock(data=[{"candidate_id": 99001}])
+        mock_aud_res = MagicMock(data=[{
+            "candidate_id": 99001,
+            "audit_status": "SUBMITTED",
+            "cpass_status": "PENDING",
+            "finalized_at": "2026-11-08T12:00:00Z",
+        }])
+        mock_cand_check = MagicMock(data=[{"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"}])
+
+        def table_dispatch(name):
+            t = MagicMock()
+            if name == "ddugky_candidates":
+                t.select.return_value.eq.return_value.limit.return_value.execute.return_value = mock_total_res
+                t.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+            elif name == "candidate_documents":
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+            elif name == "placement_audits":
+                t.select.return_value.execute.return_value = mock_aud_res
+            return t
+
+        mock_sb.table.side_effect = table_dispatch
+
+        res = client.get("/dashboard/summary")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1529
+        assert data["cpass_uploaded"] == 1
+        assert data["in_progress"] == 0
+        assert data["pending_remaining"] == 1528
+        assert data["l2_received"] == 1
+        assert data["total"] == data["pending_remaining"] + data["in_progress"] + data["cpass_uploaded"]
+        assert data["cpass_uploaded"] == data["l2_received"]
+
+
+def test_scenario_card_popup_lists_match_summary_counts_exactly(auth_l1_tn):
+    """Candidate popup lists match the summary card counts exactly."""
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        # Candidate 99001 is SUBMITTED, Candidate 99002 is DRAFT, Candidate 99003 is NOT STARTED
+        mock_docs_res = MagicMock(data=[{"candidate_id": 99001}, {"candidate_id": 99002}])
+        mock_aud_res = MagicMock(data=[
+            {"candidate_id": 99001, "audit_status": "SUBMITTED", "cpass_status": "PENDING"},
+            {"candidate_id": 99002, "audit_status": "DRAFT", "cpass_status": "PENDING"},
+        ])
+        mock_cand_check = MagicMock(data=[
+            {"candidate_id": 99001, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"},
+            {"candidate_id": 99002, "state_name": "TAMIL NADU", "tc_state_name": "TAMIL NADU"},
+        ])
+
+        cand1 = {**TN_CANDIDATE, "candidate_id": 99001}
+        cand2 = {**TN_CANDIDATE, "candidate_id": 99002}
+        cand3 = {**TN_CANDIDATE, "candidate_id": 99003}
+
+        mock_ddugky = MagicMock()
+        mock_ddugky.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_cand_check
+        mock_ddugky.select.return_value.eq.return_value.in_.return_value.order.return_value.range.return_value.execute.side_effect = [
+            MagicMock(count=1, data=[cand1]),  # uploaded filter query
+            MagicMock(count=1, data=[cand2]),  # in_progress filter query
+        ]
+        mock_ddugky.select.return_value.eq.return_value.not_.in_.return_value.order.return_value.range.return_value.execute.return_value = (
+            MagicMock(count=1, data=[cand3])  # pending_remaining filter query
+        )
+
+        def table_dispatch(name):
+            if name == "ddugky_candidates":
+                return mock_ddugky
+            elif name == "candidate_documents":
+                t = MagicMock()
+                t.select.return_value.neq.return_value.execute.return_value = mock_docs_res
+                return t
+            elif name == "placement_audits":
+                t = MagicMock()
+                t.select.return_value.execute.return_value = mock_aud_res
+                return t
+            return MagicMock()
+
+        mock_sb.table.side_effect = table_dispatch
+
+        # 1. cpass_uploaded popup
+        res_upl = client.get("/dashboard/candidates?filter_type=cpass_uploaded")
+        assert res_upl.status_code == 200
+        data_upl = res_upl.json()
+        assert data_upl["total_count"] == 1
+        assert len(data_upl["candidates"]) == 1
+        assert data_upl["candidates"][0]["candidate_id"] == 99001
+        assert data_upl["candidates"][0]["is_uploaded"] is True
+
+        # 2. in_progress popup
+        res_prog = client.get("/dashboard/candidates?filter_type=in_progress")
+        assert res_prog.status_code == 200
+        data_prog = res_prog.json()
+        assert data_prog["total_count"] == 1
+        assert len(data_prog["candidates"]) == 1
+        assert data_prog["candidates"][0]["candidate_id"] == 99002
+        assert data_prog["candidates"][0]["is_uploaded"] is False
+        assert data_prog["candidates"][0]["is_in_progress"] is True
+        assert data_prog["candidates"][0]["cpass_status"] == "IN_PROGRESS"
+        assert data_prog["candidates"][0]["audit_status"] == "DRAFT"
+
+        # 3. pending_remaining popup
+        res_pend = client.get("/dashboard/candidates?filter_type=pending_remaining")
+        assert res_pend.status_code == 200
+        data_pend = res_pend.json()
+        assert data_pend["total_count"] == 1
+        assert len(data_pend["candidates"]) == 1
+        assert data_pend["candidates"][0]["candidate_id"] == 99003
+        assert data_pend["candidates"][0]["is_uploaded"] is False
+        assert data_pend["candidates"][0]["is_in_progress"] is False
+        assert data_pend["candidates"][0]["cpass_status"] == "PENDING"
+        assert data_pend["candidates"][0]["audit_status"] == "NOT_STARTED"
 

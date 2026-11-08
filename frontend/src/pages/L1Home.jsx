@@ -575,7 +575,6 @@ export default function L1Home() {
     errorMessage: '',
     submitResult: null,
   })
-  const [submitSuccessData, setSubmitSuccessData] = useState(null)
   const [downloadingDocId, setDownloadingDocId] = useState(null)
   const [finalSubmitSuccessData, setFinalSubmitSuccessData] = useState(null)
 
@@ -1607,7 +1606,7 @@ export default function L1Home() {
     setAutosaveStatus(retryCount > 0 ? 'retrying' : 'saving')
     setAutosaveError('')
 
-    const savePromise = (async () => {
+    const executeSave = async () => {
       try {
         const res = await api(`/candidates/${candId}/audit/draft`, null, {
           method: 'POST',
@@ -1639,14 +1638,22 @@ export default function L1Home() {
           setAutosaveError(err.message || 'Auto-save failed. Check connection.')
         }
         throw err
-      } finally {
+      }
+    }
+
+    const savePromise = executeSave()
+    inFlightSavePromiseRef.current = savePromise
+
+    savePromise
+      .finally(() => {
         if (inFlightSavePromiseRef.current === savePromise) {
           inFlightSavePromiseRef.current = null
         }
-      }
-    })()
+      })
+      .catch(() => {
+        // Prevent unhandled promise rejection on cleanup side-chain
+      })
 
-    inFlightSavePromiseRef.current = savePromise
     return savePromise
   }, [buildAuditDraftPayload])
 
@@ -1882,7 +1889,6 @@ export default function L1Home() {
 
   function handleFinalSubmissionCompleteReset() {
     setFinalSubmitSuccessData(null)
-    setSubmitSuccessData(null)
     clearStagedFiles()
     setSel({ state: '', tc: '', order: '', batch: '', cand: '' })
     setLists((l) => ({ ...l, tc: [], order: [], batch: [], cand: [] }))
@@ -2788,51 +2794,6 @@ export default function L1Home() {
         await loadAudit(sel.cand, candDetail)
       }
 
-      const individualBankMonths = bankMeta
-        .filter((m) => !m.is_consolidated)
-        .map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`)
-
-      const consolidatedBankStatements = bankMeta
-        .filter((m) => m.is_consolidated)
-        .map((m) => {
-          let months = []
-          if (Array.isArray(m.covered_months) && m.covered_months.length > 0) {
-            months = m.covered_months.map((cm) => `${MONTH_NAMES[cm.month - 1]} ${cm.year}`)
-          } else {
-            let sm = Number(m.coverage_start_month)
-            let sy = Number(m.coverage_start_year)
-            let em = Number(m.coverage_end_month)
-            let ey = Number(m.coverage_end_year)
-            let curY = sy
-            let curM = sm
-            while (curY < ey || (curY === ey && curM <= em)) {
-              months.push(`${MONTH_NAMES[curM - 1]} ${curY}`)
-              curM++
-              if (curM > 12) {
-                curM = 1
-                curY++
-              }
-            }
-          }
-          const emp = employerList.find((e) => String(e.id) === String(m.employer_id))
-          return {
-            employerName: emp?.employer_name || null,
-            months,
-            startText: `${MONTH_NAMES[m.coverage_start_month - 1]} ${m.coverage_start_year}`,
-            endText: `${MONTH_NAMES[m.coverage_end_month - 1]} ${m.coverage_end_year}`,
-          }
-        })
-
-      setSubmitSuccessData({
-        candidateId: sel.cand,
-        candidateName: `${candDetail.first_name} ${candDetail.last_name}`,
-        appointmentUploaded: !!stagedAppointment?.file || Object.values(stagedAppointments).some((a) => a?.file),
-        salaryMonths: salaryMeta.map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`),
-        bankMonths: individualBankMonths,
-        individualBankMonths,
-        consolidatedBankStatements,
-        totalSubmitted: res.submitted_count,
-      })
       setAuditToast({
         message: `✓ Successfully synced ${res.submitted_count} file(s) to Google Drive. Candidate and form data preserved.`,
         type: 'success',
@@ -2853,11 +2814,6 @@ export default function L1Home() {
     } finally {
       setSubmitting(false)
     }
-  }
-
-  // Dismiss Drive upload confirmation modal without resetting the form or candidate
-  function handleDismissUploadSuccess() {
-    setSubmitSuccessData(null)
   }
 
   // Calculations for Checklist & Progress
@@ -5838,71 +5794,6 @@ export default function L1Home() {
         onClose={() => setUploadProgressState((prev) => ({ ...prev, isOpen: false }))}
         onRetry={handleFinalSubmit}
       />
-
-      {/* ====================================================================
-         SUCCESS MODAL & WORKFLOW RESET
-         ==================================================================== */}
-      {submitSuccessData && (
-        <div className="l1-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="success-modal-title">
-          <div className="l1-modal-card" style={{ maxWidth: '520px' }}>
-            <div className="l1-modal-header" style={{ background: '#F0FDF4', borderBottom: '1px solid #BBF7D0' }}>
-              <h3 id="success-modal-title" style={{ color: '#166534', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                ✓ Submission Complete!
-              </h3>
-            </div>
-
-            <div className="l1-modal-body">
-              <p style={{ margin: 0, fontSize: '14.5px', color: 'var(--ink)', lineHeight: 1.5 }}>
-                All staged placement verification documents have been successfully uploaded to Google Drive and registered in the database for:
-              </p>
-
-              <div style={{ background: 'var(--soft)', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(11, 79, 184, 0.1)' }}>
-                <strong style={{ fontSize: '15px' }}>{submitSuccessData.candidateName}</strong>
-                <div style={{ fontSize: '13px', color: 'var(--mut)', marginTop: '2px' }}>
-                  Candidate ID: <strong>{submitSuccessData.candidateId}</strong>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13.5px' }}>
-                <strong>Uploaded Package Breakdown:</strong>
-                {submitSuccessData.appointmentUploaded && (
-                  <div style={{ color: '#166534' }}>✓ Appointment / Offer Letter uploaded & verified</div>
-                )}
-                {submitSuccessData.salaryMonths.length > 0 && (
-                  <div style={{ color: '#166534' }}>
-                    ✓ Salary Slips ({submitSuccessData.salaryMonths.length} months): {submitSuccessData.salaryMonths.join(', ')}
-                  </div>
-                )}
-                {submitSuccessData.consolidatedBankStatements?.map((cs, idx) => (
-                  <div key={idx} style={{ color: '#166534' }}>
-                    ✓ Consolidated Bank Statement ({cs.months.length} months): {cs.months.join(', ')}
-                    {cs.employerName ? ` [${cs.employerName}]` : ''}
-                  </div>
-                ))}
-                {submitSuccessData.individualBankMonths?.length > 0 && (
-                  <div style={{ color: '#166534' }}>
-                    ✓ Bank Statements ({submitSuccessData.individualBankMonths.length} months): {submitSuccessData.individualBankMonths.join(', ')}
-                  </div>
-                )}
-                <div style={{ marginTop: '4px', fontWeight: 700, color: '#166534' }}>
-                  Total files streamed and persisted: {submitSuccessData.totalSubmitted}
-                </div>
-              </div>
-            </div>
-
-            <div className="l1-modal-footer">
-              <button
-                type="button"
-                className="l1-btn-primary-action"
-                style={{ width: '100%', justifyContent: 'center' }}
-                onClick={handleDismissUploadSuccess}
-              >
-                Continue Placement Audit
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ====================================================================
          FINAL PLACEMENT STATEMENT SUBMISSION CONFIRMATION MODAL

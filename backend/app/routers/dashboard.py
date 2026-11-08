@@ -38,6 +38,38 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 APPROVED_STATUSES = {"APPROVED", "L2_APPROVED", "CPASS_APPROVED", "VERIFIED", "FINAL_APPROVED"}
 REJECTED_STATUSES = {"REJECTED", "L2_REJECTED", "CPASS_REJECTED", "L3_REJECTED", "L4_REJECTED", "L5_REJECTED"}
 
+# Authoritative statuses indicating that a candidate's placement audit statement has been submitted
+SUBMITTED_AUDIT_STATUSES = {
+    "SUBMITTED",
+    "APPROVED",
+    "L2_APPROVED",
+    "VERIFIED",
+    "REJECTED",
+    "RETURNED_TO_L1",
+    "RETURNED_TO_L2",
+    "RETURNED_TO_L3",
+    "RETURNED_TO_L4",
+}
+
+
+def is_candidate_submitted(audit: dict | None) -> bool:
+    """Return True if candidate's placement audit statement has been finalized and submitted.
+
+    Draft audits (audit_status == 'DRAFT') and document-only records without final
+    submission are treated as In Progress, not Uploaded.
+    """
+    if not audit:
+        return False
+    ast = (audit.get("audit_status") or "").upper()
+    if ast in SUBMITTED_AUDIT_STATUSES:
+        return True
+    if audit.get("finalized_at") is not None:
+        return True
+    cst = (audit.get("cpass_status") or "").upper()
+    if cst in APPROVED_STATUSES or cst in REJECTED_STATUSES or cst in {"UNDER_AUDIT", "BL_APPROVED", "VERIFIED", "L2_APPROVED"}:
+        return True
+    return False
+
 
 def is_candidate_rejected(audit: dict | None) -> bool:
     """Return True if candidate's current workflow state indicates rejection or return by any review level (CH, COPS, BL, CEO)."""
@@ -257,7 +289,7 @@ def get_dashboard_summary(
         )
     total_count = total_res.count or 0
 
-    # 2. Uploaded Candidates (candidates in target_state having candidate_documents or placement_audits)
+    # 2. Active candidates with documents or placement audits
     docs_res = retry_read_query(
         lambda: supabase.table("candidate_documents")
         .select("candidate_id")
@@ -268,20 +300,21 @@ def get_dashboard_summary(
 
     aud_res = retry_read_query(
         lambda: supabase.table("placement_audits")
-        .select("candidate_id,cpass_status,audit_status,signoff_details")
+        .select("candidate_id,cpass_status,audit_status,signoff_details,finalized_at")
         .execute()
     )
     aud_rows = aud_res.data or []
     audit_map = {a["candidate_id"]: a for a in aud_rows if a.get("candidate_id")}
-    all_uploaded_cids = doc_cids | set(audit_map.keys())
+    active_cids = doc_cids | set(audit_map.keys())
 
     uploaded_in_state: set[int] = set()
-    if all_uploaded_cids:
+    in_progress_in_state: set[int] = set()
+    if active_cids:
         if target_state:
             cand_check = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
-                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("candidate_id", list(active_cids))
                 .eq("state_name", target_state)
                 .execute()
             )
@@ -289,7 +322,7 @@ def get_dashboard_summary(
             cand_check = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
-                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("candidate_id", list(active_cids))
                 .in_("state_name", permitted_st)
                 .execute()
             )
@@ -297,24 +330,34 @@ def get_dashboard_summary(
             cand_check = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
-                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("candidate_id", list(active_cids))
                 .execute()
             )
         for r in (cand_check.data or []):
             st = get_candidate_state(r)
+            matches_state = False
             if target_state:
                 if st == target_state:
-                    uploaded_in_state.add(r["candidate_id"])
+                    matches_state = True
             elif permitted_st is not None:
                 if st in permitted_st:
-                    uploaded_in_state.add(r["candidate_id"])
+                    matches_state = True
             else:
-                uploaded_in_state.add(r["candidate_id"])
+                matches_state = True
+
+            if matches_state:
+                cid = r["candidate_id"]
+                if is_candidate_submitted(audit_map.get(cid)):
+                    uploaded_in_state.add(cid)
+                else:
+                    in_progress_in_state.add(cid)
+
     uploaded_count = len(uploaded_in_state)
+    in_progress_count = len(in_progress_in_state)
 
     # 3. Confirmed Pending / Remaining business rule:
-    # Pending / Remaining = Total Candidates - CPASS Uploaded Candidates
-    pending_count = max(0, total_count - uploaded_count)
+    # Pending / Remaining = Total Candidates - CPASS Uploaded Candidates - In Progress Candidates
+    pending_count = max(0, total_count - uploaded_count - in_progress_count)
 
     # 4. CPASS Approved Candidates in state
     approved_cids = {cid for cid in uploaded_in_state if is_candidate_approved(audit_map.get(cid))}
@@ -323,10 +366,6 @@ def get_dashboard_summary(
     # 5. CPASS Rejected Candidates in state (inclusive of CH, COPS, and BL rejection/return)
     rejected_cids = {cid for cid in uploaded_in_state if is_candidate_rejected(audit_map.get(cid))}
     rejected_count = len(rejected_cids)
-
-    # 6. In Progress Candidates in state:
-    # Verification process started (uploaded) but neither approved nor rejected yet
-    in_progress_count = max(0, uploaded_count - approved_count - rejected_count)
 
     # 7. L2 CH Multi-Level Review Metrics:
     # Received: unique candidates in assigned state submitted by L1 and available for CH review
@@ -628,7 +667,7 @@ def get_dashboard_candidates(
             "candidates": [],
         }
 
-    # Fetch uploaded IDs and audit statuses for state
+    # Fetch active IDs and audit statuses for state
     docs_res = retry_read_query(
         lambda: supabase.table("candidate_documents")
         .select("candidate_id")
@@ -639,20 +678,21 @@ def get_dashboard_candidates(
 
     aud_res = retry_read_query(
         lambda: supabase.table("placement_audits")
-        .select("candidate_id,cpass_status,audit_status,signoff_details")
+        .select("candidate_id,cpass_status,audit_status,signoff_details,finalized_at")
         .execute()
     )
     aud_rows = aud_res.data or []
     audit_map = {a["candidate_id"]: a for a in aud_rows if a.get("candidate_id")}
-    all_uploaded_cids = doc_cids | set(audit_map.keys())
+    active_cids = doc_cids | set(audit_map.keys())
 
     uploaded_in_state: set[int] = set()
-    if all_uploaded_cids:
+    in_progress_in_state: set[int] = set()
+    if active_cids:
         if target_state:
             cand_check = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
-                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("candidate_id", list(active_cids))
                 .eq("state_name", target_state)
                 .execute()
             )
@@ -660,7 +700,7 @@ def get_dashboard_candidates(
             cand_check = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
-                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("candidate_id", list(active_cids))
                 .in_("state_name", permitted_st)
                 .execute()
             )
@@ -668,24 +708,31 @@ def get_dashboard_candidates(
             cand_check = retry_read_query(
                 lambda: supabase.table("ddugky_candidates")
                 .select("candidate_id,tc_state_name,state_name")
-                .in_("candidate_id", list(all_uploaded_cids))
+                .in_("candidate_id", list(active_cids))
                 .execute()
             )
         for r in (cand_check.data or []):
             st = get_candidate_state(r)
+            matches_state = False
             if target_state:
                 if st == target_state:
-                    uploaded_in_state.add(r["candidate_id"])
+                    matches_state = True
             elif permitted_st is not None:
                 if st in permitted_st:
-                    uploaded_in_state.add(r["candidate_id"])
+                    matches_state = True
             else:
-                uploaded_in_state.add(r["candidate_id"])
+                matches_state = True
+
+            if matches_state:
+                cid = r["candidate_id"]
+                if is_candidate_submitted(audit_map.get(cid)):
+                    uploaded_in_state.add(cid)
+                else:
+                    in_progress_in_state.add(cid)
 
     # Compute candidate ID sets for specific filters
     approved_in_state = {cid for cid in uploaded_in_state if is_candidate_approved(audit_map.get(cid))}
     rejected_in_state = {cid for cid in uploaded_in_state if is_candidate_rejected(audit_map.get(cid))}
-    in_progress_in_state = uploaded_in_state - approved_in_state - rejected_in_state
 
     # L2 Multi-Level Review candidate ID sets
     l2_received_in_state = {
@@ -1195,8 +1242,9 @@ def get_dashboard_candidates(
     elif norm_filter == "cpass_uploaded":
         q = q.in_("candidate_id", list(uploaded_in_state))
     elif norm_filter == "pending_remaining":
-        if uploaded_in_state:
-            q = q.not_.in_("candidate_id", list(uploaded_in_state))
+        excluded_cids = uploaded_in_state | in_progress_in_state
+        if excluded_cids:
+            q = q.not_.in_("candidate_id", list(excluded_cids))
     elif norm_filter in {"received", "l2_received"}:
         q = q.in_("candidate_id", list(l2_received_in_state))
     elif norm_filter in {"recommended", "l2_recommended"}:
@@ -1265,6 +1313,7 @@ def get_dashboard_candidates(
         audit = audit_map.get(cid)
         has_docs = cid in doc_cids
         is_uploaded = cid in uploaded_in_state
+        is_in_progress = cid in in_progress_in_state
 
         raw_status = (audit and audit.get("cpass_status") or "").upper()
         raw_audit_status = (audit and audit.get("audit_status") or "").upper()
@@ -1283,11 +1332,18 @@ def get_dashboard_candidates(
         elif raw_status == "L2_APPROVED":
             normalized_cpass = "L2_APPROVED"
         elif is_uploaded:
+            normalized_cpass = raw_status if raw_status in {"UNDER_AUDIT", "SUBMITTED"} else (raw_status or "SUBMITTED")
+        elif is_in_progress:
             normalized_cpass = "IN_PROGRESS"
         else:
             normalized_cpass = "PENDING"
 
-        audit_status = (audit and audit.get("audit_status")) or ("DRAFT" if is_uploaded else "NOT_STARTED")
+        if is_uploaded:
+            audit_status = (audit and audit.get("audit_status")) or "SUBMITTED"
+        elif is_in_progress:
+            audit_status = (audit and audit.get("audit_status")) or "DRAFT"
+        else:
+            audit_status = "NOT_STARTED"
         signoff = (audit and audit.get("signoff_details")) or {}
         return_to_l1 = signoff.get("return_to_l1") or {}
         active_return = signoff.get("active_return") or {}
@@ -1314,6 +1370,7 @@ def get_dashboard_candidates(
             "employer_name": r.get("employer_name") or "—",
             "is_uploaded": is_uploaded,
             "has_documents": has_docs,
+            "is_in_progress": is_in_progress,
             "cpass_status": normalized_cpass,
             "audit_status": audit_status,
             "ch_status": stages["ch_status"],
