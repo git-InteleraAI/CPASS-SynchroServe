@@ -412,13 +412,22 @@ def test_security_admin_and_national_roles_retain_intended_access():
 
 
 # =============================================================================
-# 6. Pending/Remaining Calculation Integrity
+# 6. Pending/Remaining Calculation Integrity & State-Scoping Status Lifecycle
 # =============================================================================
 
 def test_pending_remaining_formula_integrity():
-    """Pending/Remaining must equal Total - Uploaded."""
+    """Pending/Remaining must equal Total - Uploaded - In Progress across all candidate workflow stages.
+
+    Verifies:
+    1. Scenario A: Document-only candidate -> In Progress = 1, Uploaded = 0, Pending = 191
+    2. Scenario B: Final audit submitted candidate -> Uploaded = 1, In Progress = 0, Pending = 191
+    3. Scenario C: Not started candidate -> Uploaded = 0, In Progress = 0, Pending = 192
+    4. Beneficiary state mapping (state_name=MIZORAM, tc_state_name=TELANGANA) is strictly preserved in all cases.
+    5. Invariant Total == Pending + In Progress + Uploaded holds consistently.
+    """
     app.dependency_overrides[get_current_user] = lambda: ADMIN_USER
 
+    # Scenario A: Documents uploaded, no audit submission -> In Progress = 1, Uploaded = 0, Pending = 191
     with patch("app.routers.dashboard.supabase") as mock_sb:
         def table_mock(tbl):
             m = MagicMock()
@@ -440,13 +449,89 @@ def test_pending_remaining_formula_integrity():
         data = res.json()
         total = data["total"]
         uploaded = data["cpass_uploaded"]
+        in_progress = data["in_progress"]
         pending = data["pending_remaining"]
 
         assert total == 192
-        assert uploaded == 1
-        # Formula: pending_remaining = total - uploaded
+        # Document-only candidate is In Progress, NOT Uploaded
+        assert uploaded == 0
+        assert in_progress == 1
+        # Formula: pending_remaining = total - uploaded - in_progress = 192 - 0 - 1 = 191
         assert pending == 191
-        assert pending == total - uploaded
+        assert pending == total - uploaded - in_progress
+        assert total == pending + in_progress + uploaded
+        assert data["state"] == "MIZORAM"
+
+    # Scenario B: Final audit submitted -> Uploaded = 1, In Progress = 0, Pending = 191
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        def table_mock(tbl):
+            m = MagicMock()
+            if tbl == "ddugky_candidates":
+                m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(count=192, data=[])
+                m.select.return_value.in_.return_value.eq.return_value.execute.return_value = MagicMock(
+                    data=[{"candidate_id": 1076617, "state_name": "MIZORAM", "tc_state_name": "TELANGANA"}]
+                )
+            elif tbl == "candidate_documents":
+                m.select.return_value.neq.return_value.execute.return_value = MagicMock(data=[{"candidate_id": 1076617}])
+            elif tbl == "placement_audits":
+                m.select.return_value.execute.return_value = MagicMock(data=[{
+                    "candidate_id": 1076617,
+                    "cpass_status": "PENDING",
+                    "audit_status": "SUBMITTED",
+                    "signoff_details": {},
+                    "finalized_at": "2026-11-08T12:00:00Z",
+                }])
+            return m
+
+        mock_sb.table.side_effect = table_mock
+
+        res = client.get("/dashboard/summary?state=MIZORAM")
+        assert res.status_code == 200
+        data = res.json()
+        total = data["total"]
+        uploaded = data["cpass_uploaded"]
+        in_progress = data["in_progress"]
+        pending = data["pending_remaining"]
+
+        assert total == 192
+        # Submitted candidate is Uploaded = 1, In Progress = 0
+        assert uploaded == 1
+        assert in_progress == 0
+        assert pending == 191
+        assert pending == total - uploaded - in_progress
+        assert total == pending + in_progress + uploaded
+        assert data["state"] == "MIZORAM"
+
+    # Scenario C: Candidate not started -> Uploaded = 0, In Progress = 0, Pending = 192
+    with patch("app.routers.dashboard.supabase") as mock_sb:
+        def table_mock(tbl):
+            m = MagicMock()
+            if tbl == "ddugky_candidates":
+                m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(count=192, data=[])
+                m.select.return_value.in_.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+            elif tbl == "candidate_documents":
+                m.select.return_value.neq.return_value.execute.return_value = MagicMock(data=[])
+            elif tbl == "placement_audits":
+                m.select.return_value.execute.return_value = MagicMock(data=[])
+            return m
+
+        mock_sb.table.side_effect = table_mock
+
+        res = client.get("/dashboard/summary?state=MIZORAM")
+        assert res.status_code == 200
+        data = res.json()
+        total = data["total"]
+        uploaded = data["cpass_uploaded"]
+        in_progress = data["in_progress"]
+        pending = data["pending_remaining"]
+
+        assert total == 192
+        assert uploaded == 0
+        assert in_progress == 0
+        assert pending == 192
+        assert pending == total - uploaded - in_progress
+        assert total == pending + in_progress + uploaded
+        assert data["state"] == "MIZORAM"
 
     app.dependency_overrides.clear()
 
