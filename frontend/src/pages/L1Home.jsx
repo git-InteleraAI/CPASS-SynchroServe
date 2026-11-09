@@ -19,6 +19,11 @@ import {
   isBankSlotVisible as isBankSlotVisibleHelper,
   getConsolidatedCoverage as getConsolidatedCoverageHelper
 } from '../lib/bankStatementHelper'
+import {
+  sanitizeEmployerId,
+  sanitizeDocumentAudit,
+  buildCleanAuditDraftPayload
+} from '../lib/auditDraftPayloadHelper'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -1164,7 +1169,7 @@ export default function L1Home() {
       return
     }
 
-    const defaultEmpId = targetEmpId || employerList[0]?.id || 'emp_1'
+    const defaultEmpId = sanitizeEmployerId(targetEmpId, employerList[0]?.id || 'emp_1')
     const nextPeriod = calculateNextSalaryPeriodForEmployer(defaultEmpId, salaryDetailList, currentYear)
     const nextMonth = nextPeriod.month
     const nextYear = nextPeriod.year
@@ -1524,7 +1529,7 @@ export default function L1Home() {
         }
       }
     }
-    return merged
+    return sanitizeDocumentAudit(merged)
   }
 
   // --- Autosave Engine & Draft Payload Builder ---
@@ -1534,54 +1539,16 @@ export default function L1Home() {
     if (!cSel?.cand || !cDetail) return null
 
     const payloadDocAudit = prepareDocumentAuditPayload()
-    const validEmployers = (eList || [])
-      .filter((e) => e.employer_name && e.employer_name.trim())
-      .map((e) => ({
-        id: e.id,
-        employer_name: e.employer_name.trim(),
-        months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
-        appointment_date: e.appointment_date || null,
-        designation: e.designation || null,
-        place_of_work: e.place_of_work || null,
-        monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null ? parseFloat(e.monthly_ctc) : null,
-        minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
-      }))
-
-    const validSalary = (sList || []).map((sal) => ({
-      id: sal.id,
-      employer_id: sal.employer_id || (eList?.[0]?.id || 'emp_1'),
-      month: parseInt(sal.month, 10),
-      year: parseInt(sal.year, 10),
-      working_days: sal.working_days !== '' && sal.working_days !== null ? parseInt(sal.working_days, 10) : null,
-      pay_days: sal.pay_days !== '' && sal.pay_days !== null ? parseInt(sal.pay_days, 10) : null,
-      leave_days: sal.leave_days !== '' && sal.leave_days !== null ? parseInt(sal.leave_days, 10) : null,
-      credit_date: sal.credit_date || null,
-      amount_credited: sal.amount_credited !== '' && sal.amount_credited !== null ? parseFloat(sal.amount_credited) : null,
-      gross_salary: sal.gross_salary !== '' && sal.gross_salary !== null ? parseFloat(sal.gross_salary) : null,
-      deductions: sal.deductions !== '' && sal.deductions !== null ? parseFloat(sal.deductions) : null,
-      net_salary: sal.net_salary !== '' && sal.net_salary !== null ? parseFloat(sal.net_salary) : null,
-      bank_name: sal.bank_name || null,
-    }))
-
-    return {
-      candidate_snapshot: {
-        candidate_id: cDetail.candidate_id,
-        first_name: cDetail.first_name,
-        last_name: cDetail.last_name,
-        father_name: cDetail.father_name,
-        dob: cDetail.dob,
-        mobile: cDetail.mobile,
-        state: cSel.state,
-        tc_name: cLists?.tc?.find((c) => c.tc_id === cSel.tc)?.name || cSel.tc,
-        batch_code: cLists?.batch?.find((b) => b.kb_batch_id === cSel.batch)?.batch_code || cSel.batch,
-        sanction_order: cSel.order,
-      },
-      employer_details: validEmployers,
-      salary_details: validSalary,
-      document_audit: payloadDocAudit,
-      signoff_details: sDetails || createDefaultSignoffs(),
-      remarks: aRec?.remarks || null,
-    }
+    return buildCleanAuditDraftPayload({
+      candDetail: cDetail,
+      sel: cSel,
+      lists: cLists,
+      employerList: eList,
+      salaryDetailList: sList,
+      signoffDetails: sDetails,
+      auditRecord: aRec,
+      documentAuditPayload: payloadDocAudit,
+    })
   }, [prepareDocumentAuditPayload])
 
   const performAutosave = useCallback(async (retryCount = 0) => {
@@ -1818,51 +1785,18 @@ export default function L1Home() {
     setAuditSubmitting(true)
     setError('')
     try {
-      const validEmployers = employerList.filter((e) => e.employer_name && e.employer_name.trim())
       const payloadDocAudit = prepareDocumentAuditPayload()
       setDocumentAudit(payloadDocAudit)
-      const payload = {
-        candidate_snapshot: {
-          candidate_id: candDetail.candidate_id,
-          first_name: candDetail.first_name,
-          last_name: candDetail.last_name,
-          father_name: candDetail.father_name,
-          dob: candDetail.dob,
-          mobile: candDetail.mobile,
-          state: sel.state,
-          tc_name: lists.tc.find((c) => c.tc_id === sel.tc)?.name || sel.tc,
-          batch_code: lists.batch.find((b) => b.kb_batch_id === sel.batch)?.batch_code || sel.batch,
-          sanction_order: sel.order,
-        },
-        employer_details: validEmployers.map((e) => ({
-          id: e.id,
-          employer_name: e.employer_name.trim(),
-          months_worked: e.months_worked !== '' && e.months_worked !== null ? parseFloat(e.months_worked) : null,
-          appointment_date: e.appointment_date || null,
-          designation: e.designation || null,
-          place_of_work: e.place_of_work || null,
-          monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null ? parseFloat(e.monthly_ctc) : null,
-          minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null ? parseFloat(e.minimum_wages) : null,
-        })),
-        salary_details: salaryDetailList.map((s) => ({
-          id: s.id,
-          employer_id: s.employer_id || (employerList[0]?.id || 'emp_1'),
-          month: parseInt(s.month, 10),
-          year: parseInt(s.year, 10),
-          working_days: s.working_days !== '' && s.working_days !== null ? parseInt(s.working_days, 10) : null,
-          pay_days: s.pay_days !== '' && s.pay_days !== null ? parseInt(s.pay_days, 10) : null,
-          leave_days: s.leave_days !== '' && s.leave_days !== null ? parseInt(s.leave_days, 10) : null,
-          credit_date: s.credit_date || null,
-          amount_credited: s.amount_credited !== '' && s.amount_credited !== null ? parseFloat(s.amount_credited) : null,
-          gross_salary: s.gross_salary !== '' && s.gross_salary !== null ? parseFloat(s.gross_salary) : null,
-          deductions: s.deductions !== '' && s.deductions !== null ? parseFloat(s.deductions) : null,
-          net_salary: s.net_salary !== '' && s.net_salary !== null ? parseFloat(s.net_salary) : null,
-          bank_name: s.bank_name || null,
-        })),
-        document_audit: payloadDocAudit,
-        signoff_details: signoffDetails,
-        remarks: auditRecord?.remarks || null,
-      }
+      const payload = buildCleanAuditDraftPayload({
+        candDetail,
+        sel,
+        lists,
+        employerList,
+        salaryDetailList,
+        signoffDetails,
+        auditRecord,
+        documentAuditPayload: payloadDocAudit,
+      })
 
       const res = await api(`/candidates/${sel.cand}/audit/submit`, null, {
         method: 'POST',
@@ -2569,7 +2503,8 @@ export default function L1Home() {
         const row = salaryRows[i]
         if (row.file) {
           const matchedSal = salaryDetailList[i]
-          const empId = matchedSal?.employer_id || employerList[0]?.id || null
+          const rawEmpId = matchedSal?.employer_id || employerList[0]?.id || null
+          const empId = sanitizeEmployerId(rawEmpId, employerList[0]?.id || null)
           formData.append('salary_slips', row.file)
           salaryMeta.push({
             month: Number(row.month),
@@ -2582,11 +2517,13 @@ export default function L1Home() {
       for (const [replaceId, repl] of Object.entries(stagedSalaryReplacements)) {
         if (repl.file) {
           const origDoc = salarySlips.find((d) => d.id === replaceId)
+          const rawEmpId = origDoc?.employer_id || employerList[0]?.id || null
+          const empId = sanitizeEmployerId(rawEmpId, employerList[0]?.id || null)
           formData.append('salary_slips', repl.file)
           salaryMeta.push({
             month: Number(repl.month),
             year: Number(repl.year),
-            employer_id: origDoc?.employer_id || employerList[0]?.id || null,
+            employer_id: empId,
             replace_id: replaceId,
           })
         }
@@ -2599,7 +2536,8 @@ export default function L1Home() {
         const row = bankRows[i]
         if (row.file) {
           const matchedSal = salaryDetailList[i]
-          const empId = matchedSal?.employer_id || employerList[0]?.id || null
+          const rawEmpId = matchedSal?.employer_id || employerList[0]?.id || null
+          const empId = sanitizeEmployerId(rawEmpId, employerList[0]?.id || null)
           formData.append('bank_statements', row.file)
           bankMeta.push({
             month: Number(row.month),
@@ -2614,11 +2552,13 @@ export default function L1Home() {
         if (repl.file) {
           const origDoc = bankStatements.find((d) => d.id === replaceId)
           const isConsol = Boolean(repl.is_consolidated ?? isDocConsolidated(origDoc))
+          const rawEmpId = repl.employer_id || origDoc?.employer_id || employerList[0]?.id || null
+          const empId = sanitizeEmployerId(rawEmpId, employerList[0]?.id || null)
           formData.append('bank_statements', repl.file)
           bankMeta.push({
             month: Number(repl.month || origDoc?.coverage_start_month || origDoc?.reporting_month || 1),
             year: Number(repl.year || origDoc?.coverage_start_year || origDoc?.reporting_year || currentYear),
-            employer_id: repl.employer_id || origDoc?.employer_id || employerList[0]?.id || null,
+            employer_id: empId,
             is_consolidated: isConsol,
             coverage_start_month: isConsol ? Number(repl.coverage_start_month || origDoc?.coverage_start_month || origDoc?.reporting_month || repl.month) : null,
             coverage_start_year: isConsol ? Number(repl.coverage_start_year || origDoc?.coverage_start_year || origDoc?.reporting_year || repl.year) : null,
@@ -2651,10 +2591,12 @@ export default function L1Home() {
               }
             }
           }
+          const rawEmpId = c.employer_id || employerList[0]?.id || null
+          const empId = sanitizeEmployerId(rawEmpId, employerList[0]?.id || null)
           bankMeta.push({
             month: Number(c.coverage_start_month),
             year: Number(c.coverage_start_year),
-            employer_id: c.employer_id || employerList[0]?.id || null,
+            employer_id: empId,
             is_consolidated: true,
             coverage_start_month: Number(c.coverage_start_month),
             coverage_start_year: Number(c.coverage_start_year),
@@ -3785,7 +3727,7 @@ export default function L1Home() {
                       <button
                         type="button"
                         className="l1-btn-add-employer"
-                        onClick={handleAddEmployerRow}
+                        onClick={() => handleAddEmployerRow()}
                       >
                         <span>+</span> Add Another Employer
                       </button>
@@ -3911,7 +3853,7 @@ export default function L1Home() {
                       <button
                         type="button"
                         className="l1-btn-add-month-header"
-                        onClick={handleAddSalaryRow}
+                        onClick={() => handleAddSalaryRow()}
                       >
                         <span>+</span> Add Salary Month
                       </button>
@@ -4539,7 +4481,7 @@ export default function L1Home() {
                           <button
                             type="button"
                             className="l1-btn-add-slot"
-                            onClick={handleAddSalaryRow}
+                            onClick={() => handleAddSalaryRow()}
                           >
                             + Add Salary Month (Synchronized)
                           </button>
@@ -5057,7 +4999,7 @@ export default function L1Home() {
                           <button
                             type="button"
                             className="l1-btn-add-slot"
-                            onClick={handleAddSalaryRow}
+                            onClick={() => handleAddSalaryRow()}
                           >
                             + Add Salary Month (Synchronized)
                           </button>
