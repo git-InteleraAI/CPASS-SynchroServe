@@ -43,6 +43,9 @@ export async function refreshSession() {
     try {
       const res = await fetch(`${BASE}/auth/refresh`, {
         method: 'POST',
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+        },
         credentials: 'include',
       })
 
@@ -68,6 +71,7 @@ export async function refreshSession() {
 export async function api(path, params, options = {}, _isRetry = false) {
   const qs = params ? '?' + new URLSearchParams(params).toString() : ''
   const headers = {
+    'X-Requested-With': 'XMLHttpRequest',
     ...(options.headers || {}),
   }
   if (options.body && typeof options.body === 'string' && !headers['Content-Type']) {
@@ -189,6 +193,7 @@ export function uploadDocumentBatchWithProgress(candidateId, formData, onProgres
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${BASE}/candidates/${candidateId}/documents/submit`)
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest')
     xhr.withCredentials = true
 
     if (xhr.upload && onProgress) {
