@@ -5,14 +5,15 @@ Enforces profile existence, active status, and server-side role verification.
 Issues secure HttpOnly session cookies alongside bearer token responses.
 """
 
+from datetime import datetime, timezone
+import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
-import logging
-
-from ..auth import CurrentUser, clear_user_cache, extract_token, get_current_user, resolve_state, resolve_states
+from ..auth import CurrentUser, clear_user_cache, extract_token, get_current_user, resolve_state, resolve_states, session_cache
 from ..config import settings
 from ..db import TRANSIENT_ERRORS, get_auth_client, retry_read_query, supabase
 
@@ -270,8 +271,8 @@ def update_profile(
     except Exception as exc:
         logger.warning("Could not update auth user_metadata for %s: %s", user.id, exc)
 
-    # Invalidate fast in-memory session cache so subsequent requests immediately reflect the updated name
-    clear_user_cache()
+    # Invalidate fast in-memory session cache strictly for the affected user
+    session_cache.invalidate_user(user.id)
 
     return UserProfileResponse(
         id=user.id,
@@ -286,6 +287,15 @@ def update_profile(
 @router.post("/refresh", response_model=LoginResponse)
 async def refresh(request: Request, response: Response):
     """Refresh the session using HttpOnly cookie or body token."""
+    # Capture and invalidate previous access token before rotation
+    old_access_token = None
+    try:
+        old_access_token = extract_token(request)
+    except Exception:
+        pass
+    if old_access_token:
+        session_cache.invalidate_token(old_access_token)
+
     refresh_token = request.cookies.get("cpass_refresh_token")
     if not refresh_token:
         try:
@@ -340,6 +350,25 @@ async def refresh(request: Request, response: Response):
     if not profile.get("is_active", True):
         raise HTTPException(403, "This account is disabled.")
 
+    # Persist old access token in public.revoked_tokens before issuing new session credentials
+    if old_access_token:
+        old_hash = session_cache.hash_token(old_access_token)
+        old_claims = session_cache.extract_jwt_claims(old_access_token)
+        old_exp = old_claims.get("exp") if old_claims and isinstance(old_claims.get("exp"), (int, float)) else (time.time() + 3600.0)
+        old_exp_iso = datetime.fromtimestamp(float(old_exp), tz=timezone.utc).isoformat()
+        try:
+            supabase.table("revoked_tokens").upsert({
+                "token_hash": old_hash,
+                "user_id": auth_user.id,
+                "expires_at": old_exp_iso,
+            }).execute()
+        except Exception as exc:
+            logger.error("Failed to persist previous token revocation in public.revoked_tokens: %s", exc)
+            raise HTTPException(
+                500,
+                "Failed to record previous token revocation during refresh.",
+            )
+
     _set_auth_cookies(
         response=response,
         access_token=session.access_token,
@@ -366,15 +395,47 @@ async def refresh(request: Request, response: Response):
 
 @router.post("/logout")
 def logout(request: Request, response: Response):
-    """Revoke session token on Supabase and clear session cookies."""
+    """Revoke session token on Supabase, invalidate in local cache, and clear session cookies."""
+    # Always clear client cookies even if downstream operations fail
+    _clear_auth_cookies(response)
+
+    token = None
     try:
         token = extract_token(request)
-        # Revoke the session via Supabase admin endpoint
-        supabase.auth.admin.sign_out(token)
-    except Exception:
-        pass  # Even if token is already expired or missing, proceed with cookie cleanup
+    except HTTPException:
+        # If no token was presented, cookies are already cleared
+        return {"message": "Logged out successfully"}
 
-    _clear_auth_cookies(response)
+    # Invalidate access token in local in-memory cache
+    session_cache.invalidate_token(token)
+
+    # Persist session-specific revocation in public.revoked_tokens
+    claims = session_cache.extract_jwt_claims(token)
+    user_id = claims.get("sub") if claims else None
+    exp = claims.get("exp") if claims and isinstance(claims.get("exp"), (int, float)) else (time.time() + 3600.0)
+    token_hash = session_cache.hash_token(token)
+    expires_at_iso = datetime.fromtimestamp(float(exp), tz=timezone.utc).isoformat()
+
+    if user_id:
+        try:
+            supabase.table("revoked_tokens").upsert({
+                "token_hash": token_hash,
+                "user_id": user_id,
+                "expires_at": expires_at_iso,
+            }).execute()
+        except Exception as exc:
+            logger.error("Failed to persist session revocation in public.revoked_tokens: %s", exc)
+            raise HTTPException(
+                500,
+                "Failed to record session revocation in database.",
+            )
+
+    # Revoke the session via Supabase admin endpoint using local scope (do NOT use global)
+    try:
+        supabase.auth.admin.sign_out(token, scope="local")
+    except Exception as exc:
+        logger.warning("Supabase admin.sign_out(scope='local') failed: %s", exc)
+
     return {"message": "Logged out successfully"}
 
 
@@ -451,6 +512,22 @@ def change_password(
             logger.error("Failed to update password in Supabase: %s", admin_exc)
             raise HTTPException(500, "Failed to update password. Please try again.")
 
+    # Update authoritative password revocation state in PostgreSQL
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        supabase.table("profiles").update({
+            "password_changed_at": now_iso,
+        }).eq("id", user.id).execute()
+    except Exception as db_exc:
+        logger.error("Failed to update password_changed_at for user %s: %s", user.id, db_exc)
+        raise HTTPException(
+            500,
+            "Failed to record password revocation state in database. Password change aborted.",
+        )
+
+    # Invalidate all local cached sessions for the affected user
+    session_cache.invalidate_user(user.id)
+
     # Step 4: Re-authenticate with new password to ensure valid session continuity
     try:
         new_auth = auth_client.auth.sign_in_with_password({
@@ -466,8 +543,7 @@ def change_password(
             )
     except Exception as reauth_exc:
         logger.warning("Could not refresh session cookies after password update: %s", reauth_exc)
-
-    clear_user_cache()
+        _clear_auth_cookies(response)
 
     return ChangePasswordResponse(
         status="success",

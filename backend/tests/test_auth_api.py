@@ -262,7 +262,7 @@ def test_logout_revokes_token_and_clears_cookies(mock_supabase_db):
         )
         assert res.status_code == 200
         assert res.json()["message"] == "Logged out successfully"
-        mock_sb.auth.admin.sign_out.assert_called_once_with("token-to-revoke")
+        mock_sb.auth.admin.sign_out.assert_called_once_with("token-to-revoke", scope="local")
 
 
 def test_frontend_has_no_direct_supabase_references():
@@ -432,7 +432,7 @@ def auth_user_override():
     app.dependency_overrides.pop(get_current_user, None)
 
 
-def test_change_password_success(auth_user_override, mock_auth_client):
+def test_change_password_success(auth_user_override, mock_auth_client, mock_supabase_db):
     """Correct current password + valid new password updates password and sets rotated cookies."""
     auth_resp = MagicMock()
     auth_resp.user = mock_auth_user("user-123", "coordinator@cpass.org")
@@ -874,7 +874,7 @@ def test_full_cookie_session_lifecycle(mock_auth_client, mock_supabase_db):
         logout_res = client.post("/auth/logout", cookies={"cpass_access_token": access_cookie_2})
         assert logout_res.status_code == 200
         assert logout_res.json()["message"] == "Logged out successfully"
-        mock_auth_sb.auth.admin.sign_out.assert_called_once_with(access_cookie_2)
+        mock_auth_sb.auth.admin.sign_out.assert_called_once_with(access_cookie_2, scope="local")
 
     # 6. Verify unauthenticated post-logout
     clear_user_cache()
