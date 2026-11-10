@@ -44,11 +44,6 @@ class UpdateProfileRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    token_type: str = "cookie"
-    access_token: str | None = None
-    refresh_token: str | None = None
-    expires_in: int | None = None
-    expires_at: int | None = None
     user: UserProfileResponse
 
 
@@ -224,11 +219,6 @@ def login(payload: LoginRequest, response: Response):
     )
 
     return LoginResponse(
-        token_type="cookie",
-        access_token=session.access_token,
-        refresh_token=session.refresh_token,
-        expires_in=session.expires_in,
-        expires_at=session.expires_at,
         user=UserProfileResponse(
             id=profile["id"],
             email=profile.get("email"),
@@ -363,11 +353,6 @@ async def refresh(request: Request, response: Response):
     assigned_state = resolved_list[0] if resolved_list else None
 
     return LoginResponse(
-        token_type="cookie",
-        access_token=session.access_token,
-        refresh_token=session.refresh_token,
-        expires_in=session.expires_in,
-        expires_at=session.expires_at,
         user=UserProfileResponse(
             id=profile["id"],
             email=profile.get("email"),

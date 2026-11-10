@@ -61,7 +61,7 @@ def mock_auth_client():
 
 
 def test_login_success(mock_auth_client, mock_supabase_db):
-    """Successful login returns tokens and sets HttpOnly cookies."""
+    """Successful login sets HttpOnly cookies and returns user without tokens in JSON."""
     auth_resp = MagicMock()
     auth_resp.user = mock_auth_user()
     auth_resp.session = mock_auth_session()
@@ -88,9 +88,16 @@ def test_login_success(mock_auth_client, mock_supabase_db):
 
     assert res.status_code == 200
     data = res.json()
-    assert data["access_token"] == "test-access-token"
+    # Security: No sensitive tokens or expiration timestamps exposed in JSON response
+    assert "access_token" not in data
+    assert "refresh_token" not in data
+    assert "expires_at" not in data
+    assert "expires_in" not in data
+    assert "token_type" not in data
+    assert "user" in data
     assert data["user"]["role"] == "L1_COORDINATOR"
     assert data["user"]["full_name"] == "Test Coordinator"
+    assert data["user"]["email"] == "user@cpass.org"
 
     # Verify HttpOnly cookies
     assert "cpass_access_token" in res.cookies
@@ -223,7 +230,7 @@ def test_get_me_expired_token():
 
 
 def test_refresh_token_rotation(mock_auth_client, mock_supabase_db):
-    """POST /auth/refresh returns new access and refresh tokens."""
+    """POST /auth/refresh rotates session cookies without exposing tokens in JSON."""
     auth_resp = MagicMock()
     auth_resp.user = mock_auth_user()
     auth_resp.session = mock_auth_session("new-access-token", "new-refresh-token")
@@ -235,9 +242,15 @@ def test_refresh_token_rotation(mock_auth_client, mock_supabase_db):
 
     res = client.post("/auth/refresh", json={"refresh_token": "valid-refresh-token"})
     assert res.status_code == 200
-    assert res.json()["access_token"] == "new-access-token"
-    assert res.json()["refresh_token"] == "new-refresh-token"
+    data = res.json()
+    assert "access_token" not in data
+    assert "refresh_token" not in data
+    assert "expires_at" not in data
+    assert "expires_in" not in data
+    assert "token_type" not in data
+    assert data["user"]["full_name"] == "Refreshed User"
     assert "cpass_access_token" in res.cookies
+    assert "cpass_refresh_token" in res.cookies
 
 
 def test_logout_revokes_token_and_clears_cookies(mock_supabase_db):
@@ -690,4 +703,181 @@ def test_change_password_supabase_update_failure(auth_user_override, mock_auth_c
         assert res.status_code == 500
         assert "Failed to update password" in res.json()["detail"]
 
+
+# =============================================================================
+# Token Non-Exposure & Cookie Session Lifecycle Tests (Phase 1.1)
+# =============================================================================
+
+def test_login_does_not_expose_tokens_in_json(mock_auth_client, mock_supabase_db):
+    """Verify that POST /auth/login returns strictly non-sensitive profile data and zero tokens."""
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user()
+    auth_resp.session = mock_auth_session()
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+
+    mock_supabase_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        {
+            "id": "user-123",
+            "email": "user@cpass.org",
+            "full_name": "Test Coordinator",
+            "role": "L1_COORDINATOR",
+            "is_active": True,
+        }
+    ]
+
+    res = client.post(
+        "/auth/login",
+        json={
+            "email": "user@cpass.org",
+            "password": "Password123!",
+            "expected_role": "L1_COORDINATOR",
+        },
+    )
+
+    assert res.status_code == 200
+    data = res.json()
+
+    # The public JSON payload must strictly contain only 'user'
+    assert list(data.keys()) == ["user"]
+    assert "access_token" not in data
+    assert "refresh_token" not in data
+    assert "expires_at" not in data
+    assert "expires_in" not in data
+    assert "token_type" not in data
+
+    # Verify credentials delivered safely in HttpOnly cookies
+    assert "cpass_access_token" in res.cookies
+    assert "cpass_refresh_token" in res.cookies
+
+
+def test_refresh_does_not_expose_tokens_in_json(mock_auth_client, mock_supabase_db):
+    """Verify that POST /auth/refresh returns strictly non-sensitive profile data and zero tokens."""
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user()
+    auth_resp.session = mock_auth_session("rotated-access-token", "rotated-refresh-token")
+    mock_auth_client.auth.refresh_session.return_value = auth_resp
+
+    mock_supabase_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        {"id": "user-123", "full_name": "Refreshed User", "role": "L1_COORDINATOR", "is_active": True}
+    ]
+
+    # Refresh using HttpOnly cookie without body
+    res = client.post("/auth/refresh", cookies={"cpass_refresh_token": "valid-cookie-refresh-token"})
+    assert res.status_code == 200
+    data = res.json()
+
+    # Public JSON response must not leak session tokens
+    assert list(data.keys()) == ["user"]
+    assert "access_token" not in data
+    assert "refresh_token" not in data
+    assert "expires_at" not in data
+    assert "expires_in" not in data
+    assert "token_type" not in data
+
+    # Rotated cookies are properly set
+    assert "cpass_access_token" in res.cookies
+    assert "cpass_refresh_token" in res.cookies
+
+
+def test_full_cookie_session_lifecycle(mock_auth_client, mock_supabase_db):
+    """Verify complete end-to-end cookie session lifecycle:
+    Login -> Restore session via /auth/me -> Refresh session -> Access protected route -> Logout.
+    """
+    # 1. Login
+    auth_resp = MagicMock()
+    auth_resp.user = mock_auth_user("user-456", "lifecycle@cpass.org")
+    auth_resp.session = mock_auth_session("lifecycle-access-1", "lifecycle-refresh-1")
+    mock_auth_client.auth.sign_in_with_password.return_value = auth_resp
+
+    mock_supabase_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        {
+            "id": "user-456",
+            "email": "lifecycle@cpass.org",
+            "full_name": "Lifecycle User",
+            "role": "L1_COORDINATOR",
+            "is_active": True,
+            "assigned_state": "ODISHA",
+        }
+    ]
+
+    login_res = client.post(
+        "/auth/login",
+        json={"email": "lifecycle@cpass.org", "password": "Password123!"},
+    )
+    assert login_res.status_code == 200
+    assert "access_token" not in login_res.json()
+    assert "refresh_token" not in login_res.json()
+
+    access_cookie_1 = login_res.cookies.get("cpass_access_token")
+    refresh_cookie_1 = login_res.cookies.get("cpass_refresh_token")
+    assert access_cookie_1 is not None
+    assert refresh_cookie_1 is not None
+
+    # 2. Access /auth/me with cookie
+    with patch("app.auth.supabase") as mock_auth_sb:
+        mock_u = MagicMock()
+        mock_u.user = mock_auth_user("user-456", "lifecycle@cpass.org")
+        mock_auth_sb.auth.get_user.return_value = mock_u
+        mock_auth_sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                "id": "user-456",
+                "email": "lifecycle@cpass.org",
+                "full_name": "Lifecycle User",
+                "role": "L1_COORDINATOR",
+                "is_active": True,
+                "assigned_state": "ODISHA",
+            }
+        ]
+
+        me_res = client.get("/auth/me", cookies={"cpass_access_token": access_cookie_1})
+        assert me_res.status_code == 200
+        assert me_res.json()["full_name"] == "Lifecycle User"
+        assert me_res.json()["role"] == "L1_COORDINATOR"
+
+    # 3. Refresh session with cookie
+    auth_resp_refreshed = MagicMock()
+    auth_resp_refreshed.user = mock_auth_user("user-456", "lifecycle@cpass.org")
+    auth_resp_refreshed.session = mock_auth_session("lifecycle-access-2", "lifecycle-refresh-2")
+    mock_auth_client.auth.refresh_session.return_value = auth_resp_refreshed
+
+    refresh_res = client.post("/auth/refresh", cookies={"cpass_refresh_token": refresh_cookie_1})
+    assert refresh_res.status_code == 200
+    assert "access_token" not in refresh_res.json()
+    assert "refresh_token" not in refresh_res.json()
+
+    access_cookie_2 = refresh_res.cookies.get("cpass_access_token")
+    assert access_cookie_2 is not None
+
+    # 4. Access protected endpoint with rotated cookie
+    clear_user_cache()
+    with patch("app.auth.supabase") as mock_auth_sb:
+        mock_u = MagicMock()
+        mock_u.user = mock_auth_user("user-456", "lifecycle@cpass.org")
+        mock_auth_sb.auth.get_user.return_value = mock_u
+        mock_auth_sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                "id": "user-456",
+                "email": "lifecycle@cpass.org",
+                "full_name": "Lifecycle User",
+                "role": "L1_COORDINATOR",
+                "is_active": True,
+                "assigned_state": "ODISHA",
+            }
+        ]
+
+        me_res_2 = client.get("/auth/me", cookies={"cpass_access_token": access_cookie_2})
+        assert me_res_2.status_code == 200
+        assert me_res_2.json()["full_name"] == "Lifecycle User"
+
+    # 5. Logout
+    with patch("app.routers.auth.supabase") as mock_auth_sb:
+        logout_res = client.post("/auth/logout", cookies={"cpass_access_token": access_cookie_2})
+        assert logout_res.status_code == 200
+        assert logout_res.json()["message"] == "Logged out successfully"
+        mock_auth_sb.auth.admin.sign_out.assert_called_once_with(access_cookie_2)
+
+    # 6. Verify unauthenticated post-logout
+    clear_user_cache()
+    unauth_res = client.get("/auth/me")
+    assert unauth_res.status_code == 401
 

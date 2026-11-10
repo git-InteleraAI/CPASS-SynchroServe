@@ -29,7 +29,7 @@ def run_checks():
 
     admin_token = None
     if admin_login_res.status_code == 200:
-        admin_token = admin_login_res.json()["session"]["access_token"]
+        admin_token = admin_login_res.cookies.get("cpass_access_token")
         print("2. Admin login via /auth/login succeeded!")
     else:
         # Generate token directly via admin/service role to test live endpoint authorization
@@ -53,7 +53,7 @@ def run_checks():
     print(f"   L1 Login status: {l1_res.status_code}")
     assert l1_res.status_code == 200, f"L1 login failed: {l1_res.text}"
     l1_data = l1_res.json()
-    l1_token = l1_data["access_token"]
+    l1_token = l1_res.cookies.get("cpass_access_token")
     print(f"   L1 User authenticated: {l1_data['user']['email']} · Role: {l1_data['user']['role']}")
 
     # 4. Fetch a real candidate ID from database
@@ -108,7 +108,7 @@ def run_checks():
             "selected_role": "ADMIN",
         })
         assert login_admin.status_code == 200, f"Admin login failed: {login_admin.text}"
-        admin_token = login_admin.json()["access_token"]
+        admin_token = login_admin.cookies.get("cpass_access_token")
         headers_admin = {"Authorization": f"Bearer {admin_token}"}
         print(f"\n6. Testing ADMIN direct API access to L1 document endpoints (Separation of Duties):")
 
