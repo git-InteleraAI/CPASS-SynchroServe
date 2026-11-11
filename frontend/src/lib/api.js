@@ -1,4 +1,4 @@
-const rawBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const rawBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || 'http://localhost:8000'
 const BASE = rawBase.replace(/\/+$/, '')
 
 // Protected preview URL: PDF.js requests byte ranges directly with HttpOnly cookies.

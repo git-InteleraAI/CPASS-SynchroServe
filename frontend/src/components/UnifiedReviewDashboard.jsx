@@ -12,6 +12,7 @@ import {
   calculateNextSalaryPeriodForEmployer,
   getEmployerDocumentSequence,
 } from '../lib/salarySequenceHelper'
+import { resolveCandidateHierarchyPipeline } from '../lib/candidatePipelineHelper'
 
 // Lazy load PdfViewer so heavy pdfjs-dist (~450 KB) is code-split and only loaded when previewing
 const PdfViewer = lazy(() => import('./PdfViewer'))
@@ -443,6 +444,7 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
 
   // Request race-condition counter
   const loadSequenceRef = useRef(0)
+  const pipelineRequestSeqRef = useRef(0)
 
   // Fetch Summary Figures
   const fetchDashboardSummary = useCallback((targetState) => {
@@ -689,7 +691,7 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
     executeCandidateSwitch(val)
   }
 
-  const handleSelectCandidateFromList = (cand) => {
+  const handleSelectCandidateFromList = async (cand) => {
     if (!cand?.candidate_id) return
     const candId = cand.candidate_id
     if (hasUnsavedChanges) {
@@ -700,39 +702,32 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
     setActiveCardFilter(null)
     setCardCandidates([])
 
-    const stateName = cand.state_name || sel.state
+    const reqSeq = ++pipelineRequestSeqRef.current
 
-    // Update state and selections
-    setSel((s) => ({
-      ...s,
-      state: stateName,
-      tc: cand.tc_id || s.tc,
-      order: cand.sanction_order_number || s.order,
-      batch: cand.kb_batch_id || s.batch,
-      cand: candId,
-    }))
+    try {
+      const result = await resolveCandidateHierarchyPipeline({
+        candidateId: candId,
+        initialCandidate: cand,
+        currentStates: lists.state,
+        apiFetch: api,
+      })
 
-    // Load cascade options in background so dropdowns show current values
-    if (cand.tc_id) {
-      api('/lookups/centres', { state: stateName })
-        .then((centres) => setLists((l) => ({ ...l, tc: centres })))
-        .catch(() => {})
-      api('/lookups/sanction-orders', { tc_id: cand.tc_id })
-        .then((orders) => setLists((l) => ({ ...l, order: orders })))
-        .catch(() => {})
-      if (cand.sanction_order_number) {
-        api('/lookups/batches', { tc_id: cand.tc_id, sanction_order: cand.sanction_order_number })
-          .then((batches) => setLists((l) => ({ ...l, batch: batches })))
-          .catch(() => {})
-      }
-      if (cand.kb_batch_id) {
-        api('/lookups/candidates', { kb_batch_id: cand.kb_batch_id })
-          .then((cands) => setLists((l) => ({ ...l, cand: cands })))
-          .catch(() => {})
+      if (pipelineRequestSeqRef.current !== reqSeq) return
+
+      // Populate all five dropdown lists and selections simultaneously
+      setLists((l) => ({
+        ...l,
+        ...result.lists,
+      }))
+      setSel(result.selection)
+
+      executeCandidateSwitch(candId)
+    } catch (err) {
+      if (pipelineRequestSeqRef.current === reqSeq) {
+        showToast(err.message || 'Failed to resolve candidate hierarchy', 'error')
+        executeCandidateSwitch(candId)
       }
     }
-
-    executeCandidateSwitch(candId)
   }
 
   const executeCandidateSwitch = (candId) => {
@@ -952,15 +947,48 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
   }
 
   const handleUpdateSalary = (idOrIdx, field, value) => {
+    let updatedMonth = null
+    let updatedYear = null
     setEditedData((prev) => {
       const list = [...prev.salary_details]
       const idx = typeof idOrIdx === 'number' ? idOrIdx : list.findIndex((s) => s.id === idOrIdx)
       if (idx >= 0) {
         list[idx] = { ...list[idx], [field]: value }
+        if (field === 'month' || field === 'year') {
+          updatedMonth = field === 'month' ? parseInt(value, 10) : list[idx].month
+          updatedYear = field === 'year' ? parseInt(value, 10) : list[idx].year
+        }
       }
       return { ...prev, salary_details: list }
     })
     setHasUnsavedChanges(true)
+
+    const cId = candDetail?.candidate_id || sel.cand
+    if ((field === 'month' || field === 'year') && cId && updatedMonth && updatedYear) {
+      const curSal = (editedData.salary_details || [])[typeof idOrIdx === 'number' ? idOrIdx : editedData.salary_details.findIndex((s) => s.id === idOrIdx)]
+      const empId = curSal?.employer_id
+      const emp = (editedData.employer_details || []).find((e) => e.id === empId) || (editedData.employer_details || [])[0]
+      const targetState = emp?.work_state || undefined
+
+      api('/minimum-wages/lookup', { candidate_id: cId, month: updatedMonth, year: updatedYear, state: targetState })
+        .then((res) => {
+          setEditedData((prev) => {
+            const list = [...prev.salary_details]
+            const idx = typeof idOrIdx === 'number' ? idOrIdx : list.findIndex((s) => s.id === idOrIdx)
+            if (idx >= 0) {
+              list[idx] = {
+                ...list[idx],
+                minimum_wage: res.minimum_wage,
+                minimum_wage_state: res.state,
+                minimum_wage_effective_month: res.effective_month,
+                minimum_wage_effective_year: res.effective_year,
+              }
+            }
+            return { ...prev, salary_details: list }
+          })
+        })
+        .catch((err) => console.warn('Could not auto-fetch minimum wage for correction:', err))
+    }
   }
 
   const handleAddSalary = (targetEmpId = null) => {
@@ -988,10 +1016,38 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
           net_salary: '',
           amount_credited: '',
           bank_name: '',
+          minimum_wage: '',
+          minimum_wage_state: '',
+          minimum_wage_effective_month: null,
+          minimum_wage_effective_year: null,
         },
       ],
     }))
     setHasUnsavedChanges(true)
+
+    const emp = (editedData.employer_details || []).find((e) => e.id === empId) || (editedData.employer_details || [])[0]
+    const targetState = emp?.work_state || undefined
+    const cId = candDetail?.candidate_id || sel.cand
+    if (cId && nextPeriod.month && nextPeriod.year) {
+      api('/minimum-wages/lookup', { candidate_id: cId, month: nextPeriod.month, year: nextPeriod.year, state: targetState })
+        .then((res) => {
+          setEditedData((prev) => {
+            const list = [...prev.salary_details]
+            const lastIdx = list.length - 1
+            if (lastIdx >= 0) {
+              list[lastIdx] = {
+                ...list[lastIdx],
+                minimum_wage: res.minimum_wage,
+                minimum_wage_state: res.state,
+                minimum_wage_effective_month: res.effective_month,
+                minimum_wage_effective_year: res.effective_year,
+              }
+            }
+            return { ...prev, salary_details: list }
+          })
+        })
+        .catch((err) => console.warn('Could not auto-fetch minimum wage for added row:', err))
+    }
   }
 
   const handleRemoveSalary = (idOrIdx) => {

@@ -33,6 +33,7 @@ app.include_router(lookups.router)
 app.include_router(duplicates.router)
 app.include_router(documents.router)
 app.include_router(audits.router)
+app.include_router(audits.min_wages_router)
 app.add_api_route("/candidates/{candidate_id}", lookups.candidate_detail, methods=["GET"], tags=["candidates"])
 
 

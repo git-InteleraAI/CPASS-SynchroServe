@@ -35,6 +35,10 @@ export function sanitizeEmployerDetails(employerList = []) {
       place_of_work: typeof e.place_of_work === 'string' ? e.place_of_work : null,
       monthly_ctc: e.monthly_ctc !== '' && e.monthly_ctc !== null && !isNaN(parseFloat(e.monthly_ctc)) ? parseFloat(e.monthly_ctc) : null,
       minimum_wages: e.minimum_wages !== '' && e.minimum_wages !== null && !isNaN(parseFloat(e.minimum_wages)) ? parseFloat(e.minimum_wages) : null,
+      work_state: typeof e.work_state === 'string' && e.work_state.trim() ? e.work_state.trim().toUpperCase() : null,
+      work_state_detection_status: typeof e.work_state_detection_status === 'string' ? e.work_state_detection_status : null,
+      minimum_wages_effective_month: e.minimum_wages_effective_month !== '' && e.minimum_wages_effective_month !== null && !isNaN(parseInt(e.minimum_wages_effective_month, 10)) ? parseInt(e.minimum_wages_effective_month, 10) : null,
+      minimum_wages_effective_year: e.minimum_wages_effective_year !== '' && e.minimum_wages_effective_year !== null && !isNaN(parseInt(e.minimum_wages_effective_year, 10)) ? parseInt(e.minimum_wages_effective_year, 10) : null,
     }))
 }
 
@@ -57,6 +61,10 @@ export function sanitizeSalaryDetails(salaryDetailList = [], fallbackEmpId = 'em
       deductions: sal.deductions !== '' && sal.deductions !== null && !isNaN(parseFloat(sal.deductions)) ? parseFloat(sal.deductions) : null,
       net_salary: sal.net_salary !== '' && sal.net_salary !== null && !isNaN(parseFloat(sal.net_salary)) ? parseFloat(sal.net_salary) : null,
       bank_name: typeof sal.bank_name === 'string' ? sal.bank_name : null,
+      minimum_wage: sal.minimum_wage !== '' && sal.minimum_wage !== null && !isNaN(parseFloat(sal.minimum_wage)) ? parseFloat(sal.minimum_wage) : null,
+      minimum_wage_state: typeof sal.minimum_wage_state === 'string' ? sal.minimum_wage_state : null,
+      minimum_wage_effective_month: sal.minimum_wage_effective_month != null && !isNaN(parseInt(sal.minimum_wage_effective_month, 10)) ? parseInt(sal.minimum_wage_effective_month, 10) : null,
+      minimum_wage_effective_year: sal.minimum_wage_effective_year != null && !isNaN(parseInt(sal.minimum_wage_effective_year, 10)) ? parseInt(sal.minimum_wage_effective_year, 10) : null,
     }
   }).filter(Boolean)
 }

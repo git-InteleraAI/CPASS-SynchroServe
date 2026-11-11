@@ -24,6 +24,7 @@ import {
   sanitizeDocumentAudit,
   buildCleanAuditDraftPayload
 } from '../lib/auditDraftPayloadHelper'
+import { resolveCandidateHierarchyPipeline } from '../lib/candidatePipelineHelper'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -316,6 +317,15 @@ function AutosaveIndicator({ status, lastSavedAt, error, onRetry }) {
 // -----------------------------------------------------------------------------
 // Placement Audit Default State Creators
 // -----------------------------------------------------------------------------
+function formatStateTitle(stateName) {
+  if (!stateName) return 'This state'
+  return stateName
+    .toLowerCase()
+    .split(' ')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
 function createDefaultEmployer(detail, idOverride) {
   return {
     id: idOverride || `emp_${Date.now()}_1`,
@@ -326,6 +336,15 @@ function createDefaultEmployer(detail, idOverride) {
     place_of_work: detail?.work_location || '',
     monthly_ctc: detail?.monthly_ctc || '',
     minimum_wages: '',
+    work_state: null,
+    work_state_detection_status: null,
+    work_state_message: null,
+    work_state_candidates: [],
+    minimum_wages_effective_month: null,
+    minimum_wages_effective_year: null,
+    location_loading: false,
+    employer_wage_loading: false,
+    employer_wage_error: null,
   }
 }
 
@@ -346,6 +365,12 @@ function createDefaultSalaryList(year, employerId = 'emp_1') {
       deductions: '',
       net_salary: '',
       bank_name: '',
+      minimum_wage: '',
+      minimum_wage_state: '',
+      minimum_wage_effective_month: null,
+      minimum_wage_effective_year: null,
+      min_wage_loading: false,
+      min_wage_error: null,
     },
     {
       id: `sal_${Date.now()}_2`,
@@ -361,6 +386,12 @@ function createDefaultSalaryList(year, employerId = 'emp_1') {
       deductions: '',
       net_salary: '',
       bank_name: '',
+      minimum_wage: '',
+      minimum_wage_state: '',
+      minimum_wage_effective_month: null,
+      minimum_wage_effective_year: null,
+      min_wage_loading: false,
+      min_wage_error: null,
     },
     {
       id: `sal_${Date.now()}_3`,
@@ -376,6 +407,12 @@ function createDefaultSalaryList(year, employerId = 'emp_1') {
       deductions: '',
       net_salary: '',
       bank_name: '',
+      minimum_wage: '',
+      minimum_wage_state: '',
+      minimum_wage_effective_month: null,
+      minimum_wage_effective_year: null,
+      min_wage_loading: false,
+      min_wage_error: null,
     },
   ]
 }
@@ -483,6 +520,20 @@ export default function L1Home() {
   const inFlightSavePromiseRef = useRef(null)
   const saveSeqRef = useRef(0)
   const formStateRef = useRef({})
+  const wageRequestSeqRef = useRef({})
+  const employerListRef = useRef([])
+  employerListRef.current = employerList
+  const salaryDetailListRef = useRef([])
+  salaryDetailListRef.current = salaryDetailList
+  const locationDebounceTimersRef = useRef({})
+
+  // Stable top-level scheduleAutosave hook to prevent TDZ reference errors in hooks declared earlier
+  const scheduleAutosaveRef = useRef(null)
+  const scheduleAutosave = useCallback((...args) => {
+    if (typeof scheduleAutosaveRef.current === 'function') {
+      return scheduleAutosaveRef.current(...args)
+    }
+  }, [])
 
 
 
@@ -490,6 +541,7 @@ export default function L1Home() {
   const [statementModalOpen, setStatementModalOpen] = useState(false)
   const [statementData, setStatementData] = useState(null)
   const [loadingStatement, setLoadingStatement] = useState(false)
+  const [ambiguousPopoverEmpId, setAmbiguousPopoverEmpId] = useState(null)
 
   // Auto-dismiss toast notification
   useEffect(() => {
@@ -600,6 +652,7 @@ export default function L1Home() {
   const selectedCandidateIdRef = useRef(sel.cand)
   const cardCandidatesRequestRef = useRef(0)
   const dashboardSummaryRequestRef = useRef(0)
+  const pipelineRequestSeqRef = useRef(0)
 
   useEffect(() => {
     selStateRef.current = sel.state
@@ -699,37 +752,57 @@ export default function L1Home() {
     }
   }
 
-  function handleSelectCandidateFromList(cand) {
+  async function handleSelectCandidateFromList(cand) {
     if (!cand?.candidate_id) return
-    selectedCandidateIdRef.current = cand.candidate_id
+    const candId = cand.candidate_id
+    const reqSeq = ++pipelineRequestSeqRef.current
+    selectedCandidateIdRef.current = candId
+
+    // Invalidate pending manual lookup requests
+    ;['state', 'tc', 'order', 'batch', 'cand'].forEach((key) => {
+      lookupRequestRefs.current[key] = (lookupRequestRefs.current[key] || 0) + 1
+    })
+
     setError('')
     setActiveCardFilter(null)
     setCardCandidates([])
     setLoadingDetail(true)
-    setSel((prev) => ({
-      ...prev,
-      state: cand.state_name || prev.state,
-      cand: cand.candidate_id,
-    }))
-    api(`/lookups/candidates/${cand.candidate_id}`)
-      .then((detail) => {
-        if (selectedCandidateIdRef.current !== cand.candidate_id) return
-        setCandDetail(detail)
-        refreshDocuments(cand.candidate_id)
-        loadAudit(cand.candidate_id, detail)
+
+    try {
+      const result = await resolveCandidateHierarchyPipeline({
+        candidateId: candId,
+        initialCandidate: cand,
+        currentStates: lists.state,
+        apiFetch: api,
       })
-      .catch((e) => {
-        if (selectedCandidateIdRef.current === cand.candidate_id) setError(e.message)
-      })
-      .finally(() => {
-        if (selectedCandidateIdRef.current !== cand.candidate_id) return
+
+      if (pipelineRequestSeqRef.current !== reqSeq || selectedCandidateIdRef.current !== candId) {
+        return
+      }
+
+      // Populate all five dropdown lists and selections simultaneously
+      setLists((l) => ({
+        ...l,
+        ...result.lists,
+      }))
+      setSel(result.selection)
+      setCandDetail(result.detail)
+      refreshDocuments(candId)
+      loadAudit(candId, result.detail)
+    } catch (e) {
+      if (pipelineRequestSeqRef.current === reqSeq) {
+        setError(e.message || 'Failed to populate candidate selection pipeline.')
+      }
+    } finally {
+      if (pipelineRequestSeqRef.current === reqSeq) {
         setLoadingDetail(false)
         setTimeout(() => {
-          if (selectedCandidateIdRef.current !== cand.candidate_id) return
+          if (pipelineRequestSeqRef.current !== reqSeq) return
           const el = document.getElementById('candidate-dossier-anchor')
           if (el) el.scrollIntoView({ behavior: 'smooth' })
         }, 150)
-      })
+      }
+    }
   }
 
   async function handleMarkPayslipNotAvailable(monthNumber, rowId) {
@@ -947,20 +1020,37 @@ export default function L1Home() {
           const a = res.audit
           setAuditRecord(a)
           if (Array.isArray(a.employer_details) && a.employer_details.length > 0) {
-            setEmployerList(
-              a.employer_details.map((e, idx) => ({
-                id: e.id || `emp_${idx + 1}`,
-                employer_name: e.employer_name || '',
-                months_worked: e.months_worked ?? '',
-                appointment_date: e.appointment_date || '',
-                designation: e.designation || '',
-                place_of_work: e.place_of_work || '',
-                monthly_ctc: e.monthly_ctc ?? '',
-                minimum_wages: e.minimum_wages ?? '',
-              }))
-            )
+            const loadedEmployers = a.employer_details.map((e, idx) => ({
+              id: e.id || `emp_${idx + 1}`,
+              employer_name: e.employer_name || '',
+              months_worked: e.months_worked ?? '',
+              appointment_date: e.appointment_date || '',
+              designation: e.designation || '',
+              place_of_work: e.place_of_work || '',
+              monthly_ctc: e.monthly_ctc ?? '',
+              minimum_wages: e.minimum_wages ?? '',
+              work_state: e.work_state || '',
+              work_state_detection_status: e.work_state_detection_status || '',
+              work_state_message: null,
+              work_state_candidates: [],
+              minimum_wages_effective_month: e.minimum_wages_effective_month ?? null,
+              minimum_wages_effective_year: e.minimum_wages_effective_year ?? null,
+              location_loading: false,
+              employer_wage_loading: false,
+              employer_wage_error: null,
+            }))
+            setEmployerList(loadedEmployers)
+            loadedEmployers.forEach((e) => {
+              if (e.place_of_work && (!e.work_state || e.minimum_wages === '' || e.minimum_wages == null)) {
+                detectLocationAndFetchEmployerWage(e.id, e.place_of_work, e.appointment_date, candidateId)
+              }
+            })
           } else {
-            setEmployerList([createDefaultEmployer(detail, 'emp_1')])
+            const defEmp = createDefaultEmployer(detail, 'emp_1')
+            setEmployerList([defEmp])
+            if (defEmp.place_of_work) {
+              detectLocationAndFetchEmployerWage(defEmp.id, defEmp.place_of_work, defEmp.appointment_date, candidateId)
+            }
           }
 
           if (Array.isArray(a.salary_details) && a.salary_details.length > 0) {
@@ -979,8 +1069,19 @@ export default function L1Home() {
               deductions: s.deductions ?? '',
               net_salary: s.net_salary ?? '',
               bank_name: s.bank_name || '',
+              minimum_wage: s.minimum_wage ?? '',
+              minimum_wage_state: s.minimum_wage_state || '',
+              minimum_wage_effective_month: s.minimum_wage_effective_month ?? null,
+              minimum_wage_effective_year: s.minimum_wage_effective_year ?? null,
+              min_wage_loading: false,
+              min_wage_error: null,
             }))
             setSalaryDetailList(loadedSalaryList)
+            loadedSalaryList.forEach((s) => {
+              if (s.minimum_wage === '' || s.minimum_wage == null) {
+                fetchMinimumWageForRow(s.id, s.month, s.year, candidateId)
+              }
+            })
 
             // Requirement 3: Automatically synchronize loaded salary periods into salaryRows and bankRows
             setSalaryRows((prev) =>
@@ -1018,7 +1119,11 @@ export default function L1Home() {
               })
             )
           } else {
-            setSalaryDetailList(createDefaultSalaryList(currentYear))
+            const defaultList = createDefaultSalaryList(currentYear)
+            setSalaryDetailList(defaultList)
+            defaultList.forEach((s) => {
+              fetchMinimumWageForRow(s.id, s.month, s.year, candidateId)
+            })
             setSalaryRows(createDefaultRows(0))
             setBankRows(createDefaultRows(0))
           }
@@ -1047,7 +1152,11 @@ export default function L1Home() {
           const userHasData = isDirtyRef.current || hasEnteredAuditData(employerList, salaryDetailList)
           if (!userHasData) {
             setEmployerList([createDefaultEmployer(detail)])
-            setSalaryDetailList(createDefaultSalaryList(currentYear))
+            const defaultList = createDefaultSalaryList(currentYear)
+            setSalaryDetailList(defaultList)
+            defaultList.forEach((s) => {
+              fetchMinimumWageForRow(s.id, s.month, s.year, candidateId)
+            })
             setSalaryRows(createDefaultRows(0))
             setBankRows(createDefaultRows(0))
             setDocumentAudit(createDefaultDocAudit())
@@ -1141,6 +1250,15 @@ export default function L1Home() {
       place_of_work: '',
       monthly_ctc: '',
       minimum_wages: '',
+      work_state: null,
+      work_state_detection_status: null,
+      work_state_message: null,
+      work_state_candidates: [],
+      minimum_wages_effective_month: null,
+      minimum_wages_effective_year: null,
+      location_loading: false,
+      employer_wage_loading: false,
+      employer_wage_error: null,
     }
     setEmployerList((prev) => [...prev, newRow])
     scheduleAutosave()
@@ -1153,12 +1271,242 @@ export default function L1Home() {
     scheduleAutosave()
   }
 
+  // --- Minimum Wage Lookup Handler for Salary Rows ---
+  const fetchMinimumWageForRow = useCallback(async (rowId, month, year, candidateId, explicitState, shouldAutosave = false) => {
+    const cId = candidateId || sel.cand
+    if (!cId || !month || !year) return
+
+    const m = parseInt(month, 10)
+    const y = parseInt(year, 10)
+    if (isNaN(m) || isNaN(y) || m < 1 || m > 12 || y < 2000 || y > 2050) return
+
+    let targetState = explicitState
+    if (!targetState) {
+      const curSal = (salaryDetailListRef.current || []).find((s) => s.id === rowId)
+      const empId = curSal?.employer_id
+      const emp = (employerListRef.current || []).find((e) => e.id === empId) || (employerListRef.current || [])[0]
+      if (emp?.work_state && emp?.work_state_detection_status === 'IDENTIFIED') {
+        targetState = emp.work_state
+      } else if (emp?.work_state_detection_status === 'UNSUPPORTED_STATE') {
+        setSalaryDetailList((prev) =>
+          prev.map((s) =>
+            s.id === rowId
+              ? {
+                  ...s,
+                  minimum_wage: null,
+                  minimum_wage_state: null,
+                  min_wage_loading: false,
+                  min_wage_error: `${emp.work_state || 'State'} is not in minimum wage register`,
+                }
+              : s
+          )
+        )
+        return
+      }
+    }
+
+    const seq = (wageRequestSeqRef.current[rowId] || 0) + 1
+    wageRequestSeqRef.current[rowId] = seq
+
+    setSalaryDetailList((prev) =>
+      prev.map((s) => (s.id === rowId ? { ...s, min_wage_loading: true, min_wage_error: null } : s))
+    )
+
+    try {
+      const res = await api('/minimum-wages/lookup', {
+        candidate_id: cId,
+        month: m,
+        year: y,
+        state: targetState || undefined,
+      })
+
+      if (wageRequestSeqRef.current[rowId] !== seq) return
+
+      setSalaryDetailList((prev) =>
+        prev.map((s) =>
+          s.id === rowId
+            ? {
+                ...s,
+                minimum_wage: res.minimum_wage,
+                minimum_wage_state: res.state,
+                minimum_wage_effective_month: res.effective_month,
+                minimum_wage_effective_year: res.effective_year,
+                min_wage_loading: false,
+                min_wage_error: null,
+              }
+            : s
+        )
+      )
+      if (shouldAutosave && typeof scheduleAutosave === 'function') {
+        scheduleAutosave()
+      }
+    } catch (err) {
+      if (wageRequestSeqRef.current[rowId] !== seq) return
+      console.warn(`Minimum wage lookup failed for candidate ${cId} (${m}/${y}):`, err)
+      setSalaryDetailList((prev) =>
+        prev.map((s) =>
+          s.id === rowId
+            ? {
+                ...s,
+                minimum_wage: null,
+                min_wage_loading: false,
+                min_wage_error: err.message || 'Wage lookup failed',
+              }
+            : s
+        )
+      )
+    }
+  }, [sel.cand, scheduleAutosave])
+
+  // --- Location & Employer Minimum Wage Handler ---
+  const detectLocationAndFetchEmployerWage = useCallback(async (empId, locationText, apptDate, candidateId, shouldAutosave = false) => {
+    const cId = candidateId || sel.cand
+    if (!empId) return
+
+    const trimmed = (locationText || '').trim()
+    if (trimmed.length < 2) {
+      setEmployerList((prev) =>
+        prev.map((e) =>
+          e.id === empId
+            ? {
+                ...e,
+                work_state: null,
+                work_state_detection_status: null,
+                work_state_message: null,
+                work_state_candidates: [],
+                minimum_wages: null,
+                location_loading: false,
+                employer_wage_loading: false,
+                employer_wage_error: null,
+              }
+            : e
+        )
+      )
+      return
+    }
+
+    setEmployerList((prev) =>
+      prev.map((e) =>
+        e.id === empId ? { ...e, location_loading: true, employer_wage_loading: true, employer_wage_error: null } : e
+      )
+    )
+
+    try {
+      const detRes = await api('/minimum-wages/detect-location', { location: trimmed })
+
+      let fetchedWage = null
+      let fetchedMonth = null
+      let fetchedYear = null
+      let wageError = null
+
+      if (detRes.status === 'IDENTIFIED' && detRes.detected_state && apptDate) {
+        try {
+          const wageRes = await api('/minimum-wages/employer-wage', {
+            candidate_id: cId,
+            appointment_date: apptDate,
+            state: detRes.detected_state,
+          })
+          fetchedWage = wageRes.minimum_wage
+          fetchedMonth = wageRes.effective_month
+          fetchedYear = wageRes.effective_year
+        } catch (wErr) {
+          wageError = wErr.message || 'Wage lookup failed'
+        }
+      }
+
+      setEmployerList((prev) =>
+        prev.map((e) => {
+          if (e.id !== empId) return e
+          return {
+            ...e,
+            work_state: detRes.detected_state,
+            work_state_detection_status: detRes.status,
+            work_state_message: detRes.message,
+            work_state_candidates: detRes.candidate_states || [],
+            minimum_wages: fetchedWage,
+            minimum_wages_effective_month: fetchedMonth,
+            minimum_wages_effective_year: fetchedYear,
+            location_loading: false,
+            employer_wage_loading: false,
+            employer_wage_error: wageError,
+          }
+        })
+      )
+
+      // Automatically recalculate salary rows linked to this employer using their detected work state
+      if (detRes.status === 'IDENTIFIED' && detRes.detected_state) {
+        const salaries = salaryDetailListRef.current || []
+        salaries.forEach((s) => {
+          if ((s.employer_id === empId || (!s.employer_id && (employerListRef.current || []).length === 1)) && s.month && s.year) {
+            fetchMinimumWageForRow(s.id, s.month, s.year, cId, detRes.detected_state, shouldAutosave)
+          }
+        })
+      }
+
+      if (shouldAutosave && typeof scheduleAutosave === 'function') {
+        scheduleAutosave()
+      }
+    } catch (err) {
+      console.warn('Location detection failed for employer:', err)
+      setEmployerList((prev) =>
+        prev.map((e) =>
+          e.id === empId
+            ? {
+                ...e,
+                location_loading: false,
+                employer_wage_loading: false,
+                employer_wage_error: err.message || 'Location detection failed',
+              }
+            : e
+        )
+      )
+    }
+  }, [sel.cand, scheduleAutosave, fetchMinimumWageForRow])
+
   function handleUpdateEmployerField(id, field, value) {
     if (auditRecord?.audit_status === 'SUBMITTED') return
     setEmployerList((prev) =>
       prev.map((e) => (e.id === id ? { ...e, [field]: value } : e))
     )
     scheduleAutosave()
+
+    if (field === 'place_of_work') {
+      const trimmedVal = (value || '').trim()
+      if (trimmedVal.length >= 2) {
+        setEmployerList((prev) =>
+          prev.map((e) => (e.id === id ? { ...e, location_loading: true } : e))
+        )
+      } else {
+        setEmployerList((prev) =>
+          prev.map((e) =>
+            e.id === id
+              ? {
+                  ...e,
+                  location_loading: false,
+                  work_state: null,
+                  work_state_detection_status: null,
+                  work_state_message: null,
+                  work_state_candidates: [],
+                  minimum_wages: null,
+                }
+              : e
+          )
+        )
+      }
+
+      if (locationDebounceTimersRef.current[id]) {
+        clearTimeout(locationDebounceTimersRef.current[id])
+      }
+      locationDebounceTimersRef.current[id] = setTimeout(() => {
+        const curEmp = (employerListRef.current || []).find((e) => e.id === id)
+        detectLocationAndFetchEmployerWage(id, value, curEmp?.appointment_date, sel.cand, true)
+      }, 450)
+    } else if (field === 'appointment_date') {
+      const curEmp = (employerListRef.current || []).find((e) => e.id === id)
+      if (curEmp?.work_state && curEmp?.work_state_detection_status === 'IDENTIFIED') {
+        detectLocationAndFetchEmployerWage(id, curEmp.place_of_work, value, sel.cand, true)
+      }
+    }
   }
 
   // --- Audit Salary List Handlers ---
@@ -1189,8 +1537,15 @@ export default function L1Home() {
       deductions: '',
       net_salary: '',
       bank_name: '',
+      minimum_wage: '',
+      minimum_wage_state: '',
+      minimum_wage_effective_month: null,
+      minimum_wage_effective_year: null,
+      min_wage_loading: false,
+      min_wage_error: null,
     }
     setSalaryDetailList((prev) => [...prev, newRow])
+    fetchMinimumWageForRow(newId, nextMonth, nextYear, sel.cand, undefined, true)
 
     // Requirement 3: Automatically synchronize newly added salary records to Salary Slips & Bank Statements
     const slotId = `slot_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`
@@ -1273,6 +1628,11 @@ export default function L1Home() {
       // Requirement 3: Automatically synchronize Month and Year to corresponding Salary Slips & Bank Statements slots
       if ((field === 'month' || field === 'year') && sIndex !== -1) {
         const numVal = parseInt(value, 10) || value
+        const targetRow = prev[sIndex]
+        const targetMonth = field === 'month' ? numVal : targetRow?.month
+        const targetYear = field === 'year' ? numVal : targetRow?.year
+        fetchMinimumWageForRow(id, targetMonth, targetYear, sel.cand, undefined, true)
+
         setSalaryRows((prevRows) =>
           prevRows.map((r, rIdx) => (rIdx === sIndex ? { ...r, [field]: numVal } : r))
         )
@@ -1441,6 +1801,7 @@ export default function L1Home() {
       message: `✓ Reusable salary details copied from ${prevMonthName} ${prevY} to ${targetMonthName} ${nextYear}.`,
       type: 'success',
     })
+    fetchMinimumWageForRow(targetSalId, nextMonth, nextYear, sel.cand, undefined, true)
     scheduleAutosave()
   }
 
@@ -1624,7 +1985,7 @@ export default function L1Home() {
     return savePromise
   }, [buildAuditDraftPayload])
 
-  const scheduleAutosave = useCallback(() => {
+  const scheduleAutosaveImpl = useCallback(() => {
     const s = formStateRef.current
     if (!s.sel?.cand || !s.candDetail || s.auditRecord?.audit_status === 'SUBMITTED' || s.auditLoadError) {
       return
@@ -1637,6 +1998,11 @@ export default function L1Home() {
       performAutosave(0)
     }, 1300) // 1.3s debounce
   }, [performAutosave])
+
+  scheduleAutosaveRef.current = scheduleAutosaveImpl
+  useEffect(() => {
+    scheduleAutosaveRef.current = scheduleAutosaveImpl
+  }, [scheduleAutosaveImpl])
 
   const flushAutosave = useCallback(async () => {
     if (autosaveTimerRef.current) {
@@ -3790,7 +4156,7 @@ export default function L1Home() {
                                 disabled={isAuditSubmitted}
                               />
                             </td>
-                            <td>
+                            <td style={{ position: 'relative' }}>
                               <input
                                 type="text"
                                 placeholder="e.g. Hyderabad, Telangana"
@@ -3798,6 +4164,196 @@ export default function L1Home() {
                                 onChange={(e) => handleUpdateEmployerField(emp.id, 'place_of_work', e.target.value)}
                                 disabled={isAuditSubmitted}
                               />
+                              {emp.location_loading ? (
+                                <div
+                                  style={{
+                                    height: '16px',
+                                    lineHeight: '16px',
+                                    marginTop: '3px',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    color: '#2563EB',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                  title="Identifying location..."
+                                >
+                                  <span
+                                    style={{
+                                      width: '10px',
+                                      height: '10px',
+                                      border: '1.5px solid #BFDBFE',
+                                      borderTopColor: '#2563EB',
+                                      borderRadius: '50%',
+                                      animation: 'l1-spin 0.8s linear infinite',
+                                      display: 'inline-block',
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                  <span style={{ fontWeight: 500 }}>Identifying location...</span>
+                                </div>
+                              ) : emp.work_state && emp.work_state_detection_status === 'IDENTIFIED' ? (
+                                <div
+                                  style={{
+                                    height: '16px',
+                                    lineHeight: '16px',
+                                    marginTop: '3px',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    color: '#059669',
+                                    fontWeight: 600,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                  title={`Statutory minimum wage coverage identified for ${emp.work_state}`}
+                                >
+                                  <span>✓ {emp.work_state.toUpperCase()}</span>
+                                </div>
+                              ) : emp.work_state_detection_status === 'UNSUPPORTED_STATE' ? (
+                                <div
+                                  style={{
+                                    height: '16px',
+                                    lineHeight: '16px',
+                                    marginTop: '3px',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    color: '#B45309',
+                                    fontWeight: 600,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    cursor: 'help',
+                                  }}
+                                  title={`${formatStateTitle(emp.work_state)} is not included in the current 13-state statutory minimum wage register. Minimum wage cannot be automatically determined.`}
+                                >
+                                  <span>⚠ {emp.work_state ? emp.work_state.toUpperCase() : 'STATE'} · NOT COVERED</span>
+                                </div>
+                              ) : emp.work_state_detection_status === 'AMBIGUOUS' ? (
+                                <div
+                                  style={{
+                                    height: '16px',
+                                    lineHeight: '16px',
+                                    marginTop: '3px',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    position: 'relative',
+                                  }}
+                                  onMouseEnter={() => setAmbiguousPopoverEmpId(emp.id)}
+                                  onMouseLeave={() => setAmbiguousPopoverEmpId(null)}
+                                >
+                                  <span
+                                    style={{
+                                      color: '#B45309',
+                                      fontWeight: 600,
+                                      cursor: 'pointer',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '3px',
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                    }}
+                                    onClick={() => setAmbiguousPopoverEmpId((prev) => (prev === emp.id ? null : emp.id))}
+                                    title="Location exists in multiple states. Click or hover to select state."
+                                  >
+                                    <span>⚠ LOCATION AMBIGUOUS</span>
+                                    <span
+                                      style={{
+                                        fontSize: '10px',
+                                        fontWeight: 600,
+                                        backgroundColor: '#FEF3C7',
+                                        border: '1px solid #F59E0B',
+                                        color: '#92400E',
+                                        borderRadius: '3px',
+                                        padding: '0 4px',
+                                        marginLeft: '2px',
+                                      }}
+                                    >
+                                      Select ▾
+                                    </span>
+                                  </span>
+
+                                  {ambiguousPopoverEmpId === emp.id && (emp.work_state_candidates || []).length > 0 && (
+                                    <div
+                                      style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: 0,
+                                        zIndex: 50,
+                                        background: '#FFFFFF',
+                                        border: '1px solid #F59E0B',
+                                        borderRadius: '4px',
+                                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                                        padding: '6px 8px',
+                                        marginTop: '2px',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: '4px',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <div style={{ fontSize: '10px', fontWeight: 600, color: '#78350F' }}>
+                                        Select state for "{emp.place_of_work}":
+                                      </div>
+                                      <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                                        {(emp.work_state_candidates || []).map((candState) => (
+                                          <button
+                                            key={candState}
+                                            type="button"
+                                            onClick={() => {
+                                              const refined = `${(emp.place_of_work || '').trim()}, ${candState}`
+                                              handleUpdateEmployerField(emp.id, 'place_of_work', refined)
+                                              setAmbiguousPopoverEmpId(null)
+                                            }}
+                                            style={{
+                                              background: '#FEF3C7',
+                                              border: '1px solid #F59E0B',
+                                              color: '#92400E',
+                                              borderRadius: '3px',
+                                              padding: '2px 6px',
+                                              cursor: 'pointer',
+                                              fontSize: '11px',
+                                              fontWeight: 600,
+                                            }}
+                                          >
+                                            {candState}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : emp.place_of_work && emp.place_of_work.trim().length > 0 && (emp.work_state_detection_status === 'INSUFFICIENT_INPUT' || emp.work_state_detection_status === 'UNRESOLVED' || emp.place_of_work.trim().length < 3) ? (
+                                <div
+                                  style={{
+                                    height: '16px',
+                                    lineHeight: '16px',
+                                    marginTop: '3px',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    color: '#6B7280',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                  title="Enter a valid Indian city, district, state or PIN code"
+                                >
+                                  <span>Enter a valid location</span>
+                                </div>
+                              ) : null}
                             </td>
                             <td>
                               <input
@@ -3810,14 +4366,54 @@ export default function L1Home() {
                               />
                             </td>
                             <td>
-                              <input
-                                type="number"
-                                placeholder="0"
-                                min="0"
-                                value={emp.minimum_wages ?? ''}
-                                onChange={(e) => handleUpdateEmployerField(emp.id, 'minimum_wages', e.target.value)}
-                                disabled={isAuditSubmitted}
-                              />
+                              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                                <input
+                                  type="text"
+                                  readOnly
+                                  placeholder="Auto"
+                                  value={
+                                    emp.employer_wage_loading
+                                      ? 'Fetching...'
+                                      : emp.minimum_wages != null
+                                      ? `₹${Number(emp.minimum_wages).toLocaleString('en-IN')}`
+                                      : '—'
+                                  }
+                                  disabled={isAuditSubmitted}
+                                  title={
+                                    emp.work_state
+                                      ? `Statutory Semi-Skilled Minimum Wage for ${emp.work_state} at appointment date`
+                                      : 'Requires Place of Work & Appointment Date'
+                                  }
+                                  style={{
+                                    backgroundColor: '#F3F4F6',
+                                    color: emp.minimum_wages != null ? '#1F2937' : '#9CA3AF',
+                                    cursor: 'not-allowed',
+                                    fontWeight: emp.minimum_wages != null ? 600 : 400,
+                                    paddingRight: '44px',
+                                  }}
+                                />
+                                <span
+                                  style={{
+                                    position: 'absolute',
+                                    right: '6px',
+                                    fontSize: '10px',
+                                    fontWeight: 700,
+                                    letterSpacing: '0.5px',
+                                    backgroundColor: emp.minimum_wages != null ? '#DEF7EC' : '#E5E7EB',
+                                    color: emp.minimum_wages != null ? '#03543F' : '#6B7280',
+                                    borderRadius: '3px',
+                                    padding: '1px 5px',
+                                    pointerEvents: 'none',
+                                  }}
+                                >
+                                  AUTO
+                                </span>
+                              </div>
+                              {emp.employer_wage_error && (
+                                <div style={{ fontSize: '10px', color: '#DC2626', marginTop: '2px' }}>
+                                  {emp.employer_wage_error}
+                                </div>
+                              )}
                             </td>
                             {!isAuditSubmitted && employerList.length > 1 && (
                               <td style={{ textAlign: 'center' }}>
@@ -4098,7 +4694,7 @@ export default function L1Home() {
                               />
                             </div>
 
-                            <div className="l1-salary-col l1-salary-col-span-2">
+                            <div className="l1-salary-col">
                               <label className="l1-salary-label">Bank Name</label>
                               <input
                                 type="text"
@@ -4108,6 +4704,36 @@ export default function L1Home() {
                                 onChange={(e) => handleUpdateSalaryField(sal.id, 'bank_name', e.target.value)}
                                 disabled={isAuditSubmitted}
                                 aria-label={`Month ${empSeq} Bank Name`}
+                              />
+                            </div>
+
+                            <div className="l1-salary-col">
+                              <label className="l1-salary-label">
+                                Min Wage (₹) <span className="l1-calc-tag">Auto</span>
+                              </label>
+                              <input
+                                type="text"
+                                className="l1-salary-control calculated-field"
+                                style={{ fontWeight: 600, color: '#1E293B', background: '#F8FAFC', cursor: 'default' }}
+                                readOnly
+                                tabIndex={-1}
+                                value={
+                                  sal.min_wage_loading
+                                    ? 'Fetching...'
+                                    : sal.minimum_wage
+                                    ? `₹${Number(sal.minimum_wage).toLocaleString('en-IN')}`
+                                    : sal.min_wage_error
+                                    ? 'Not Available'
+                                    : '—'
+                                }
+                                title={
+                                  sal.min_wage_error
+                                    ? sal.min_wage_error
+                                    : sal.minimum_wage_effective_month && sal.minimum_wage_effective_year
+                                    ? `Semi-skilled revision: ${MONTH_NAMES[sal.minimum_wage_effective_month - 1]?.slice(0, 3)} ${sal.minimum_wage_effective_year} (${sal.minimum_wage_state || ''})`
+                                    : 'Applicable statutory semi-skilled minimum wage (system generated)'
+                                }
+                                aria-label={`Month ${empSeq} Semi-Skilled Minimum Wage`}
                               />
                             </div>
                           </div>

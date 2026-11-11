@@ -17,8 +17,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field, field_validator
 
-from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_current_user, require_roles, resolve_state
+from ..auth import CurrentUser, allowed_tc_ids, check_candidate_access, get_candidate_state, get_current_user, require_roles, resolve_state
 from ..db import TRANSIENT_ERRORS, retry_read_query, supabase
+from ..services.min_wages import (
+    apply_authoritative_employer_and_salary_wages,
+    apply_authoritative_minimum_wages,
+    lookup_minimum_wage_for_date,
+    lookup_minimum_wage_for_period,
+)
+from ..services.location_detector import detect_work_state
 
 logger = logging.getLogger("cpass.audits")
 
@@ -39,6 +46,10 @@ class EmployerEntry(BaseModel):
     place_of_work: str | None = Field(None, description="Workplace city/location")
     monthly_ctc: float | None = Field(None, ge=0, description="Monthly CTC in Rupees")
     minimum_wages: float | None = Field(None, ge=0, description="Applicable minimum wages in Rupees")
+    work_state: str | None = Field(None, description="Detected Indian work state (e.g. TAMIL NADU)")
+    work_state_detection_status: str | None = Field(None, description="Location detection status (IDENTIFIED, UNSUPPORTED_STATE, AMBIGUOUS, UNRESOLVED)")
+    minimum_wages_effective_month: int | None = Field(None, ge=1, le=12, description="Effective month of employer statutory minimum wage")
+    minimum_wages_effective_year: int | None = Field(None, ge=2000, le=2050, description="Effective year of employer statutory minimum wage")
 
 
 class SalaryEntry(BaseModel):
@@ -55,6 +66,10 @@ class SalaryEntry(BaseModel):
     deductions: float | None = Field(None, ge=0, description="Total deductions (PF/ESI/TDS)")
     net_salary: float | None = Field(None, ge=0, description="Net payable salary in Rupees")
     bank_name: str | None = Field(None, description="Bank name receiving credit")
+    minimum_wage: float | None = Field(None, ge=0, description="Applicable statutory minimum wage in Rupees")
+    minimum_wage_state: str | None = Field(None, description="State of applicable minimum wage revision")
+    minimum_wage_effective_month: int | None = Field(None, ge=1, le=12, description="Effective month of minimum wage revision")
+    minimum_wage_effective_year: int | None = Field(None, ge=2000, le=2050, description="Effective year of minimum wage revision")
 
 
 class DocumentAuditDetails(BaseModel):
@@ -470,6 +485,145 @@ def get_audit(
         ) from exc
 
 
+@router.get("/minimum-wage")
+def get_minimum_wage(
+    candidate_id: int,
+    month: int | None = None,
+    year: int | None = None,
+    state: str | None = None,
+    appointment_date: str | None = None,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Fetch the applicable statutory semi-skilled minimum wage for candidate and salary period or employer appointment date.
+    
+    If state is provided (e.g. from employer work state), it uses that state after validating candidate access.
+    Otherwise derives candidate beneficiary state.
+    """
+    cand = _check_candidate_centre(user, candidate_id)
+    target_state = None
+    if state and state.strip():
+        target_state = resolve_state(state.strip()) or state.strip().upper()
+    else:
+        cand_state = get_candidate_state(cand)
+        if not cand_state:
+            raise HTTPException(
+                400,
+                f"Candidate {candidate_id} does not have an authoritative beneficiary state (state_name) recorded.",
+            )
+        target_state = cand_state
+
+    # 1. Appointment Date lookup for Employer Information
+    if appointment_date:
+        try:
+            wage_info = lookup_minimum_wage_for_date(target_state, appointment_date)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Error looking up minimum wage for appointment date %s (%s): %s", appointment_date, target_state, exc)
+            raise HTTPException(500, "Unable to retrieve minimum wage.")
+
+        if not wage_info:
+            raise HTTPException(
+                404,
+                f"No statutory semi-skilled minimum wage revision found for state '{target_state}' on or before {appointment_date}.",
+            )
+        return wage_info
+
+    # 2. Monthly period lookup for Salary Disbursement
+    if month is None or year is None:
+        raise HTTPException(400, "Either appointment_date or both month and year must be provided.")
+
+    if month < 1 or month > 12:
+        raise HTTPException(400, f"Invalid month: {month}. Month must be between 1 and 12.")
+    if year < 2000 or year > 2050:
+        raise HTTPException(400, f"Invalid year: {year}. Year must be between 2000 and 2050.")
+
+    try:
+        wage_info = lookup_minimum_wage_for_period(target_state, month, year)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error looking up minimum wage for candidate %s: %s", candidate_id, exc)
+        raise HTTPException(500, "Unable to retrieve minimum wage.")
+
+    if not wage_info:
+        raise HTTPException(
+            404,
+            f"No statutory semi-skilled minimum wage revision found for state '{target_state}' on or before {month:02d}/{year}.",
+        )
+
+    return wage_info
+
+
+min_wages_router = APIRouter(prefix="/minimum-wages", tags=["minimum-wages"])
+
+
+@min_wages_router.get("/detect-location")
+def detect_location_endpoint(
+    location: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Detect Indian state from free-text location."""
+    res = detect_work_state(location)
+    return res.to_dict()
+
+
+@min_wages_router.get("/employer-wage")
+def lookup_employer_wage_endpoint(
+    candidate_id: int,
+    appointment_date: str,
+    state: str | None = None,
+    location: str | None = None,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Lookup statutory semi-skilled minimum wage for an employer based on work state and appointment date."""
+    _check_candidate_centre(user, candidate_id)
+    target_state = None
+    if state and state.strip():
+        target_state = resolve_state(state.strip()) or state.strip().upper()
+    elif location and location.strip():
+        det = detect_work_state(location.strip())
+        if det.status == "IDENTIFIED":
+            target_state = det.detected_state
+        elif det.status == "UNSUPPORTED_STATE":
+            raise HTTPException(400, f"State '{det.detected_state}' is not in the statutory 13-state minimum wage register.")
+        elif det.status == "AMBIGUOUS":
+            raise HTTPException(400, f"Location '{location}' is ambiguous ({', '.join(det.candidate_states)}). Please specify district or state.")
+        else:
+            raise HTTPException(400, f"Could not identify Indian state from location '{location}'.")
+
+    if not target_state:
+        raise HTTPException(400, "State could not be determined.")
+
+    wage_info = lookup_minimum_wage_for_date(target_state, appointment_date)
+    if not wage_info:
+        raise HTTPException(404, f"No statutory semi-skilled minimum wage revision found for state '{target_state}' on or before {appointment_date}.")
+    return wage_info
+
+
+@min_wages_router.get("/lookup")
+def lookup_minimum_wage_endpoint(
+    candidate_id: int,
+    month: int | None = None,
+    year: int | None = None,
+    state: str | None = None,
+    appointment_date: str | None = None,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Direct alias endpoint: GET /minimum-wages/lookup"""
+    return get_minimum_wage(
+        candidate_id=candidate_id,
+        month=month,
+        year=year,
+        state=state,
+        appointment_date=appointment_date,
+        user=user,
+    )
+
+
+
 MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
@@ -594,11 +748,18 @@ def save_audit_draft(
 
     snapshot = _build_candidate_snapshot(cand, candidate_id, payload.candidate_snapshot)
 
+    authoritative_employers, authoritative_salaries = apply_authoritative_employer_and_salary_wages(
+        cand,
+        [e.model_dump() for e in payload.employer_details],
+        [s.model_dump() for s in payload.salary_details],
+        strict=False,
+    )
+
     audit_payload = {
         "candidate_id": candidate_id,
         "candidate_snapshot": snapshot,
-        "employer_details": [e.model_dump() for e in payload.employer_details],
-        "salary_details": [s.model_dump() for s in payload.salary_details],
+        "employer_details": authoritative_employers,
+        "salary_details": authoritative_salaries,
         "document_audit": payload.document_audit.model_dump(),
         "signoff_details": payload.signoff_details.model_dump(),
         "remarks": payload.remarks,
@@ -917,11 +1078,21 @@ def submit_audit(
 
     audit_remarks = payload.remarks if payload.remarks is not None else (existing_record.get("remarks") if existing_record else None)
 
+    try:
+        authoritative_employers, authoritative_salaries = apply_authoritative_employer_and_salary_wages(
+            cand,
+            [e.model_dump() for e in payload.employer_details],
+            [s.model_dump() for s in payload.salary_details],
+            strict=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, f"Minimum wage validation failed: {exc}")
+
     audit_payload = {
         "candidate_id": candidate_id,
         "candidate_snapshot": snapshot,
-        "employer_details": [e.model_dump() for e in payload.employer_details],
-        "salary_details": [s.model_dump() for s in payload.salary_details],
+        "employer_details": authoritative_employers,
+        "salary_details": authoritative_salaries,
         "document_audit": doc_audit_data,
         "signoff_details": signoff_dict,
         "cpass_status": computed_cpass_status,
@@ -1590,7 +1761,7 @@ def save_l2_corrections(
     user: CurrentUser = Depends(require_roles("L2_MANAGER", "ADMIN")),
 ):
     """Save L2 Center Manager corrections while preserving L1 original submission in revision history."""
-    _check_candidate_centre(user, candidate_id)
+    cand = _check_candidate_centre(user, candidate_id)
 
     # 1. Fetch audit
     res = (
@@ -1646,10 +1817,20 @@ def save_l2_corrections(
     })
     signoff["revision_history"] = history
 
+    try:
+        authoritative_employers, authoritative_salaries = apply_authoritative_employer_and_salary_wages(
+            cand,
+            [e.model_dump() for e in payload.employer_details],
+            [s.model_dump() for s in payload.salary_details],
+            strict=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, f"Minimum wage validation failed: {exc}")
+
     # 4. Update audit
     update_data = {
-        "employer_details": [e.model_dump() for e in payload.employer_details],
-        "salary_details": [s.model_dump() for s in payload.salary_details],
+        "employer_details": authoritative_employers,
+        "salary_details": authoritative_salaries,
         "remarks": payload.remarks if payload.remarks is not None else audit.get("remarks"),
         "signoff_details": signoff,
         "updated_at": now_iso,
@@ -1833,8 +2014,17 @@ def approve_placement_audit(
                 "remarks": audit.get("remarks"),
                 "archived_at": audit.get("finalized_at") or now_iso,
             }
-        employer_details = [e.model_dump() for e in payload.corrections.employer_details]
-        salary_details = [s.model_dump() for s in payload.corrections.salary_details]
+        try:
+            authoritative_employers, authoritative_salaries = apply_authoritative_employer_and_salary_wages(
+                cand,
+                [e.model_dump() for e in payload.corrections.employer_details],
+                [s.model_dump() for s in payload.corrections.salary_details],
+                strict=True,
+            )
+            employer_details = authoritative_employers
+            salary_details = authoritative_salaries
+        except ValueError as exc:
+            raise HTTPException(400, f"Minimum wage validation failed during approval corrections: {exc}")
         if payload.corrections.remarks is not None:
             remarks = payload.corrections.remarks
 

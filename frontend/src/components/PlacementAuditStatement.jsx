@@ -505,13 +505,18 @@ export default function PlacementAuditStatement({
                         />
                       </td>
                       <td>
-                        <input
-                          type="number"
-                          min="0"
-                          className={`l1-edit-cell ${isChangedFromL1('employer_details', idx, 'minimum_wages', emp.minimum_wages) ? 'modified-field' : ''}`}
-                          value={emp.minimum_wages ?? ''}
-                          onChange={(e) => onUpdateEmployer(emp.id || idx, 'minimum_wages', e.target.value)}
-                        />
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                          <input
+                            type="text"
+                            readOnly
+                            className="l1-edit-cell"
+                            style={{ backgroundColor: '#F3F4F6', cursor: 'not-allowed', fontWeight: 600, paddingRight: '42px' }}
+                            value={emp.minimum_wages != null ? `₹${Number(emp.minimum_wages).toLocaleString('en-IN')}` : '—'}
+                          />
+                          <span style={{ position: 'absolute', right: '6px', fontSize: '9px', fontWeight: 700, backgroundColor: '#DEF7EC', color: '#03543F', padding: '1px 4px', borderRadius: '3px' }}>
+                            AUTO
+                          </span>
+                        </div>
                       </td>
                       {currentEmployers.length > 1 && (
                         <td className="l1-no-print" style={{ textAlign: 'center' }}>
@@ -532,7 +537,14 @@ export default function PlacementAuditStatement({
                       <td>{emp.months_worked ?? '—'}</td>
                       <td>{emp.appointment_date || '—'}</td>
                       <td>{emp.designation || '—'}</td>
-                      <td>{emp.place_of_work || '—'}</td>
+                      <td>
+                        {emp.place_of_work || '—'}
+                        {emp.work_state && (
+                          <div style={{ fontSize: '10px', color: '#059669', fontWeight: 500 }}>
+                            ✓ {emp.work_state}
+                          </div>
+                        )}
+                      </td>
                       <td>{emp.monthly_ctc ? `₹${Number(emp.monthly_ctc).toLocaleString('en-IN')}` : '—'}</td>
                       <td>{emp.minimum_wages ? `₹${Number(emp.minimum_wages).toLocaleString('en-IN')}` : '—'}</td>
                     </>
@@ -581,6 +593,7 @@ export default function PlacementAuditStatement({
                 <th style={{ width: '90px' }}>Net (₹)</th>
                 <th style={{ width: '90px' }}>Credited (₹)</th>
                 <th>Bank Name</th>
+                <th style={{ width: '100px' }}>Min Wage (₹)</th>
                 {isEditMode && currentSalaries.length > 3 && <th className="l1-no-print" style={{ width: '36px' }}>Action</th>}
               </tr>
             </thead>
@@ -709,6 +722,17 @@ export default function PlacementAuditStatement({
                             onChange={(e) => onUpdateSalary(sal.id || idx, 'bank_name', e.target.value)}
                           />
                         </td>
+                        <td>
+                          <input
+                            type="text"
+                            readOnly
+                            tabIndex={-1}
+                            className="l1-edit-cell"
+                            style={{ background: '#F8FAFC', color: '#1E293B', cursor: 'default', fontWeight: 600 }}
+                            value={sal.minimum_wage ? `₹${Number(sal.minimum_wage).toLocaleString('en-IN')}` : '—'}
+                            title={sal.minimum_wage_effective_month && sal.minimum_wage_effective_year ? `Semi-skilled revision: ${sal.minimum_wage_effective_month}/${sal.minimum_wage_effective_year} (${sal.minimum_wage_state || ''})` : ''}
+                          />
+                        </td>
                         {currentSalaries.length > 3 && (
                           <td className="l1-no-print" style={{ textAlign: 'center' }}>
                             <button
@@ -741,6 +765,13 @@ export default function PlacementAuditStatement({
                         <td><strong>{sal.net_salary ? `₹${Number(sal.net_salary).toLocaleString('en-IN')}` : '₹0'}</strong></td>
                         <td>{sal.amount_credited ? `₹${Number(sal.amount_credited).toLocaleString('en-IN')}` : '₹0'}</td>
                         <td>{sal.bank_name || '—'}</td>
+                        <td>
+                          {sal.minimum_wage ? (
+                            <span title={sal.minimum_wage_effective_month && sal.minimum_wage_effective_year ? `Semi-skilled revision: ${sal.minimum_wage_effective_month}/${sal.minimum_wage_effective_year}` : ''}>
+                              ₹{Number(sal.minimum_wage).toLocaleString('en-IN')}
+                            </span>
+                          ) : '—'}
+                        </td>
                       </>
                     )}
                   </tr>
@@ -748,7 +779,7 @@ export default function PlacementAuditStatement({
               })}
               {currentSalaries.length === 0 && (
                 <tr>
-                  <td colSpan={isEditMode ? (currentEmployers.length > 1 ? 12 : 11) : (currentEmployers.length > 1 ? 11 : 10)} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
+                  <td colSpan={isEditMode ? (currentEmployers.length > 1 ? 13 : 12) : (currentEmployers.length > 1 ? 12 : 11)} style={{ textAlign: 'center', color: '#6B7280', padding: '14px' }}>
                     No salary disbursement records recorded.
                   </td>
                 </tr>

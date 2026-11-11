@@ -26,7 +26,15 @@ ALL_12_STATES: tuple[str, ...] = (
     "WEST BENGAL",
 )
 
+ALL_13_STATES: tuple[str, ...] = ALL_12_STATES + ("BIHAR",)
+
 STATE_ALIASES: dict[str, str] = {
+    # Bihar
+    "br": "BIHAR",
+    "bihar": "BIHAR",
+    "bh": "BIHAR",
+    "brpe": "BIHAR",
+    "brch": "BIHAR",
     # Tamil Nadu
     "tn": "TAMIL NADU",
     "tamilnadu": "TAMIL NADU",
@@ -128,7 +136,7 @@ def resolve_state(val: Any) -> str | None:
         base = clean[:-2]
         if base in STATE_ALIASES:
             return STATE_ALIASES[base]
-    for canon in ALL_12_STATES:
+    for canon in ALL_13_STATES:
         if canon.lower().replace(" ", "") == clean:
             return canon
     return None

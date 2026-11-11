@@ -283,6 +283,110 @@ runTest('7. Google Drive upload metadata JSON.stringify handles corrupted employ
   assert.ok(serializedMeta.includes('"employer_id":"emp_1"'))
 })
 
+runTest('8. sanitizeSalaryDetails preserves statutory minimum wage fields and ignores tampered non-numeric values', () => {
+  const salaryDetailList = [
+    {
+      id: 'sal_1',
+      employer_id: 'emp_1',
+      month: 11,
+      year: 2026,
+      gross_salary: '18000',
+      minimum_wage: 16800,
+      minimum_wage_state: 'PUNJAB',
+      minimum_wage_effective_month: 10,
+      minimum_wage_effective_year: 2026,
+    },
+    {
+      id: 'sal_2',
+      employer_id: 'emp_1',
+      month: 5,
+      year: 2026,
+      gross_salary: '18000',
+      minimum_wage: '16100', // string representation
+      minimum_wage_state: 'ANDHRA PRADESH',
+      minimum_wage_effective_month: '4',
+      minimum_wage_effective_year: '2026',
+    },
+    {
+      id: 'sal_3',
+      employer_id: 'emp_1',
+      month: 2,
+      year: 2026,
+      gross_salary: '18000',
+      minimum_wage: 'invalid-non-numeric',
+      minimum_wage_state: null,
+      minimum_wage_effective_month: null,
+      minimum_wage_effective_year: null,
+    },
+  ]
+
+  const cleaned = sanitizeSalaryDetails(salaryDetailList, 'emp_1')
+  assert.strictEqual(cleaned.length, 3)
+
+  // First entry: preserved number & state
+  assert.strictEqual(cleaned[0].minimum_wage, 16800)
+  assert.strictEqual(cleaned[0].minimum_wage_state, 'PUNJAB')
+  assert.strictEqual(cleaned[0].minimum_wage_effective_month, 10)
+  assert.strictEqual(cleaned[0].minimum_wage_effective_year, 2026)
+
+  // Second entry: parsed string to float/int
+  assert.strictEqual(cleaned[1].minimum_wage, 16100)
+  assert.strictEqual(cleaned[1].minimum_wage_state, 'ANDHRA PRADESH')
+  assert.strictEqual(cleaned[1].minimum_wage_effective_month, 4)
+  assert.strictEqual(cleaned[1].minimum_wage_effective_year, 2026)
+
+  // Third entry: invalid parsed safely to null
+  assert.strictEqual(cleaned[2].minimum_wage, null)
+  assert.strictEqual(cleaned[2].minimum_wage_state, null)
+
+  const jsonStr = JSON.stringify(cleaned)
+  assert.ok(jsonStr.includes('"minimum_wage":16800'))
+  assert.ok(jsonStr.includes('"minimum_wage_state":"PUNJAB"'))
+})
+
+runTest('9. sanitizeEmployerDetails preserves detected work_state and statutory minimum wages', () => {
+  const employerList = [
+    {
+      id: 'emp_1',
+      employer_name: 'SynchroServe Technologies',
+      months_worked: '6',
+      appointment_date: '2026-01-15',
+      place_of_work: 'Chennai',
+      work_state: 'TAMIL NADU',
+      work_state_detection_status: 'IDENTIFIED',
+      minimum_wages: 15400.0,
+      minimum_wages_effective_month: 10,
+      minimum_wages_effective_year: 2025,
+    },
+    {
+      id: 'emp_2',
+      employer_name: 'Bangalore Tech Park Ltd',
+      months_worked: 12,
+      appointment_date: '2026-02-01',
+      place_of_work: 'Whitefield, Bangalore',
+      work_state: 'KARNATAKA',
+      work_state_detection_status: 'UNSUPPORTED_STATE',
+      minimum_wages: null,
+    },
+  ]
+
+  const cleaned = sanitizeEmployerDetails(employerList)
+  assert.strictEqual(cleaned.length, 2)
+  assert.strictEqual(cleaned[0].work_state, 'TAMIL NADU')
+  assert.strictEqual(cleaned[0].work_state_detection_status, 'IDENTIFIED')
+  assert.strictEqual(cleaned[0].minimum_wages, 15400.0)
+  assert.strictEqual(cleaned[0].minimum_wages_effective_month, 10)
+  assert.strictEqual(cleaned[0].minimum_wages_effective_year, 2025)
+
+  assert.strictEqual(cleaned[1].work_state, 'KARNATAKA')
+  assert.strictEqual(cleaned[1].work_state_detection_status, 'UNSUPPORTED_STATE')
+  assert.strictEqual(cleaned[1].minimum_wages, null)
+
+  const jsonStr = JSON.stringify(cleaned)
+  assert.ok(jsonStr.includes('"work_state":"TAMIL NADU"'))
+  assert.ok(jsonStr.includes('"work_state_detection_status":"IDENTIFIED"'))
+})
+
 console.log(`\n========================================`)
 console.log(`All ${passedTests}/${totalTests} unit tests passed successfully!`)
 console.log(`========================================`)
