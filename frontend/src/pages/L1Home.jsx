@@ -25,6 +25,12 @@ import {
   buildCleanAuditDraftPayload
 } from '../lib/auditDraftPayloadHelper'
 import { resolveCandidateHierarchyPipeline } from '../lib/candidatePipelineHelper'
+import {
+  isSalaryLinkedToEmployer,
+  getImmediateInvalidatedSalaryRows,
+  syncSalaryRowsOnLocationDetection,
+  determineSalaryRowState,
+} from '../lib/salaryWageSyncHelper'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -526,6 +532,7 @@ export default function L1Home() {
   const salaryDetailListRef = useRef([])
   salaryDetailListRef.current = salaryDetailList
   const locationDebounceTimersRef = useRef({})
+  const employerLocationSeqRef = useRef({})
 
   // Stable top-level scheduleAutosave hook to prevent TDZ reference errors in hooks declared earlier
   const scheduleAutosaveRef = useRef(null)
@@ -1280,31 +1287,30 @@ export default function L1Home() {
     const y = parseInt(year, 10)
     if (isNaN(m) || isNaN(y) || m < 1 || m > 12 || y < 2000 || y > 2050) return
 
-    let targetState = explicitState
-    if (!targetState) {
-      const curSal = (salaryDetailListRef.current || []).find((s) => s.id === rowId)
-      const empId = curSal?.employer_id
-      const emp = (employerListRef.current || []).find((e) => e.id === empId) || (employerListRef.current || [])[0]
-      if (emp?.work_state && emp?.work_state_detection_status === 'IDENTIFIED') {
-        targetState = emp.work_state
-      } else if (emp?.work_state_detection_status === 'UNSUPPORTED_STATE') {
-        setSalaryDetailList((prev) =>
-          prev.map((s) =>
-            s.id === rowId
-              ? {
-                  ...s,
-                  minimum_wage: null,
-                  minimum_wage_state: null,
-                  min_wage_loading: false,
-                  min_wage_error: `${emp.work_state || 'State'} is not in minimum wage register`,
-                }
-              : s
-          )
+    const curSal = (salaryDetailListRef.current || []).find((s) => s.id === rowId)
+    const curEmps = employerListRef.current || []
+    const rowState = determineSalaryRowState(curSal, curEmps, explicitState)
+
+    if (!rowState.canLookup) {
+      setSalaryDetailList((prev) =>
+        prev.map((s) =>
+          s.id === rowId
+            ? {
+                ...s,
+                minimum_wage: null,
+                minimum_wage_state: rowState.targetState || null,
+                minimum_wage_effective_month: null,
+                minimum_wage_effective_year: null,
+                min_wage_loading: rowState.isLoading,
+                min_wage_error: rowState.error,
+              }
+            : s
         )
-        return
-      }
+      )
+      return
     }
 
+    const targetState = rowState.targetState
     const seq = (wageRequestSeqRef.current[rowId] || 0) + 1
     wageRequestSeqRef.current[rowId] = seq
 
@@ -1317,7 +1323,7 @@ export default function L1Home() {
         candidate_id: cId,
         month: m,
         year: y,
-        state: targetState || undefined,
+        state: targetState,
       })
 
       if (wageRequestSeqRef.current[rowId] !== seq) return
@@ -1349,6 +1355,9 @@ export default function L1Home() {
             ? {
                 ...s,
                 minimum_wage: null,
+                minimum_wage_state: null,
+                minimum_wage_effective_month: null,
+                minimum_wage_effective_year: null,
                 min_wage_loading: false,
                 min_wage_error: err.message || 'Wage lookup failed',
               }
@@ -1363,7 +1372,12 @@ export default function L1Home() {
     const cId = candidateId || sel.cand
     if (!empId) return
 
+    const seq = (employerLocationSeqRef.current[empId] || 0) + 1
+    employerLocationSeqRef.current[empId] = seq
+
     const trimmed = (locationText || '').trim()
+    const curEmps = employerListRef.current || []
+
     if (trimmed.length < 2) {
       setEmployerList((prev) =>
         prev.map((e) =>
@@ -1375,6 +1389,8 @@ export default function L1Home() {
                 work_state_message: null,
                 work_state_candidates: [],
                 minimum_wages: null,
+                minimum_wages_effective_month: null,
+                minimum_wages_effective_year: null,
                 location_loading: false,
                 employer_wage_loading: false,
                 employer_wage_error: null,
@@ -1382,6 +1398,7 @@ export default function L1Home() {
             : e
         )
       )
+      setSalaryDetailList((prev) => getImmediateInvalidatedSalaryRows(prev, empId, curEmps, false))
       return
     }
 
@@ -1393,6 +1410,7 @@ export default function L1Home() {
 
     try {
       const detRes = await api('/minimum-wages/detect-location', { location: trimmed })
+      if (employerLocationSeqRef.current[empId] !== seq) return
 
       let fetchedWage = null
       let fetchedMonth = null
@@ -1406,10 +1424,12 @@ export default function L1Home() {
             appointment_date: apptDate,
             state: detRes.detected_state,
           })
+          if (employerLocationSeqRef.current[empId] !== seq) return
           fetchedWage = wageRes.minimum_wage
           fetchedMonth = wageRes.effective_month
           fetchedYear = wageRes.effective_year
         } catch (wErr) {
+          if (employerLocationSeqRef.current[empId] !== seq) return
           wageError = wErr.message || 'Wage lookup failed'
         }
       }
@@ -1433,11 +1453,14 @@ export default function L1Home() {
         })
       )
 
-      // Automatically recalculate salary rows linked to this employer using their detected work state
+      // Synchronize linked salary rows with detected location result
+      setSalaryDetailList((prev) => syncSalaryRowsOnLocationDetection(prev, empId, curEmps, detRes))
+
+      // If IDENTIFIED, recalculate each linked salary row that has month & year
       if (detRes.status === 'IDENTIFIED' && detRes.detected_state) {
         const salaries = salaryDetailListRef.current || []
         salaries.forEach((s) => {
-          if ((s.employer_id === empId || (!s.employer_id && (employerListRef.current || []).length === 1)) && s.month && s.year) {
+          if (isSalaryLinkedToEmployer(s, empId, curEmps) && s.month && s.year) {
             fetchMinimumWageForRow(s.id, s.month, s.year, cId, detRes.detected_state, shouldAutosave)
           }
         })
@@ -1447,6 +1470,7 @@ export default function L1Home() {
         scheduleAutosave()
       }
     } catch (err) {
+      if (employerLocationSeqRef.current[empId] !== seq) return
       console.warn('Location detection failed for employer:', err)
       setEmployerList((prev) =>
         prev.map((e) =>
@@ -1460,6 +1484,17 @@ export default function L1Home() {
             : e
         )
       )
+      setSalaryDetailList((prev) =>
+        prev.map((s) => {
+          if (!isSalaryLinkedToEmployer(s, empId, curEmps)) return s
+          return {
+            ...s,
+            minimum_wage: null,
+            min_wage_loading: false,
+            min_wage_error: err.message || 'Location lookup failed',
+          }
+        })
+      )
     }
   }, [sel.cand, scheduleAutosave, fetchMinimumWageForRow])
 
@@ -1472,27 +1507,39 @@ export default function L1Home() {
 
     if (field === 'place_of_work') {
       const trimmedVal = (value || '').trim()
-      if (trimmedVal.length >= 2) {
-        setEmployerList((prev) =>
-          prev.map((e) => (e.id === id ? { ...e, location_loading: true } : e))
+      const isLoading = trimmedVal.length >= 2
+      const curEmps = employerListRef.current || []
+
+      // Invalidate employer-level wage and status immediately
+      setEmployerList((prev) =>
+        prev.map((e) =>
+          e.id === id
+            ? {
+                ...e,
+                location_loading: isLoading,
+                employer_wage_loading: isLoading,
+                employer_wage_error: null,
+                work_state: null,
+                work_state_detection_status: null,
+                work_state_message: null,
+                work_state_candidates: [],
+                minimum_wages: null,
+                minimum_wages_effective_month: null,
+                minimum_wages_effective_year: null,
+              }
+            : e
         )
-      } else {
-        setEmployerList((prev) =>
-          prev.map((e) =>
-            e.id === id
-              ? {
-                  ...e,
-                  location_loading: false,
-                  work_state: null,
-                  work_state_detection_status: null,
-                  work_state_message: null,
-                  work_state_candidates: [],
-                  minimum_wages: null,
-                }
-              : e
-          )
-        )
-      }
+      )
+
+      // Immediately invalidate linked salary rows and set loading state
+      setSalaryDetailList((prev) => {
+        prev.forEach((s) => {
+          if (isSalaryLinkedToEmployer(s, id, curEmps)) {
+            wageRequestSeqRef.current[s.id] = (wageRequestSeqRef.current[s.id] || 0) + 1
+          }
+        })
+        return getImmediateInvalidatedSalaryRows(prev, id, curEmps, isLoading)
+      })
 
       if (locationDebounceTimersRef.current[id]) {
         clearTimeout(locationDebounceTimersRef.current[id])
@@ -1503,8 +1550,23 @@ export default function L1Home() {
       }, 450)
     } else if (field === 'appointment_date') {
       const curEmp = (employerListRef.current || []).find((e) => e.id === id)
-      if (curEmp?.work_state && curEmp?.work_state_detection_status === 'IDENTIFIED') {
+      if (value && curEmp?.work_state && curEmp?.work_state_detection_status === 'IDENTIFIED') {
         detectLocationAndFetchEmployerWage(id, curEmp.place_of_work, value, sel.cand, true)
+      } else if (!value) {
+        setEmployerList((prev) =>
+          prev.map((e) =>
+            e.id === id
+              ? {
+                  ...e,
+                  minimum_wages: null,
+                  minimum_wages_effective_month: null,
+                  minimum_wages_effective_year: null,
+                  employer_wage_loading: false,
+                  employer_wage_error: null,
+                }
+              : e
+          )
+        )
       }
     }
   }

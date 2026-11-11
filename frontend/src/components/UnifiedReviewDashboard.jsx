@@ -968,26 +968,43 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
       const curSal = (editedData.salary_details || [])[typeof idOrIdx === 'number' ? idOrIdx : editedData.salary_details.findIndex((s) => s.id === idOrIdx)]
       const empId = curSal?.employer_id
       const emp = (editedData.employer_details || []).find((e) => e.id === empId) || (editedData.employer_details || [])[0]
-      const targetState = emp?.work_state || undefined
+      const targetState = (emp?.work_state && (emp?.work_state_detection_status === 'IDENTIFIED' || !emp?.work_state_detection_status)) ? emp.work_state : null
 
-      api('/minimum-wages/lookup', { candidate_id: cId, month: updatedMonth, year: updatedYear, state: targetState })
-        .then((res) => {
-          setEditedData((prev) => {
-            const list = [...prev.salary_details]
-            const idx = typeof idOrIdx === 'number' ? idOrIdx : list.findIndex((s) => s.id === idOrIdx)
-            if (idx >= 0) {
-              list[idx] = {
-                ...list[idx],
-                minimum_wage: res.minimum_wage,
-                minimum_wage_state: res.state,
-                minimum_wage_effective_month: res.effective_month,
-                minimum_wage_effective_year: res.effective_year,
-              }
+      if (!targetState) {
+        setEditedData((prev) => {
+          const list = [...prev.salary_details]
+          const idx = typeof idOrIdx === 'number' ? idOrIdx : list.findIndex((s) => s.id === idOrIdx)
+          if (idx >= 0) {
+            list[idx] = {
+              ...list[idx],
+              minimum_wage: null,
+              minimum_wage_state: null,
+              minimum_wage_effective_month: null,
+              minimum_wage_effective_year: null,
             }
-            return { ...prev, salary_details: list }
-          })
+          }
+          return { ...prev, salary_details: list }
         })
-        .catch((err) => console.warn('Could not auto-fetch minimum wage for correction:', err))
+      } else {
+        api('/minimum-wages/lookup', { candidate_id: cId, month: updatedMonth, year: updatedYear, state: targetState })
+          .then((res) => {
+            setEditedData((prev) => {
+              const list = [...prev.salary_details]
+              const idx = typeof idOrIdx === 'number' ? idOrIdx : list.findIndex((s) => s.id === idOrIdx)
+              if (idx >= 0) {
+                list[idx] = {
+                  ...list[idx],
+                  minimum_wage: res.minimum_wage,
+                  minimum_wage_state: res.state,
+                  minimum_wage_effective_month: res.effective_month,
+                  minimum_wage_effective_year: res.effective_year,
+                }
+              }
+              return { ...prev, salary_details: list }
+            })
+          })
+          .catch((err) => console.warn('Could not auto-fetch minimum wage for correction:', err))
+      }
     }
   }
 
@@ -1026,9 +1043,9 @@ export default function UnifiedReviewDashboard({ level = 'L2' }) {
     setHasUnsavedChanges(true)
 
     const emp = (editedData.employer_details || []).find((e) => e.id === empId) || (editedData.employer_details || [])[0]
-    const targetState = emp?.work_state || undefined
+    const targetState = (emp?.work_state && (emp?.work_state_detection_status === 'IDENTIFIED' || !emp?.work_state_detection_status)) ? emp.work_state : null
     const cId = candDetail?.candidate_id || sel.cand
-    if (cId && nextPeriod.month && nextPeriod.year) {
+    if (cId && nextPeriod.month && nextPeriod.year && targetState) {
       api('/minimum-wages/lookup', { candidate_id: cId, month: nextPeriod.month, year: nextPeriod.year, state: targetState })
         .then((res) => {
           setEditedData((prev) => {

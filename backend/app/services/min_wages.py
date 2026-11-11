@@ -170,6 +170,8 @@ def apply_authoritative_employer_and_salary_wages(
             else:
                 emp_status_map[emp_id] = det.status
                 emp_copy["minimum_wages"] = None
+                emp_copy["minimum_wages_effective_month"] = None
+                emp_copy["minimum_wages_effective_year"] = None
                 if strict and det.status == "UNSUPPORTED_STATE":
                     raise ValueError(
                         f"Employer '{emp_copy.get('employer_name')}' place of work is in '{det.detected_state}', which is not supported in the 13-state minimum wage register."
@@ -194,10 +196,13 @@ def apply_authoritative_employer_and_salary_wages(
 
         enriched_employers.append(emp_copy)
 
-    # If only 1 employer exists, map fallback
+    # If only 1 employer exists, map fallback only if identified or legacy
     single_emp_state = None
-    if len(enriched_employers) == 1 and enriched_employers[0].get("work_state"):
-        single_emp_state = enriched_employers[0]["work_state"]
+    if len(enriched_employers) == 1:
+        first_emp_id = str(enriched_employers[0].get("id") or "")
+        first_status = emp_status_map.get(first_emp_id)
+        if first_status in ("IDENTIFIED", "LEGACY_FALLBACK"):
+            single_emp_state = emp_state_map.get(first_emp_id) or enriched_employers[0].get("work_state")
 
     enriched_salaries: list[dict[str, Any]] = []
     for sal in salary_entries:
@@ -205,8 +210,15 @@ def apply_authoritative_employer_and_salary_wages(
         sal_emp_id = str(sal_copy.get("employer_id") or "")
         
         # State resolution: associated employer's work_state
-        sal_work_state = emp_state_map.get(sal_emp_id) or single_emp_state
         sal_emp_status = emp_status_map.get(sal_emp_id)
+        if sal_emp_status is None and len(enriched_employers) == 1:
+            first_emp_id = str(enriched_employers[0].get("id") or "")
+            sal_emp_status = emp_status_map.get(first_emp_id)
+
+        if sal_emp_status in ("IDENTIFIED", "LEGACY_FALLBACK"):
+            sal_work_state = emp_state_map.get(sal_emp_id) or single_emp_state
+        else:
+            sal_work_state = None
 
         m = sal_copy.get("month")
         y = sal_copy.get("year")
@@ -223,10 +235,15 @@ def apply_authoritative_employer_and_salary_wages(
                         sal_copy["minimum_wage_state"] = wage_info["state"]
                         sal_copy["minimum_wage_effective_month"] = wage_info["effective_month"]
                         sal_copy["minimum_wage_effective_year"] = wage_info["effective_year"]
-                    elif strict:
-                        raise ValueError(
-                            f"No statutory minimum wage revision found for employer work state '{sal_work_state}' on or before {m_int:02d}/{y_int}."
-                        )
+                    else:
+                        sal_copy["minimum_wage"] = None
+                        sal_copy["minimum_wage_state"] = None
+                        sal_copy["minimum_wage_effective_month"] = None
+                        sal_copy["minimum_wage_effective_year"] = None
+                        if strict:
+                            raise ValueError(
+                                f"No statutory minimum wage revision found for employer work state '{sal_work_state}' on or before {m_int:02d}/{y_int}."
+                            )
                 else:
                     # Do not use candidate state as substitute
                     sal_copy["minimum_wage"] = None
@@ -245,6 +262,10 @@ def apply_authoritative_employer_and_salary_wages(
                     raise
             except Exception as exc:
                 logger.warning("Could not auto-populate minimum wage for salary (%s/%s): %s", m, y, exc)
+                sal_copy["minimum_wage"] = None
+                sal_copy["minimum_wage_state"] = None
+                sal_copy["minimum_wage_effective_month"] = None
+                sal_copy["minimum_wage_effective_year"] = None
                 if strict:
                     raise
 

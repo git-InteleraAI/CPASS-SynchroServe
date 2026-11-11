@@ -493,3 +493,176 @@ def test_tampered_employer_wage_and_state_overwritten():
         # Overwritten authoritatively:
         assert saved_payload["employer_details"][0]["work_state"] == "PUNJAB"
         assert saved_payload["employer_details"][0]["minimum_wages"] == 16400.0
+
+
+# -----------------------------------------------------------------------------
+# 14: Stale Wage Invalidation When Employer Location Changes
+# -----------------------------------------------------------------------------
+
+def test_salary_minimum_wage_invalidated_when_location_becomes_unsupported():
+    """Verify that when employer place of work changes from supported (Hyderabad) to unsupported (Mumbai),
+    both employer wage and salary minimum wages are invalidated to None (not retaining previous ₹16,950).
+    """
+    saved_payload = {}
+    def mock_save(payload):
+        nonlocal saved_payload
+        saved_payload = dict(payload)
+        res_mock = MagicMock()
+        res_mock.execute.return_value = MagicMock(data=[{"id": "audit-uuid-1", **payload}])
+        return res_mock
+
+    def table_mock(tbl):
+        m = MagicMock()
+        if tbl in ("ddugky_candidates", "candidates"):
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[PUNJAB_CANDIDATE])
+        elif tbl == "user_centres":
+            m.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"tc_id": 501}])
+        elif tbl == "placement_audits":
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                data=[{"id": "audit-uuid-1", "candidate_id": 88001, "audit_status": "DRAFT", "signoff_details": {}}]
+            )
+            m.insert.side_effect = mock_save
+            def mock_update(payload):
+                mock_save(payload)
+                up_mock = MagicMock()
+                up_mock.eq.return_value.execute.return_value = MagicMock(data=[{"id": "audit-uuid-1", **payload}])
+                return up_mock
+            m.update.side_effect = mock_update
+        return m
+
+    mock_db = MagicMock()
+    mock_db.table.side_effect = table_mock
+
+    # Incoming draft has Mumbai, but stale minimum wages from earlier Hyderabad
+    stale_request = SaveAuditDraftRequest(
+        candidate_snapshot={},
+        employer_details=[
+            EmployerEntry(
+                id="emp_1",
+                employer_name="Fintech Mumbai",
+                place_of_work="Mumbai",
+                appointment_date="2026-02-01",
+                minimum_wages=16950.0,  # Stale from Hyderabad
+            ),
+        ],
+        salary_details=[
+            SalaryEntry(
+                employer_id="emp_1",
+                month=2,
+                year=2026,
+                gross_salary=20000,
+                minimum_wage=16950.0,  # Stale from Hyderabad
+                minimum_wage_state="TELANGANA",
+            ),
+        ],
+    )
+
+    with patch("app.routers.audits.supabase", mock_db):
+        save_audit_draft(candidate_id=88001, payload=stale_request, user=L1_PUNJAB_USER)
+
+        emp = saved_payload["employer_details"][0]
+        sal = saved_payload["salary_details"][0]
+
+        assert emp["work_state_detection_status"] == "UNSUPPORTED_STATE"
+        assert emp["minimum_wages"] is None
+        assert sal["minimum_wage"] is None
+        assert sal["minimum_wage_state"] is None
+
+
+def test_salary_minimum_wage_invalidated_when_location_cleared_or_ambiguous():
+    """Verify that when employer place of work is cleared or ambiguous, minimum wages are None."""
+    saved_payload = {}
+    def mock_save(payload):
+        nonlocal saved_payload
+        saved_payload = dict(payload)
+        res_mock = MagicMock()
+        res_mock.execute.return_value = MagicMock(data=[{"id": "audit-uuid-1", **payload}])
+        return res_mock
+
+    def table_mock(tbl):
+        m = MagicMock()
+        if tbl in ("ddugky_candidates", "candidates"):
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[PUNJAB_CANDIDATE])
+        elif tbl == "user_centres":
+            m.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"tc_id": 501}])
+        elif tbl == "placement_audits":
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+                data=[{"id": "audit-uuid-1", "candidate_id": 88001, "audit_status": "DRAFT", "signoff_details": {}}]
+            )
+            m.insert.side_effect = mock_save
+            def mock_update(payload):
+                mock_save(payload)
+                up_mock = MagicMock()
+                up_mock.eq.return_value.execute.return_value = MagicMock(data=[{"id": "audit-uuid-1", **payload}])
+                return up_mock
+            m.update.side_effect = mock_update
+        return m
+
+    mock_db = MagicMock()
+    mock_db.table.side_effect = table_mock
+
+    # Ambiguous location
+    ambiguous_request = SaveAuditDraftRequest(
+        candidate_snapshot={},
+        employer_details=[
+            EmployerEntry(id="emp_1", employer_name="Regional Corp", place_of_work="Bilaspur", appointment_date="2026-02-01"),
+        ],
+        salary_details=[
+            SalaryEntry(employer_id="emp_1", month=2, year=2026, gross_salary=20000, minimum_wage=16950.0),
+        ],
+    )
+
+    with patch("app.routers.audits.supabase", mock_db):
+        save_audit_draft(candidate_id=88001, payload=ambiguous_request, user=L1_PUNJAB_USER)
+        emp = saved_payload["employer_details"][0]
+        sal = saved_payload["salary_details"][0]
+        assert emp["work_state_detection_status"] == "AMBIGUOUS"
+        assert emp["minimum_wages"] is None
+        assert sal["minimum_wage"] is None
+
+
+def test_multi_employer_isolation_when_location_changes():
+    """Verify multi-employer isolation: changing Employer 1 location does NOT alter Employer 2 salary rows."""
+    from app.services.min_wages import apply_authoritative_employer_and_salary_wages
+
+    candidate = {"id": 88001, "state_name": "PUNJAB"}
+    employer_entries = [
+        {"id": "emp_1", "employer_name": "Mumbai Firm", "place_of_work": "Mumbai", "appointment_date": "2026-01-01"},
+        {"id": "emp_2", "employer_name": "Chennai Mill", "place_of_work": "Chennai", "appointment_date": "2026-01-01"},
+    ]
+    salary_entries = [
+        {"employer_id": "emp_1", "month": 1, "year": 2026, "gross_salary": 20000, "minimum_wage": 16950.0},
+        {"employer_id": "emp_2", "month": 1, "year": 2026, "gross_salary": 20000, "minimum_wage": 16000.0},
+    ]
+
+    with patch("app.services.min_wages.lookup_minimum_wage_for_date") as mock_date, \
+         patch("app.services.min_wages.lookup_minimum_wage_for_period") as mock_period:
+        
+        def period_lookup(state, m, y):
+            if state == "TAMIL NADU":
+                return {"minimum_wage": 16000.0, "state": "TAMIL NADU", "effective_month": 10, "effective_year": 2025}
+            return None
+        
+        mock_date.return_value = {"minimum_wage": 16000.0, "state": "TAMIL NADU", "effective_month": 10, "effective_year": 2025}
+        mock_period.side_effect = period_lookup
+
+        res_emps, res_sals = apply_authoritative_employer_and_salary_wages(
+            candidate, employer_entries, salary_entries, strict=False
+        )
+
+        emp1 = next(e for e in res_emps if e["id"] == "emp_1")
+        emp2 = next(e for e in res_emps if e["id"] == "emp_2")
+        sal1 = next(s for s in res_sals if s["employer_id"] == "emp_1")
+        sal2 = next(s for s in res_sals if s["employer_id"] == "emp_2")
+
+        # Employer 1 is in Mumbai (unsupported):
+        assert emp1["work_state_detection_status"] == "UNSUPPORTED_STATE"
+        assert emp1["minimum_wages"] is None
+        assert sal1["minimum_wage"] is None
+
+        # Employer 2 is in Chennai (Tamil Nadu, supported):
+        assert emp2["work_state_detection_status"] == "IDENTIFIED"
+        assert emp2["minimum_wages"] == 16000.0
+        assert sal2["minimum_wage"] == 16000.0
+        assert sal2["minimum_wage_state"] == "TAMIL NADU"
+
