@@ -49,7 +49,7 @@ def is_audit_locked_for_l1(audit: dict[str, Any] | None) -> bool:
     # Finalized, submitted, or under-review states
     if (
         raw_audit in ("SUBMITTED", "APPROVED", "REJECTED")
-        or raw_status in ("PENDING", "APPROVED", "VERIFIED", "L2_APPROVED", "REJECTED")
+        or raw_status in ("APPROVED", "VERIFIED", "L2_APPROVED", "REJECTED")
         or bool(audit.get("finalized_at"))
     ):
         return True
@@ -82,12 +82,19 @@ def check_l1_audit_unlocked(
     audit = res.data[0] if (res and getattr(res, "data", None)) else None
 
     if is_audit_locked_for_l1(audit):
+        if action_description == "save audit draft":
+            detail = (
+                "This placement audit has already been finalized/submitted and is locked for review. "
+                "Corrections can be made after it is returned to L1."
+            )
+        else:
+            detail = (
+                "This placement audit has already been submitted and is locked for review. "
+                "Corrections can be made after it is returned to L1."
+            )
         raise HTTPException(
             status_code=400,
-            detail=(
-                "This audit has been submitted and is locked for review. "
-                "Corrections can be made after it is returned to L1."
-            ),
+            detail=detail,
         )
 
     return audit

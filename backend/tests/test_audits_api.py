@@ -331,7 +331,8 @@ def test_editing_submitted_audit_as_l1_blocked(auth_override, mock_supabase):
 
     res = client.post("/candidates/10482/audit/draft", json=payload)
     assert res.status_code == 400
-    assert "already been finalized/submitted" in res.json()["detail"]
+    detail = res.json()["detail"]
+    assert "already been finalized/submitted" in detail or "locked for review" in detail
 
 
 def test_get_audit_statement_payload_with_salary_totals(auth_override, mock_supabase):

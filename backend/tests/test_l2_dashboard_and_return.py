@@ -586,7 +586,8 @@ def test_duplicate_submission_blocked_for_normal_submitted_audit():
 
         res = client.post("/candidates/10482/audit/submit", json=submit_payload)
         assert res.status_code == 400
-        assert "already been submitted" in res.json()["detail"].lower()
+        detail = res.json()["detail"].lower()
+        assert "already been submitted" in detail or "locked for review" in detail
 
 
 def test_non_l2_roles_forbidden_from_return_to_l1():

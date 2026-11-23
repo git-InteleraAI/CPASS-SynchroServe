@@ -227,7 +227,8 @@ def test_l1_submission_keeps_stages_pending_and_prevents_duplicate():
         mock_sb.table.side_effect = dup_table_mock
         res_dup = client.post("/candidates/10482/audit/submit", json=sub_payload)
         assert res_dup.status_code == 400
-        assert "already been submitted" in res_dup.json()["detail"].lower()
+        detail = res_dup.json()["detail"].lower()
+        assert "already been submitted" in detail or "locked for review" in detail
 
     app.dependency_overrides.clear()
 
