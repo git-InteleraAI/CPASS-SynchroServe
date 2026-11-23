@@ -172,11 +172,7 @@ def apply_authoritative_employer_and_salary_wages(
                 emp_copy["minimum_wages"] = None
                 emp_copy["minimum_wages_effective_month"] = None
                 emp_copy["minimum_wages_effective_year"] = None
-                if strict and det.status == "UNSUPPORTED_STATE":
-                    raise ValueError(
-                        f"Employer '{emp_copy.get('employer_name')}' place of work is in '{det.detected_state}', which is not supported in the 13-state minimum wage register."
-                    )
-                elif strict and det.status == "AMBIGUOUS":
+                if strict and det.status == "AMBIGUOUS":
                     raise ValueError(
                         f"Employer '{emp_copy.get('employer_name')}' place of work '{place}' is ambiguous ({', '.join(det.candidate_states)}). Please specify state or district."
                     )
@@ -251,12 +247,8 @@ def apply_authoritative_employer_and_salary_wages(
                     sal_copy["minimum_wage_effective_month"] = None
                     sal_copy["minimum_wage_effective_year"] = None
                     if strict:
-                        if sal_emp_status == "UNSUPPORTED_STATE":
-                            raise ValueError(f"Employer place of work is in an unsupported state. Minimum wage cannot be populated.")
-                        elif sal_emp_status == "AMBIGUOUS":
+                        if sal_emp_status == "AMBIGUOUS":
                             raise ValueError(f"Employer place of work is ambiguous. Please specify district or state.")
-                        else:
-                            raise ValueError(f"Employer work state could not be identified for salary calculation.")
             except ValueError:
                 if strict:
                     raise

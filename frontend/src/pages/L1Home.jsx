@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, downloadDocument, uploadDocumentBatchWithProgress } from '../lib/api'
 import synchroLogo from '../../assets/SynchroServeLogoHD.png'
 import './L1Home.css'
@@ -31,6 +31,18 @@ import {
   syncSalaryRowsOnLocationDetection,
   determineSalaryRowState,
 } from '../lib/salaryWageSyncHelper'
+import {
+  STANDARD_COURSE_DURATIONS,
+  INDIAN_STATES_28,
+  INDIAN_UTS_8,
+  ALL_36_INDIAN_STATES_AND_UTS,
+  calculateCourseDuration,
+  calculateApplicableMinimumCTC,
+  validateEmployerMonthlyCTC,
+  formatShortCtcNotice,
+  formatApptDateForBackend,
+} from '../lib/courseDurationHelper'
+import PlaceOfWorkDropdown from '../components/PlaceOfWorkDropdown'
 
 const RESET = {
   state: ['tc', 'order', 'batch', 'cand'],
@@ -135,7 +147,8 @@ function FileUploadControl({
           <button
             type="button"
             className="l1-btn-danger-ghost"
-            onClick={onRemove}
+            disabled={disabled}
+            onClick={() => !disabled && onRemove?.()}
             title="Remove staged file"
           >
             ✕ Remove
@@ -149,7 +162,7 @@ function FileUploadControl({
     return (
       <div>
         <div
-          className="l1-upload-zone unavailable"
+          className={`l1-upload-zone unavailable ${disabled ? 'disabled' : ''}`}
           role="region"
           aria-label={`${label}. Recorded as Not Available.`}
         >
@@ -168,7 +181,7 @@ function FileUploadControl({
                 className="l1-btn-change-upload"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onResetAvailability()
+                  if (!disabled) onResetAvailability()
                 }}
                 disabled={disabled}
               >
@@ -184,7 +197,7 @@ function FileUploadControl({
   return (
     <div>
       <div
-        className={`l1-upload-zone ${isDragOver ? 'dragover' : ''}`}
+        className={`l1-upload-zone ${isDragOver ? 'dragover' : ''} ${disabled ? 'disabled' : ''}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -198,6 +211,7 @@ function FileUploadControl({
           }
         }}
         aria-label={`${label}. Click or drag file to attach.`}
+        aria-disabled={disabled}
       >
         <div className="l1-upload-prompt">
           <div className="l1-upload-icon">↑</div>
@@ -213,7 +227,7 @@ function FileUploadControl({
               className="l1-btn-not-available"
               onClick={(e) => {
                 e.stopPropagation()
-                onMarkNotAvailable()
+                if (!disabled) onMarkNotAvailable()
               }}
               disabled={disabled || disableNotAvailable}
               title={notAvailableTitle || 'Record that payslip is unavailable'}
@@ -225,6 +239,7 @@ function FileUploadControl({
             type="button"
             className="l1-btn-choose"
             tabIndex={-1}
+            disabled={disabled}
             onClick={(e) => {
               e.stopPropagation()
               if (!disabled) inputRef.current?.click()
@@ -240,7 +255,7 @@ function FileUploadControl({
           style={{ display: 'none' }}
           disabled={disabled}
           onChange={(e) => {
-            if (e.target.files?.[0]) {
+            if (!disabled && e.target.files?.[0]) {
               onSelect(e.target.files[0])
               e.target.value = '' // Reset so same file can be re-selected if needed
             }
@@ -542,6 +557,52 @@ export default function L1Home() {
     }
   }, [])
 
+  // Rejection & Return state computation for currently loaded candidate dossier
+  const rawAuditStatus = (auditRecord?.audit_status || candDetail?.audit_status || '').toUpperCase()
+  const rawCpassStatus = (auditRecord?.cpass_status || candDetail?.cpass_status || '').toUpperCase()
+  const signoffObj = auditRecord?.signoff_details || candDetail?.signoff_details || {}
+  const reviewStagesObj = signoffObj?.review_stages || {}
+
+  const chStage = (reviewStagesObj?.ch?.status || '').toLowerCase()
+  const copsStage = (reviewStagesObj?.cops?.status || '').toLowerCase()
+  const blStage = (reviewStagesObj?.bl?.status || '').toLowerCase()
+  const activeReturn = signoffObj?.active_return || {}
+  const returnDest = signoffObj?.return_destination || activeReturn?.destination
+
+  // True if candidate is CURRENTLY returned to L1 awaiting resubmission
+  const isReturnedToL1 =
+    rawAuditStatus === 'RETURNED_TO_L1' ||
+    rawCpassStatus === 'RETURNED_TO_L1' ||
+    returnDest === 'L1' ||
+    Boolean(signoffObj?.return_to_l1) ||
+    chStage.includes('return')
+
+  // Authoritative Centralized Finalization & Lock Condition:
+  // An audit is finalized and locked against L1 editing/uploads if an audit record exists
+  // and is in SUBMITTED, APPROVED, or non-draft status, UNLESS officially returned to L1.
+  const isAuditFinalized = Boolean(
+    !isReturnedToL1 &&
+    (
+      (auditRecord && (
+        rawAuditStatus === 'SUBMITTED' ||
+        rawAuditStatus === 'APPROVED' ||
+        rawCpassStatus === 'APPROVED' ||
+        rawCpassStatus === 'VERIFIED' ||
+        rawCpassStatus === 'L2_APPROVED' ||
+        Boolean(auditRecord.finalized_at && rawAuditStatus !== 'DRAFT')
+      )) ||
+      (candDetail && (
+        candDetail.audit_status === 'SUBMITTED' ||
+        candDetail.audit_status === 'APPROVED' ||
+        candDetail.cpass_status === 'APPROVED' ||
+        candDetail.cpass_status === 'VERIFIED' ||
+        candDetail.cpass_status === 'L2_APPROVED'
+      ))
+    )
+  )
+
+  const isAuditSubmitted = isAuditFinalized
+
 
 
   // Statement View Modal State
@@ -549,6 +610,29 @@ export default function L1Home() {
   const [statementData, setStatementData] = useState(null)
   const [loadingStatement, setLoadingStatement] = useState(false)
   const [ambiguousPopoverEmpId, setAmbiguousPopoverEmpId] = useState(null)
+
+  // Inferred Course Duration (DDU-GKY standard duration from batch start & end dates)
+  const courseDurationInfo = useMemo(() => {
+    return calculateCourseDuration(candDetail?.batch_start_date, candDetail?.batch_end_date)
+  }, [candDetail?.batch_start_date, candDetail?.batch_end_date])
+
+  // Monthly CTC & Minimum Wage Validation Modal State
+  const [ctcValidationModal, setCtcValidationModal] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    employerName: '',
+    courseDuration: '',
+    courseMinCtc: null,
+    stateMinWage: null,
+    workState: '',
+    applicableMinCtc: null,
+    enteredCtc: null,
+    deficit: null,
+  })
+
+  // Short Dashboard Notice for CTC validation failures (isolated from global error string)
+  const [ctcNotice, setCtcNotice] = useState(null)
 
   // Auto-dismiss toast notification
   useEffect(() => {
@@ -813,7 +897,7 @@ export default function L1Home() {
   }
 
   async function handleMarkPayslipNotAvailable(monthNumber, rowId) {
-    if (!sel.cand) return
+    if (!sel.cand || isAuditFinalized) return
     const row = salaryRows.find((r) => r.id === rowId)
     updateRowField('SALARY', rowId, 'file', null)
     try {
@@ -855,7 +939,7 @@ export default function L1Home() {
   }
 
   async function handleResetPayslipAvailability(monthNumber, rowId) {
-    if (!sel.cand) return
+    if (!sel.cand || isAuditFinalized) return
     const row = salaryRows.find((r) => r.id === rowId)
     try {
       const payload = {
@@ -966,6 +1050,7 @@ export default function L1Home() {
     setSignoffDetails(createDefaultSignoffs())
     setStatementModalOpen(false)
     setStatementData(null)
+    setCtcNotice(null)
   }
 
   function clearStagedFiles() {
@@ -1044,7 +1129,9 @@ export default function L1Home() {
               minimum_wages_effective_year: e.minimum_wages_effective_year ?? null,
               location_loading: false,
               employer_wage_loading: false,
-              employer_wage_error: null,
+              employer_wage_error: e.work_state_detection_status === 'UNSUPPORTED_STATE'
+                ? 'State wage data unavailable. Course minimum applies.'
+                : null,
             }))
             setEmployerList(loadedEmployers)
             loadedEmployers.forEach((e) => {
@@ -1204,6 +1291,7 @@ export default function L1Home() {
     })
 
     setError('')
+    setCtcNotice(null)
     setSel((s) => ({ ...s, ...Object.fromEntries(RESET[level].map((k) => [k, ''])), [level]: value }))
     setLists((l) => ({ ...l, ...Object.fromEntries(RESET[level].map((k) => [k, []])) }))
     setCandDetail(null)
@@ -1247,7 +1335,7 @@ export default function L1Home() {
 
   // --- Audit Employer List Handlers ---
   function handleAddEmployerRow() {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (isAuditFinalized) return
     const newRow = {
       id: `emp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       employer_name: '',
@@ -1272,7 +1360,7 @@ export default function L1Home() {
   }
 
   function handleRemoveEmployerRow(id) {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (isAuditFinalized) return
     if (employerList.length <= 1) return
     setEmployerList((prev) => prev.filter((e) => e.id !== id))
     scheduleAutosave()
@@ -1375,103 +1463,147 @@ export default function L1Home() {
     const seq = (employerLocationSeqRef.current[empId] || 0) + 1
     employerLocationSeqRef.current[empId] = seq
 
-    const trimmed = (locationText || '').trim()
+    const rawText = typeof locationText === 'string' ? locationText : (locationText?.target?.value ?? (locationText || ''))
+    const trimmed = (rawText || '').trim()
     const curEmps = employerListRef.current || []
+    const curEmp = curEmps.find((e) => e.id === empId)
+
+    // Resolve appointment date from multiple possible sources
+    const rawApptDate = apptDate || curEmp?.appointment_date || candDetail?.appointed_date || ''
+    const formattedApptDate = formatApptDateForBackend(rawApptDate)
 
     if (trimmed.length < 2) {
-      setEmployerList((prev) =>
-        prev.map((e) =>
-          e.id === empId
-            ? {
-                ...e,
-                work_state: null,
-                work_state_detection_status: null,
-                work_state_message: null,
-                work_state_candidates: [],
-                minimum_wages: null,
-                minimum_wages_effective_month: null,
-                minimum_wages_effective_year: null,
-                location_loading: false,
-                employer_wage_loading: false,
-                employer_wage_error: null,
-              }
-            : e
+      if (employerLocationSeqRef.current[empId] === seq) {
+        setEmployerList((prev) =>
+          prev.map((e) =>
+            e.id === empId
+              ? {
+                  ...e,
+                  work_state: null,
+                  work_state_detection_status: null,
+                  work_state_message: null,
+                  work_state_candidates: [],
+                  minimum_wages: null,
+                  minimum_wages_effective_month: null,
+                  minimum_wages_effective_year: null,
+                  location_loading: false,
+                  employer_wage_loading: false,
+                  employer_wage_error: e.work_state_detection_status === 'UNSUPPORTED_STATE'
+                ? 'State wage data unavailable. Course minimum applies.'
+                : null,
+                }
+              : e
+          )
         )
-      )
-      setSalaryDetailList((prev) => getImmediateInvalidatedSalaryRows(prev, empId, curEmps, false))
+        setSalaryDetailList((prev) => getImmediateInvalidatedSalaryRows(prev, empId, curEmps, false))
+      }
       return
     }
 
     setEmployerList((prev) =>
       prev.map((e) =>
-        e.id === empId ? { ...e, location_loading: true, employer_wage_loading: true, employer_wage_error: null } : e
+        e.id === empId
+          ? {
+              ...e,
+              location_loading: true,
+              employer_wage_loading: true,
+              employer_wage_error: e.work_state_detection_status === 'UNSUPPORTED_STATE'
+                ? 'State wage data unavailable. Course minimum applies.'
+                : null,
+            }
+          : e
       )
     )
 
+    let detRes = null
+    let locationError = null
+    let fetchedWage = null
+    let fetchedMonth = null
+    let fetchedYear = null
+    let wageError = null
+
     try {
-      const detRes = await api('/minimum-wages/detect-location', { location: trimmed })
+      // 1. Detect location
+      try {
+        detRes = await api('/minimum-wages/detect-location', { location: trimmed }, { timeout: 15000 })
+      } catch (dErr) {
+        locationError = dErr.message || 'Location detection failed'
+      }
+
+      // Check if stale before proceeding to wage lookup
       if (employerLocationSeqRef.current[empId] !== seq) return
 
-      let fetchedWage = null
-      let fetchedMonth = null
-      let fetchedYear = null
-      let wageError = null
-
-      if (detRes.status === 'IDENTIFIED' && detRes.detected_state && apptDate) {
-        try {
-          const wageRes = await api('/minimum-wages/employer-wage', {
-            candidate_id: cId,
-            appointment_date: apptDate,
-            state: detRes.detected_state,
-          })
-          if (employerLocationSeqRef.current[empId] !== seq) return
-          fetchedWage = wageRes.minimum_wage
-          fetchedMonth = wageRes.effective_month
-          fetchedYear = wageRes.effective_year
-        } catch (wErr) {
-          if (employerLocationSeqRef.current[empId] !== seq) return
-          wageError = wErr.message || 'Wage lookup failed'
+      // If location detection succeeded and state was identified
+      if (detRes && detRes.status === 'IDENTIFIED' && detRes.detected_state) {
+        if (formattedApptDate && cId) {
+          try {
+            const wageRes = await api(
+              '/minimum-wages/employer-wage',
+              {
+                candidate_id: cId,
+                appointment_date: formattedApptDate,
+                state: detRes.detected_state,
+              },
+              { timeout: 15000 }
+            )
+            if (employerLocationSeqRef.current[empId] !== seq) return
+            fetchedWage = wageRes.minimum_wage
+            fetchedMonth = wageRes.effective_month
+            fetchedYear = wageRes.effective_year
+          } catch (wErr) {
+            if (employerLocationSeqRef.current[empId] !== seq) return
+            wageError = wErr.message || 'Wage lookup failed'
+          }
+        } else if (!formattedApptDate) {
+          wageError = 'Appointment date required'
         }
+      } else if (detRes && detRes.status === 'UNSUPPORTED_STATE') {
+        wageError = 'State wage data unavailable. Course minimum applies.'
+      } else if (detRes && detRes.status === 'AMBIGUOUS') {
+        wageError = 'Ambiguous location: please select specific state'
       }
+
+      if (employerLocationSeqRef.current[empId] !== seq) return
 
       setEmployerList((prev) =>
         prev.map((e) => {
           if (e.id !== empId) return e
           return {
             ...e,
-            work_state: detRes.detected_state,
-            work_state_detection_status: detRes.status,
-            work_state_message: detRes.message,
-            work_state_candidates: detRes.candidate_states || [],
+            work_state: detRes?.detected_state || (locationError ? null : e.work_state),
+            work_state_detection_status: detRes?.status || (locationError ? 'ERROR' : null),
+            work_state_message: detRes?.message || locationError || null,
+            work_state_candidates: detRes?.candidate_states || [],
             minimum_wages: fetchedWage,
             minimum_wages_effective_month: fetchedMonth,
             minimum_wages_effective_year: fetchedYear,
             location_loading: false,
             employer_wage_loading: false,
-            employer_wage_error: wageError,
+            employer_wage_error: wageError || locationError,
           }
         })
       )
 
       // Synchronize linked salary rows with detected location result
-      setSalaryDetailList((prev) => syncSalaryRowsOnLocationDetection(prev, empId, curEmps, detRes))
+      if (detRes) {
+        setSalaryDetailList((prev) => syncSalaryRowsOnLocationDetection(prev, empId, curEmps, detRes))
 
-      // If IDENTIFIED, recalculate each linked salary row that has month & year
-      if (detRes.status === 'IDENTIFIED' && detRes.detected_state) {
-        const salaries = salaryDetailListRef.current || []
-        salaries.forEach((s) => {
-          if (isSalaryLinkedToEmployer(s, empId, curEmps) && s.month && s.year) {
-            fetchMinimumWageForRow(s.id, s.month, s.year, cId, detRes.detected_state, shouldAutosave)
-          }
-        })
+        if (detRes.status === 'IDENTIFIED' && detRes.detected_state) {
+          const salaries = salaryDetailListRef.current || []
+          salaries.forEach((s) => {
+            if (isSalaryLinkedToEmployer(s, empId, curEmps) && s.month && s.year) {
+              fetchMinimumWageForRow(s.id, s.month, s.year, cId, detRes.detected_state, shouldAutosave)
+            }
+          })
+        }
       }
 
       if (shouldAutosave && typeof scheduleAutosave === 'function') {
         scheduleAutosave()
       }
-    } catch (err) {
+    } catch (unexpectedErr) {
       if (employerLocationSeqRef.current[empId] !== seq) return
-      console.warn('Location detection failed for employer:', err)
+      console.warn('Unexpected error in detectLocationAndFetchEmployerWage:', unexpectedErr)
       setEmployerList((prev) =>
         prev.map((e) =>
           e.id === empId
@@ -1479,34 +1611,42 @@ export default function L1Home() {
                 ...e,
                 location_loading: false,
                 employer_wage_loading: false,
-                employer_wage_error: err.message || 'Location detection failed',
+                employer_wage_error: unexpectedErr.message || 'Operation failed',
               }
             : e
         )
       )
-      setSalaryDetailList((prev) =>
-        prev.map((s) => {
-          if (!isSalaryLinkedToEmployer(s, empId, curEmps)) return s
-          return {
-            ...s,
-            minimum_wage: null,
-            min_wage_loading: false,
-            min_wage_error: err.message || 'Location lookup failed',
-          }
-        })
-      )
+    } finally {
+      // Guaranteed cleanup: if this is still the active request, reset loading flags!
+      if (employerLocationSeqRef.current[empId] === seq) {
+        setEmployerList((prev) =>
+          prev.map((e) =>
+            e.id === empId && (e.location_loading || e.employer_wage_loading)
+              ? {
+                  ...e,
+                  location_loading: false,
+                  employer_wage_loading: false,
+                }
+              : e
+          )
+        )
+      }
     }
-  }, [sel.cand, scheduleAutosave, fetchMinimumWageForRow])
+  }, [sel.cand, candDetail?.appointed_date, scheduleAutosave, fetchMinimumWageForRow])
 
   function handleUpdateEmployerField(id, field, value) {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (isAuditFinalized) return
+    const actualVal = typeof value === 'string' ? value : (value?.target?.value ?? (value || ''))
+    if (field === 'monthly_ctc' || field === 'place_of_work') {
+      setCtcNotice(null)
+    }
     setEmployerList((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, [field]: value } : e))
+      prev.map((e) => (e.id === id ? { ...e, [field]: actualVal } : e))
     )
     scheduleAutosave()
 
     if (field === 'place_of_work') {
-      const trimmedVal = (value || '').trim()
+      const trimmedVal = (actualVal || '').trim()
       const isLoading = trimmedVal.length >= 2
       const curEmps = employerListRef.current || []
 
@@ -1518,7 +1658,9 @@ export default function L1Home() {
                 ...e,
                 location_loading: isLoading,
                 employer_wage_loading: isLoading,
-                employer_wage_error: null,
+                employer_wage_error: e.work_state_detection_status === 'UNSUPPORTED_STATE'
+                ? 'State wage data unavailable. Course minimum applies.'
+                : null,
                 work_state: null,
                 work_state_detection_status: null,
                 work_state_message: null,
@@ -1544,15 +1686,18 @@ export default function L1Home() {
       if (locationDebounceTimersRef.current[id]) {
         clearTimeout(locationDebounceTimersRef.current[id])
       }
+      const isKnownState = ALL_36_INDIAN_STATES_AND_UTS.some((s) => s.toLowerCase() === trimmedVal.toLowerCase())
+      const delay = isKnownState ? 0 : 450
       locationDebounceTimersRef.current[id] = setTimeout(() => {
         const curEmp = (employerListRef.current || []).find((e) => e.id === id)
-        detectLocationAndFetchEmployerWage(id, value, curEmp?.appointment_date, sel.cand, true)
-      }, 450)
+        const apptDateToUse = curEmp?.appointment_date || candDetail?.appointed_date || ''
+        detectLocationAndFetchEmployerWage(id, actualVal, apptDateToUse, sel.cand, true)
+      }, delay)
     } else if (field === 'appointment_date') {
       const curEmp = (employerListRef.current || []).find((e) => e.id === id)
-      if (value && curEmp?.work_state && curEmp?.work_state_detection_status === 'IDENTIFIED') {
-        detectLocationAndFetchEmployerWage(id, curEmp.place_of_work, value, sel.cand, true)
-      } else if (!value) {
+      if (actualVal && curEmp?.work_state && curEmp?.work_state_detection_status === 'IDENTIFIED') {
+        detectLocationAndFetchEmployerWage(id, curEmp.place_of_work, actualVal, sel.cand, true)
+      } else if (!actualVal) {
         setEmployerList((prev) =>
           prev.map((e) =>
             e.id === id
@@ -1562,7 +1707,9 @@ export default function L1Home() {
                   minimum_wages_effective_month: null,
                   minimum_wages_effective_year: null,
                   employer_wage_loading: false,
-                  employer_wage_error: null,
+                  employer_wage_error: e.work_state_detection_status === 'UNSUPPORTED_STATE'
+                ? 'State wage data unavailable. Course minimum applies.'
+                : null,
                 }
               : e
           )
@@ -1573,7 +1720,7 @@ export default function L1Home() {
 
   // --- Audit Salary List Handlers ---
   function handleAddSalaryRow(targetEmpId = null) {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (isAuditFinalized) return
     if (salaryDetailList.length >= 12) {
       setAuditToast({ message: 'Maximum 12 monthly salary entries allowed.', type: 'info' })
       return
@@ -1645,7 +1792,7 @@ export default function L1Home() {
   }
 
   function handleRemoveSalaryRow(id) {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (isAuditFinalized) return
     if (salaryDetailList.length <= 3) {
       setAuditToast({ message: 'At least 3 monthly salary entries are required.', type: 'info' })
       return
@@ -1671,7 +1818,7 @@ export default function L1Home() {
   }
 
   function handleUpdateSalaryField(id, field, value) {
-    if (auditRecord?.audit_status === 'SUBMITTED') return
+    if (isAuditFinalized) return
     const sIndex = salaryDetailList.findIndex((s) => s.id === id)
     setSalaryDetailList((prev) => {
       const updatedList = prev.map((s) => {
@@ -1977,7 +2124,15 @@ export default function L1Home() {
   const performAutosave = useCallback(async (retryCount = 0) => {
     const s = formStateRef.current
     const candId = s.sel?.cand
-    if (!candId || !s.candDetail || s.auditRecord?.audit_status === 'SUBMITTED' || s.auditLoadError) {
+    const rawAudit = (s.auditRecord?.audit_status || '').toUpperCase()
+    const rawCpass = (s.auditRecord?.cpass_status || '').toUpperCase()
+    const isRet = rawAudit === 'RETURNED_TO_L1' || rawCpass === 'RETURNED_TO_L1'
+    const isLocked = Boolean(
+      s.auditRecord &&
+      !isRet &&
+      (rawAudit === 'SUBMITTED' || rawAudit === 'APPROVED' || rawCpass === 'APPROVED' || rawCpass === 'VERIFIED' || rawCpass === 'L2_APPROVED' || (s.auditRecord.finalized_at && rawAudit !== 'DRAFT'))
+    )
+    if (!candId || !s.candDetail || isLocked || s.auditLoadError) {
       return null
     }
 
@@ -2049,7 +2204,7 @@ export default function L1Home() {
 
   const scheduleAutosaveImpl = useCallback(() => {
     const s = formStateRef.current
-    if (!s.sel?.cand || !s.candDetail || s.auditRecord?.audit_status === 'SUBMITTED' || s.auditLoadError) {
+    if (!s.sel?.cand || !s.candDetail || isAuditFinalized || s.auditLoadError) {
       return
     }
     isDirtyRef.current = true
@@ -2088,7 +2243,7 @@ export default function L1Home() {
       if (!isSilent) setAuditToast({ message: 'Cannot save draft: please retry loading first.', type: 'error' })
       return
     }
-    if (auditRecord?.audit_status === 'SUBMITTED') {
+    if (isAuditFinalized) {
       if (!isSilent) setAuditToast({ message: 'This placement audit is already submitted and locked against editing.', type: 'info' })
       return
     }
@@ -2112,13 +2267,13 @@ export default function L1Home() {
   }
 
   async function handleSubmitAuditStatement() {
-    if (!sel.cand || !candDetail) return
+    if (!sel.cand || !candDetail || isAuditFinalized) return
     if (auditLoadError) {
       setError('Cannot submit statement while audit record failed to load. Please retry loading first.')
       setAuditToast({ message: 'Cannot submit statement: please retry loading first.', type: 'error' })
       return
     }
-    if (auditRecord?.audit_status === 'SUBMITTED') {
+    if (isAuditFinalized) {
       setAuditToast({ message: 'This placement audit has already been submitted.', type: 'info' })
       handleOpenStatementModal()
       return
@@ -2197,6 +2352,43 @@ export default function L1Home() {
       return
     }
 
+    // Course Duration & Higher-of-Two Minimum Wage Validation
+    const ctcFailures = []
+    for (const emp of validEmployers) {
+      const ctcVal = validateEmployerMonthlyCTC(
+        emp.monthly_ctc,
+        courseDurationInfo,
+        emp.minimum_wages,
+        emp.employer_name
+      )
+      if (!ctcVal.isValid) {
+        ctcFailures.push({ emp, ctcVal })
+      }
+    }
+
+    if (ctcFailures.length > 0) {
+      const firstFailure = ctcFailures[0]
+      const shortNotice = formatShortCtcNotice(ctcFailures)
+      setCtcNotice(shortNotice)
+      setError('')
+      setAuditToast({ message: `Monthly CTC below minimum for ${firstFailure.emp.employer_name || 'employer'}`, type: 'error' })
+      setCtcValidationModal({
+        isOpen: true,
+        title: firstFailure.ctcVal.title || 'Minimum CTC Requirement Not Met',
+        message: firstFailure.ctcVal.userMessage,
+        employerName: firstFailure.emp.employer_name || 'Employer',
+        courseDuration: courseDurationInfo?.label,
+        courseMinCtc: courseDurationInfo?.minimum_ctc,
+        stateMinWage: firstFailure.emp.minimum_wages,
+        workState: firstFailure.emp.work_state || firstFailure.emp.place_of_work,
+        applicableMinCtc: firstFailure.ctcVal.applicableMinimumCTC,
+        enteredCtc: firstFailure.emp.monthly_ctc,
+        deficit: (firstFailure.ctcVal.applicableMinimumCTC || 0) - (Number(firstFailure.emp.monthly_ctc) || 0),
+      })
+      return
+    }
+
+    setCtcNotice(null)
     setError('')
     // Save draft first so the statement preview has all latest inputs
     try {
@@ -2209,10 +2401,50 @@ export default function L1Home() {
   }
 
   async function handleConfirmFinalSubmit() {
-    if (!sel.cand || !candDetail) return
+    if (!sel.cand || !candDetail || isAuditFinalized) return
     setAuditSubmitting(true)
     setError('')
     try {
+      // Final submission validation: Monthly CTC vs. Applicable Minimum
+      const ctcFailures = []
+      for (const emp of employerList.filter((e) => e.employer_name && e.employer_name.trim())) {
+        const ctcVal = validateEmployerMonthlyCTC(
+          emp.monthly_ctc,
+          courseDurationInfo,
+          emp.minimum_wages,
+          emp.employer_name
+        )
+        if (!ctcVal.isValid) {
+          ctcFailures.push({ emp, ctcVal })
+        }
+      }
+
+      if (ctcFailures.length > 0) {
+        const firstFailure = ctcFailures[0]
+        const shortNotice = formatShortCtcNotice(ctcFailures)
+        setCtcNotice(shortNotice)
+        setError('')
+        setAuditToast({ message: `Monthly CTC below minimum for ${firstFailure.emp.employer_name || 'employer'}`, type: 'error' })
+        setAuditSubmitting(false)
+        setStatementModalOpen(false)
+        setCtcValidationModal({
+          isOpen: true,
+          title: firstFailure.ctcVal.title || 'Minimum CTC Requirement Not Met',
+          message: firstFailure.ctcVal.userMessage,
+          employerName: firstFailure.emp.employer_name || 'Employer',
+          courseDuration: courseDurationInfo?.label,
+          courseMinCtc: courseDurationInfo?.minimum_ctc,
+          stateMinWage: firstFailure.emp.minimum_wages,
+          workState: firstFailure.emp.work_state || firstFailure.emp.place_of_work,
+          applicableMinCtc: firstFailure.ctcVal.applicableMinimumCTC,
+          enteredCtc: firstFailure.emp.monthly_ctc,
+          deficit: (firstFailure.ctcVal.applicableMinimumCTC || 0) - (Number(firstFailure.emp.monthly_ctc) || 0),
+        })
+        return
+      }
+
+      setCtcNotice(null)
+
       const payloadDocAudit = prepareDocumentAuditPayload()
       setDocumentAudit(payloadDocAudit)
       const payload = buildCleanAuditDraftPayload({
@@ -2297,20 +2529,8 @@ export default function L1Home() {
   )
   const computedAvgGross =
     computedSalaryTotals.validMonths > 0 ? computedSalaryTotals.gross / computedSalaryTotals.validMonths : 0
-  const isAuditSubmitted = auditRecord?.audit_status === 'SUBMITTED'
-
   // Rejection & Return state computation for currently loaded candidate dossier
-  const rawAuditStatus = (auditRecord?.audit_status || '').toUpperCase()
-  const rawCpassStatus = (auditRecord?.cpass_status || '').toUpperCase()
-  const signoffObj = auditRecord?.signoff_details || {}
-  const reviewStagesObj = signoffObj?.review_stages || {}
-
-  const chStage = (reviewStagesObj?.ch?.status || '').toLowerCase()
-  const copsStage = (reviewStagesObj?.cops?.status || '').toLowerCase()
-  const blStage = (reviewStagesObj?.bl?.status || '').toLowerCase()
-
-  // True if candidate is CURRENTLY returned to L1 awaiting resubmission
-  const isReturnedToL1 = rawAuditStatus === 'RETURNED_TO_L1' || rawCpassStatus === 'RETURNED_TO_L1' || chStage.includes('return')
+  // (rawAuditStatus, rawCpassStatus, signoffObj, reviewStagesObj, isReturnedToL1, isAuditFinalized, isAuditSubmitted are defined at top-level)
 
   // Rejection by stage
   const isCHRejected = isReturnedToL1 || chStage === 'rejected'
@@ -2366,6 +2586,7 @@ export default function L1Home() {
 
   // --- Staging Handlers for Appointment Letter (Multi-Employer Aware) ---
   function handleSelectAppointment(file, isReplacement = false) {
+    if (isAuditFinalized) return
     setAppointmentError('')
     if (!file) return
     const err = validateFile(file)
@@ -2382,13 +2603,14 @@ export default function L1Home() {
   }
 
   function handleRemoveStagedAppointment() {
+    if (isAuditFinalized) return
     setStagedAppointment(null)
     setAppointmentError('')
     setReplacingAppointment(false)
   }
 
   function handleSelectAppointmentForEmployer(empId, file, isReplacement = false) {
-    if (!file) return
+    if (isAuditFinalized || !file) return
     const err = validateFile(file)
     setAppointmentErrors((prev) => ({ ...prev, [empId]: err || '' }))
     if (err) return
@@ -2413,6 +2635,7 @@ export default function L1Home() {
   }
 
   function handleRemoveStagedAppointmentForEmployer(empId) {
+    if (isAuditFinalized) return
     setStagedAppointments((prev) => {
       const copy = { ...prev }
       delete copy[empId]
@@ -2702,6 +2925,7 @@ export default function L1Home() {
   }
 
   function handleSelectOtherDoc(file) {
+    if (isAuditFinalized) return
     if (!file) {
       setStagedOtherDoc(null)
       setOtherDocError('')
@@ -2722,6 +2946,7 @@ export default function L1Home() {
   }
 
   function handleRemoveStagedOtherDoc() {
+    if (isAuditFinalized) return
     setStagedOtherDoc(null)
     setOtherDocError('')
     setReplacingOtherDoc(false)
@@ -2752,6 +2977,7 @@ export default function L1Home() {
   }
 
   function handleRemoveRow(type, rowId) {
+    if (isAuditFinalized) return
     const rows = type === 'SALARY' ? salaryRows : bankRows
     const idx = rows.findIndex((r) => r.id === rowId)
     if (idx === -1) return
@@ -2763,11 +2989,13 @@ export default function L1Home() {
   }
 
   function handleAddRow(type) {
+    if (isAuditFinalized) return
     handleAddSalaryRow()
   }
 
   // --- Handlers for Replacing Persisted Documents ---
   function toggleReplaceMode(docId) {
+    if (isAuditFinalized) return
     setActiveReplaceIds((prev) => {
       const next = new Set(prev)
       if (next.has(docId)) {
@@ -2790,7 +3018,7 @@ export default function L1Home() {
   }
 
   function handleSelectReplacement(doc, file) {
-    if (!file) return
+    if (!file || isAuditFinalized) return
     const err = validateFile(file)
     const isConsol = Boolean(isDocConsolidated(doc))
     const payload = {
@@ -2882,6 +3110,7 @@ export default function L1Home() {
   }
 
   function handleOpenReviewModal() {
+    if (isAuditFinalized) return
     const validationError = validateSubmissionPackage()
     if (validationError) {
       setError(validationError)
@@ -2894,6 +3123,7 @@ export default function L1Home() {
 
   // --- Final Atomic Submission Execution ---
   async function handleFinalSubmit() {
+    if (isAuditFinalized) return
     setSubmitting(true)
     setError('')
 
@@ -3350,6 +3580,36 @@ export default function L1Home() {
         </div>
       </section>
 
+      {/* CTC Validation Warning Banner above Candidate Selection Pipeline */}
+      {ctcNotice && (
+        <div
+          className="l1-banner-danger l1-no-print"
+          role="alert"
+          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}
+        >
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+            <strong style={{ minWidth: '70px', fontWeight: 700 }}>{ctcNotice.title}:</strong>
+            <div>{ctcNotice.message}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCtcNotice(null)}
+            title="Dismiss notice"
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#991B1B',
+              fontSize: '16px',
+              cursor: 'pointer',
+              padding: '0 4px',
+              lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Global Error Banner */}
       {error && (
         <div className="l1-banner-danger l1-no-print" role="alert">
@@ -3803,6 +4063,19 @@ export default function L1Home() {
               <span className="l1-meta-val">{candDetail.batch_end_date || '—'}</span>
             </div>
             <div className="l1-meta-item">
+              <span className="l1-meta-label">Course Duration</span>
+              <span
+                className="l1-meta-val"
+                title={
+                  courseDurationInfo.minimum_ctc
+                    ? `${courseDurationInfo.label} (Statutory Min. CTC: ₹${courseDurationInfo.minimum_ctc.toLocaleString('en-IN')})`
+                    : (courseDurationInfo.warning || courseDurationInfo.label || '—')
+                }
+              >
+                {courseDurationInfo.label || '—'}
+              </span>
+            </div>
+            <div className="l1-meta-item">
               <span className="l1-meta-label">Trade / Course Name</span>
               <span className="l1-meta-val">{candDetail.trade_name || '—'}</span>
             </div>
@@ -3864,7 +4137,7 @@ export default function L1Home() {
                     <span>📄</span> {loadingStatement ? 'Loading...' : 'Preview Statement'}
                   </button>
                 )}
-                {!isAuditSubmitted && (
+                {!isAuditSubmitted ? (
                   <>
                     <button
                       type="button"
@@ -3885,6 +4158,16 @@ export default function L1Home() {
                       {auditSubmitting ? 'Preparing Statement…' : 'Preview & Submit →'}
                     </button>
                   </>
+                ) : (
+                  <button
+                    type="button"
+                    className="l1-btn-primary-action"
+                    disabled={true}
+                    style={{ padding: '8px 18px', fontSize: '13px', opacity: 0.75, cursor: 'not-allowed' }}
+                    title="This placement audit has already been submitted and is locked for review."
+                  >
+                    🔒 Already Submitted – Awaiting Review
+                  </button>
                 )}
               </div>
             </div>
@@ -3994,7 +4277,7 @@ export default function L1Home() {
                       <div>
                         <strong style={{ color: '#166534', fontSize: '14.5px' }}>Placement Audit Statement Finalized</strong>
                         <div style={{ fontSize: '13px', color: '#15803D', marginTop: '2px' }}>
-                          This audit was submitted on {new Date(auditRecord?.finalized_at || auditRecord?.updated_at).toLocaleString('en-IN')}. It is permanently recorded and locked for coordinator review.
+                          This audit has been submitted and is locked for review. Corrections can be made after it is returned to L1.
                         </div>
                       </div>
                     </div>
@@ -4095,6 +4378,19 @@ export default function L1Home() {
                     <div className="cpass-dossier-item">
                       <span className="k">Batch End Date</span>
                       <span className="v">{candDetail?.batch_end_date || 'Not Available'}</span>
+                    </div>
+                    <div className="cpass-dossier-item">
+                      <span className="k">Course Duration</span>
+                      <span
+                        className="v"
+                        title={
+                          courseDurationInfo.minimum_ctc
+                            ? `${courseDurationInfo.label} (Statutory Min. CTC: ₹${courseDurationInfo.minimum_ctc.toLocaleString('en-IN')})`
+                            : (courseDurationInfo.warning || courseDurationInfo.label || 'Not Available')
+                        }
+                      >
+                        {courseDurationInfo.label || 'Not Available'}
+                      </span>
                     </div>
                     <div className="cpass-dossier-item">
                       <span className="k">Father's Name</span>
@@ -4218,13 +4514,18 @@ export default function L1Home() {
                                 disabled={isAuditSubmitted}
                               />
                             </td>
-                            <td style={{ position: 'relative' }}>
-                              <input
-                                type="text"
-                                placeholder="e.g. Hyderabad, Telangana"
-                                value={emp.place_of_work || ''}
-                                onChange={(e) => handleUpdateEmployerField(emp.id, 'place_of_work', e.target.value)}
+                            <td style={{ position: 'relative', minWidth: '190px' }}>
+                              <PlaceOfWorkDropdown
+                                value={
+                                  ALL_36_INDIAN_STATES_AND_UTS.find((s) => s.toLowerCase() === (emp.place_of_work || '').trim().toLowerCase()) ||
+                                  (emp.work_state && ALL_36_INDIAN_STATES_AND_UTS.find((s) => s.toLowerCase() === emp.work_state.toLowerCase())) ||
+                                  emp.place_of_work ||
+                                  ''
+                                }
+                                savedPlaceOfWork={emp.place_of_work}
+                                onChange={(e) => handleUpdateEmployerField(emp.id, 'place_of_work', e)}
                                 disabled={isAuditSubmitted}
+                                placeholder="Select State / UT"
                               />
                               {emp.location_loading ? (
                                 <div
@@ -4256,47 +4557,6 @@ export default function L1Home() {
                                     }}
                                   />
                                   <span style={{ fontWeight: 500 }}>Identifying location...</span>
-                                </div>
-                              ) : emp.work_state && emp.work_state_detection_status === 'IDENTIFIED' ? (
-                                <div
-                                  style={{
-                                    height: '16px',
-                                    lineHeight: '16px',
-                                    marginTop: '3px',
-                                    fontSize: '11px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '3px',
-                                    color: '#059669',
-                                    fontWeight: 600,
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                  title={`Statutory minimum wage coverage identified for ${emp.work_state}`}
-                                >
-                                  <span>✓ {emp.work_state.toUpperCase()}</span>
-                                </div>
-                              ) : emp.work_state_detection_status === 'UNSUPPORTED_STATE' ? (
-                                <div
-                                  style={{
-                                    height: '16px',
-                                    lineHeight: '16px',
-                                    marginTop: '3px',
-                                    fontSize: '11px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '3px',
-                                    color: '#B45309',
-                                    fontWeight: 600,
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    cursor: 'help',
-                                  }}
-                                  title={`${formatStateTitle(emp.work_state)} is not included in the current 13-state statutory minimum wage register. Minimum wage cannot be automatically determined.`}
-                                >
-                                  <span>⚠ {emp.work_state ? emp.work_state.toUpperCase() : 'STATE'} · NOT COVERED</span>
                                 </div>
                               ) : emp.work_state_detection_status === 'AMBIGUOUS' ? (
                                 <div
@@ -4396,25 +4656,6 @@ export default function L1Home() {
                                     </div>
                                   )}
                                 </div>
-                              ) : emp.place_of_work && emp.place_of_work.trim().length > 0 && (emp.work_state_detection_status === 'INSUFFICIENT_INPUT' || emp.work_state_detection_status === 'UNRESOLVED' || emp.place_of_work.trim().length < 3) ? (
-                                <div
-                                  style={{
-                                    height: '16px',
-                                    lineHeight: '16px',
-                                    marginTop: '3px',
-                                    fontSize: '11px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '3px',
-                                    color: '#6B7280',
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                  title="Enter a valid Indian city, district, state or PIN code"
-                                >
-                                  <span>Enter a valid location</span>
-                                </div>
                               ) : null}
                             </td>
                             <td>
@@ -4426,6 +4667,69 @@ export default function L1Home() {
                                 onChange={(e) => handleUpdateEmployerField(emp.id, 'monthly_ctc', e.target.value)}
                                 disabled={isAuditSubmitted}
                               />
+                              {(() => {
+                                const ctcVal = validateEmployerMonthlyCTC(
+                                  emp.monthly_ctc,
+                                  courseDurationInfo,
+                                  emp.minimum_wages,
+                                  emp.employer_name
+                                )
+                                const applicableMin = ctcVal.applicableMinimumCTC
+                                if (applicableMin == null) return null
+
+                                const entered = Number(emp.monthly_ctc)
+                                const hasEntered = emp.monthly_ctc !== '' && emp.monthly_ctc != null && !isNaN(entered)
+
+                                if (!hasEntered) {
+                                  return (
+                                    <div
+                                      style={{
+                                        fontSize: '10.5px',
+                                        marginTop: '3px',
+                                        fontWeight: 500,
+                                        color: '#6B7280',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '3px',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                      title={`Applicable minimum CTC is ₹${Math.round(applicableMin).toLocaleString('en-IN')}`}
+                                    >
+                                      <span>Min. Req:</span>
+                                      <span>₹{Math.round(applicableMin).toLocaleString('en-IN')}</span>
+                                    </div>
+                                  )
+                                }
+
+                                const isCompliant = ctcVal.isValid
+                                const formattedMin = `₹${Math.round(applicableMin).toLocaleString('en-IN')}`
+                                const shortfall = Math.max(0, applicableMin - entered)
+
+                                return (
+                                  <div
+                                    style={{
+                                      fontSize: '10.5px',
+                                      marginTop: '3px',
+                                      fontWeight: 600,
+                                      color: isCompliant ? '#059669' : '#DC2626',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '3px',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                    title={
+                                      isCompliant
+                                        ? `Valid: Monthly CTC meets or exceeds applicable minimum of ${formattedMin}`
+                                        : `Below Min: Monthly CTC is below applicable minimum of ${formattedMin} (Shortfall: ₹${Math.round(shortfall).toLocaleString('en-IN')})`
+                                    }
+                                  >
+                                    <span>{isCompliant ? '✓ Valid' : '⚠ Below Min'}</span>
+                                    <span style={{ fontSize: '10px', color: isCompliant ? '#047857' : '#991B1B', fontWeight: 500 }}>
+                                      ({formattedMin})
+                                    </span>
+                                  </div>
+                                )
+                              })()}
                             </td>
                             <td>
                               <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -4442,7 +4746,9 @@ export default function L1Home() {
                                   }
                                   disabled={isAuditSubmitted}
                                   title={
-                                    emp.work_state
+                                    emp.work_state_detection_status === 'UNSUPPORTED_STATE'
+                                      ? 'State wage data unavailable. Course minimum applies.'
+                                      : emp.work_state
                                       ? `Statutory Semi-Skilled Minimum Wage for ${emp.work_state} at appointment date`
                                       : 'Requires Place of Work & Appointment Date'
                                   }
@@ -4472,7 +4778,14 @@ export default function L1Home() {
                                 </span>
                               </div>
                               {emp.employer_wage_error && (
-                                <div style={{ fontSize: '10px', color: '#DC2626', marginTop: '2px' }}>
+                                <div
+                                  style={{
+                                    fontSize: '10px',
+                                    color: emp.work_state_detection_status === 'UNSUPPORTED_STATE' ? '#B45309' : '#DC2626',
+                                    marginTop: '2px',
+                                    lineHeight: '1.25',
+                                  }}
+                                >
                                   {emp.employer_wage_error}
                                 </div>
                               )}
@@ -4893,19 +5206,21 @@ export default function L1Home() {
                                     >
                                       {downloadingDocId === empDoc.id ? 'Downloading…' : 'Download / Preview'}
                                     </button>
-                                    <button
-                                      type="button"
-                                      className="l1-btn-secondary"
-                                      onClick={() => {
-                                        if (isReplacing) {
-                                          handleRemoveStagedAppointmentForEmployer(emp.id)
-                                        } else {
-                                          setReplacingAppointments((prev) => ({ ...prev, [emp.id]: true }))
-                                        }
-                                      }}
-                                    >
-                                      {isReplacing ? 'Cancel Replacement' : 'Replace Letter'}
-                                    </button>
+                                    {!isAuditFinalized && (
+                                      <button
+                                        type="button"
+                                        className="l1-btn-secondary"
+                                        onClick={() => {
+                                          if (isReplacing) {
+                                            handleRemoveStagedAppointmentForEmployer(emp.id)
+                                          } else {
+                                            setReplacingAppointments((prev) => ({ ...prev, [emp.id]: true }))
+                                          }
+                                        }}
+                                      >
+                                        {isReplacing ? 'Cancel Replacement' : 'Replace Letter'}
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -4917,6 +5232,7 @@ export default function L1Home() {
                                 fileName={stagedEmp?.fileName}
                                 fileSize={stagedEmp?.fileSize}
                                 error={empErr}
+                                disabled={isAuditFinalized}
                                 label={empDoc ? `Attach Replacement Offer Letter for ${emp.employer_name || 'Employer'}` : `Choose Offer Letter for ${emp.employer_name || 'Employer'}`}
                                 helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
                                 stagedLabel={empDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
@@ -4952,19 +5268,21 @@ export default function L1Home() {
                               >
                                 {downloadingDocId === appointmentDoc.id ? 'Downloading…' : 'Download / Preview'}
                               </button>
-                              <button
-                                type="button"
-                                className="l1-btn-secondary"
-                                onClick={() => {
-                                  if (replacingAppointment) {
-                                    handleRemoveStagedAppointment()
-                                  } else {
-                                    setReplacingAppointment(true)
-                                  }
-                                }}
-                              >
-                                {replacingAppointment ? 'Cancel Replacement' : 'Replace Letter'}
-                              </button>
+                              {!isAuditFinalized && (
+                                <button
+                                  type="button"
+                                  className="l1-btn-secondary"
+                                  onClick={() => {
+                                    if (replacingAppointment) {
+                                      handleRemoveStagedAppointment()
+                                    } else {
+                                      setReplacingAppointment(true)
+                                    }
+                                  }}
+                                >
+                                  {replacingAppointment ? 'Cancel Replacement' : 'Replace Letter'}
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -4978,6 +5296,7 @@ export default function L1Home() {
                             fileName={stagedAppointment?.fileName}
                             fileSize={stagedAppointment?.fileSize}
                             error={appointmentError}
+                            disabled={isAuditFinalized}
                             label={appointmentDoc ? 'Attach Replacement Appointment Letter' : 'Choose Appointment / Offer Letter'}
                             helperText="PDF, PNG, JPG (up to 10MB) · Staged locally until Final Submit"
                             stagedLabel={appointmentDoc ? 'Staged Replacement' : 'Staged (Pending Submit)'}
@@ -5052,13 +5371,15 @@ export default function L1Home() {
                                 >
                                   {downloadingDocId === doc.id ? 'Downloading…' : 'Download / Preview'}
                                 </button>
-                                <button
-                                  type="button"
-                                  className="l1-btn-secondary"
-                                  onClick={() => toggleReplaceMode(doc.id)}
-                                >
-                                  {isReplacing ? 'Cancel Replacement' : 'Replace'}
-                                </button>
+                                {!isAuditFinalized && (
+                                  <button
+                                    type="button"
+                                    className="l1-btn-secondary"
+                                    onClick={() => toggleReplaceMode(doc.id)}
+                                  >
+                                    {isReplacing ? 'Cancel Replacement' : 'Replace'}
+                                  </button>
+                                )}
                               </div>
                             </div>
 
@@ -5070,6 +5391,7 @@ export default function L1Home() {
                                   fileName={stagedRepl?.fileName}
                                   fileSize={stagedRepl?.fileSize}
                                   error={stagedRepl?.error}
+                                  disabled={isAuditFinalized}
                                   label={`Attach Replacement for ${MONTH_NAMES[doc.reporting_month - 1]} ${doc.reporting_year}`}
                                   stagedLabel="Staged Replacement"
                                   onSelect={(file) => handleSelectReplacement(doc, file)}
@@ -5109,13 +5431,15 @@ export default function L1Home() {
                                       ? `${matchedEmp.employer_name} • Month ${empSeq}`
                                       : `Monthly Slot ${index + 1} (Month ${empSeq})`}
                                   </span>
-                                  <button
-                                    type="button"
-                                    className="l1-btn-danger-ghost"
-                                    onClick={() => handleRemoveRow('SALARY', row.id)}
-                                  >
-                                    {salaryRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
-                                  </button>
+                                  {!isAuditFinalized && (
+                                    <button
+                                      type="button"
+                                      className="l1-btn-danger-ghost"
+                                      onClick={() => handleRemoveRow('SALARY', row.id)}
+                                    >
+                                      {salaryRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                                    </button>
+                                  )}
                                 </div>
 
                                 <div className="l1-slot-controls">
@@ -5165,7 +5489,7 @@ export default function L1Home() {
                           </div>
                         )}
 
-                        {salaryRows.length + salarySlips.length < 12 && (
+                        {!isAuditFinalized && salaryRows.length + salarySlips.length < 12 && (
                           <button
                             type="button"
                             className="l1-btn-add-slot"
@@ -5218,21 +5542,23 @@ export default function L1Home() {
                           </span>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        className="l1-btn-consolidated-toggle"
-                        onClick={() => setShowConsolidatedModal((v) => !v)}
-                        aria-expanded={showConsolidatedModal}
-                      >
-                        {showConsolidatedModal ? '✕ Close Uploader' : '+ Upload Consolidated Statement (e.g. 3-Month PDF)'}
-                      </button>
+                      {!isAuditFinalized && (
+                        <button
+                          type="button"
+                          className="l1-btn-consolidated-toggle"
+                          onClick={() => setShowConsolidatedModal((v) => !v)}
+                          aria-expanded={showConsolidatedModal}
+                        >
+                          {showConsolidatedModal ? '✕ Close Uploader' : '+ Upload Consolidated Statement (e.g. 3-Month PDF)'}
+                        </button>
+                      )}
                     </div>
 
                     <p className="l1-consolidated-note">
                       Upload a single PDF covering multiple consecutive months for an employer. The file is stored once in Drive and satisfies coverage for all included months.
                     </p>
 
-                    {showConsolidatedModal && (
+                    {showConsolidatedModal && !isAuditFinalized && (
                       <div className="l1-consolidated-modal-panel">
                         <div className="l1-consolidated-range-form">
                           {employerList.length > 1 && (
@@ -5242,6 +5568,7 @@ export default function L1Home() {
                                 className="l1-salary-control"
                                 value={consolidatedForm.employer_id || employerList[0]?.id}
                                 onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, employer_id: e.target.value }))}
+                                disabled={isAuditFinalized}
                               >
                                 {employerList.map((emp, eIdx) => (
                                   <option key={emp.id || eIdx} value={emp.id}>
@@ -5259,6 +5586,7 @@ export default function L1Home() {
                                 className="l1-salary-control"
                                 value={consolidatedForm.start_month}
                                 onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, start_month: parseInt(e.target.value, 10) }))}
+                                disabled={isAuditFinalized}
                               >
                                 {MONTH_NAMES.map((m, idx) => (
                                   <option key={idx + 1} value={idx + 1}>{m}</option>
@@ -5269,6 +5597,7 @@ export default function L1Home() {
                                 className="l1-salary-control l1-year-short-input"
                                 value={consolidatedForm.start_year}
                                 onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, start_year: parseInt(e.target.value, 10) }))}
+                                disabled={isAuditFinalized}
                               />
                             </div>
                           </div>
@@ -5280,6 +5609,7 @@ export default function L1Home() {
                                 className="l1-salary-control"
                                 value={consolidatedForm.end_month}
                                 onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, end_month: parseInt(e.target.value, 10) }))}
+                                disabled={isAuditFinalized}
                               >
                                 {MONTH_NAMES.map((m, idx) => (
                                   <option key={idx + 1} value={idx + 1}>{m}</option>
@@ -5290,6 +5620,7 @@ export default function L1Home() {
                                 className="l1-salary-control l1-year-short-input"
                                 value={consolidatedForm.end_year}
                                 onChange={(e) => setConsolidatedForm((prev) => ({ ...prev, end_year: parseInt(e.target.value, 10) }))}
+                                disabled={isAuditFinalized}
                               />
                             </div>
                           </div>
@@ -5306,6 +5637,7 @@ export default function L1Home() {
                           fileName={consolidatedForm.fileName}
                           fileSize={consolidatedForm.fileSize}
                           error={consolidatedForm.error}
+                          disabled={isAuditFinalized}
                           label="Attach Consolidated Multi-Month Bank Statement PDF"
                           helperText="PDF up to 10MB · Staged locally until Final Submit"
                           stagedLabel="Staged Consolidated Statement"
@@ -5336,6 +5668,7 @@ export default function L1Home() {
                               type="button"
                               className="l1-btn-primary-action"
                               style={{ padding: '8px 20px', fontSize: '13px' }}
+                              disabled={isAuditFinalized}
                               onClick={() => {
                                 const empId = consolidatedForm.employer_id || employerList[0]?.id || 'emp_1'
                                 const newDoc = {
@@ -5440,13 +5773,15 @@ export default function L1Home() {
                                   >
                                     {downloadingDocId === doc.id ? 'Downloading…' : 'View / Preview'}
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="l1-btn-secondary"
-                                    onClick={() => toggleReplaceMode(doc.id)}
-                                  >
-                                    {isReplacing ? 'Cancel' : 'Replace'}
-                                  </button>
+                                  {!isAuditFinalized && (
+                                    <button
+                                      type="button"
+                                      className="l1-btn-secondary"
+                                      onClick={() => toggleReplaceMode(doc.id)}
+                                    >
+                                      {isReplacing ? 'Cancel' : 'Replace'}
+                                    </button>
+                                  )}
                                 </div>
                               </div>
 
@@ -5469,6 +5804,7 @@ export default function L1Home() {
                                     fileName={stagedRepl?.fileName}
                                     fileSize={stagedRepl?.fileSize}
                                     error={stagedRepl?.error}
+                                    disabled={isAuditFinalized}
                                     label={`Attach Replacement Consolidated Statement (${MONTH_NAMES[(startM || 1) - 1]} ${startY} – ${MONTH_NAMES[(endM || 1) - 1]} ${endY})`}
                                     stagedLabel="Staged Replacement"
                                     helperText="Replacing preserves document ID, employer association, coverage metadata, and audit history."
@@ -5516,13 +5852,15 @@ export default function L1Home() {
                                   </div>
                                 </div>
 
-                                <button
-                                  type="button"
-                                  className="l1-btn-danger-ghost"
-                                  onClick={() => setStagedConsolidatedBankDocs((prev) => prev.filter((item) => item.id !== c.id))}
-                                >
-                                  ✕ Remove
-                                </button>
+                                {!isAuditFinalized && (
+                                  <button
+                                    type="button"
+                                    className="l1-btn-danger-ghost"
+                                    onClick={() => setStagedConsolidatedBankDocs((prev) => prev.filter((item) => item.id !== c.id))}
+                                  >
+                                    ✕ Remove
+                                  </button>
+                                )}
                               </div>
 
                               {coveredMonths.length > 0 && (
@@ -5578,13 +5916,15 @@ export default function L1Home() {
                                 >
                                   {downloadingDocId === doc.id ? 'Downloading…' : 'View / Preview'}
                                 </button>
-                                <button
-                                  type="button"
-                                  className="l1-btn-secondary"
-                                  onClick={() => toggleReplaceMode(doc.id)}
-                                >
-                                  {isReplacing ? 'Cancel' : 'Replace'}
-                                </button>
+                                {!isAuditFinalized && (
+                                  <button
+                                    type="button"
+                                    className="l1-btn-secondary"
+                                    onClick={() => toggleReplaceMode(doc.id)}
+                                  >
+                                    {isReplacing ? 'Cancel' : 'Replace'}
+                                  </button>
+                                )}
                               </div>
                             </div>
 
@@ -5596,6 +5936,7 @@ export default function L1Home() {
                                   fileName={stagedRepl?.fileName}
                                   fileSize={stagedRepl?.fileSize}
                                   error={stagedRepl?.error}
+                                  disabled={isAuditFinalized}
                                   label={`Attach Replacement for ${MONTH_NAMES[(doc.reporting_month || 1) - 1]} ${doc.reporting_year}`}
                                   stagedLabel="Staged Replacement"
                                   onSelect={(file) => handleSelectReplacement(doc, file)}
@@ -5637,13 +5978,15 @@ export default function L1Home() {
                                       ? `${matchedEmp.employer_name} • Month ${empSeq}`
                                       : `Monthly Slot ${index + 1} (Month ${empSeq})`}
                                   </span>
-                                  <button
-                                    type="button"
-                                    className="l1-btn-danger-ghost"
-                                    onClick={() => handleRemoveRow('BANK', row.id)}
-                                  >
-                                    {bankRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
-                                  </button>
+                                  {!isAuditFinalized && (
+                                    <button
+                                      type="button"
+                                      className="l1-btn-danger-ghost"
+                                      onClick={() => handleRemoveRow('BANK', row.id)}
+                                    >
+                                      {bankRows.length > 3 ? '✕ Remove Slot' : row.file ? 'Clear File' : 'Reset'}
+                                    </button>
+                                  )}
                                 </div>
 
                                 <div className="l1-slot-controls">
@@ -5666,6 +6009,7 @@ export default function L1Home() {
                                     fileName={row.fileName}
                                     fileSize={row.fileSize}
                                     error={row.error}
+                                    disabled={isAuditFinalized}
                                     label={`Attach Bank Statement (${MONTH_NAMES[(row.month || 1) - 1]} ${row.year})`}
                                     helperText="PDF, PNG, JPG (up to 10MB)"
                                     stagedLabel="Staged (Pending Submit)"
@@ -5683,7 +6027,7 @@ export default function L1Home() {
                           </div>
                         )}
 
-                        {bankRows.length + bankStatements.length < 12 && (
+                        {!isAuditFinalized && bankRows.length + bankStatements.length < 12 && (
                           <button
                             type="button"
                             className="l1-btn-add-slot"
@@ -5751,17 +6095,19 @@ export default function L1Home() {
                           >
                             {downloadingDocId === otherDoc.id ? 'Downloading…' : '⬇ Download'}
                           </button>
-                          <button
-                            type="button"
-                            className="l1-btn-replace"
-                            onClick={() => {
-                              setReplacingOtherDoc(true)
-                              setOtherDocTitle(otherDoc.document_title || '')
-                            }}
-                            title="Replace existing file in Drive"
-                          >
-                            Replace File
-                          </button>
+                          {!isAuditFinalized && (
+                            <button
+                              type="button"
+                              className="l1-btn-replace"
+                              onClick={() => {
+                                setReplacingOtherDoc(true)
+                                setOtherDocTitle(otherDoc.document_title || '')
+                              }}
+                              title="Replace existing file in Drive"
+                            >
+                              Replace File
+                            </button>
+                          )}
                         </div>
                       </div>
                     )}
@@ -5794,6 +6140,7 @@ export default function L1Home() {
                             placeholder="e.g. Joining Report, ID Card Copy, Transfer Certificate"
                             value={otherDocTitle}
                             onChange={(e) => setOtherDocTitle(e.target.value)}
+                            disabled={isAuditFinalized}
                             style={{ maxWidth: '400px' }}
                           />
                         </div>
@@ -5803,6 +6150,7 @@ export default function L1Home() {
                           fileName={stagedOtherDoc?.fileName}
                           fileSize={stagedOtherDoc?.fileSize}
                           error={otherDocError}
+                          disabled={isAuditFinalized}
                           label={replacingOtherDoc ? 'Attach Replacement File' : 'Attach Other Supporting Document (Optional)'}
                           helperText="PDF, PNG, JPG (up to 10MB) — Optional"
                           stagedLabel="Staged (Pending Submit)"
@@ -5847,8 +6195,15 @@ export default function L1Home() {
                         type="button"
                         className="l1-btn-primary-action"
                         onClick={handleOpenReviewModal}
-                        disabled={submitting}
-                        style={{ padding: '10px 20px', fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                        disabled={submitting || isAuditFinalized}
+                        style={{
+                          padding: '10px 20px',
+                          fontSize: '13.5px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          ...(isAuditFinalized ? { opacity: 0.7, cursor: 'not-allowed' } : {}),
+                        }}
                       >
                         <span>☁️</span> Review &amp; Upload to Drive ({totalStagedFiles}) →
                       </button>
@@ -6218,7 +6573,7 @@ export default function L1Home() {
                 <span>📄</span> Preview Statement
               </button>
             )}
-            {!isAuditSubmitted && (
+            {!isAuditSubmitted ? (
               <>
                 <button
                   type="button"
@@ -6239,6 +6594,16 @@ export default function L1Home() {
                   {auditSubmitting ? 'Preparing Statement…' : 'Preview & Submit Statement →'}
                 </button>
               </>
+            ) : (
+              <button
+                type="button"
+                className="l1-btn-primary-action"
+                disabled={true}
+                style={{ padding: '10px 20px', fontSize: '13.5px', opacity: 0.75, cursor: 'not-allowed' }}
+                title="This placement audit has already been submitted and is locked for review."
+              >
+                🔒 Already Submitted – Awaiting Review
+              </button>
             )}
           </div>
         </div>
@@ -6495,9 +6860,190 @@ export default function L1Home() {
                   {auditSubmitting ? 'Finalizing Submission…' : 'Confirm & Final Submit Statement →'}
                 </button>
               </>
-            ) : null
+            ) : (
+              <button
+                type="button"
+                className="l1-btn-primary-action"
+                disabled={true}
+                style={{ padding: '8px 18px', fontSize: '13px', opacity: 0.75, cursor: 'not-allowed' }}
+                title="This placement audit has already been submitted and is locked for review."
+              >
+                🔒 Already Submitted – Awaiting Review
+              </button>
+            )
           }
         />
+      )}
+
+      {/* Monthly CTC vs Applicable Minimum Wage Blocking Modal */}
+      {ctcValidationModal.isOpen && (
+        <div
+          className="l1-modal-overlay"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '16px',
+          }}
+        >
+          <div
+            className="l1-modal-content"
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '8px',
+              maxWidth: '560px',
+              width: '100%',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+              border: '1px solid #FCA5A5',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                padding: '16px 20px',
+                backgroundColor: '#FEE2E2',
+                borderBottom: '1px solid #FECACA',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+              }}
+            >
+              <span style={{ fontSize: '22px' }}>🚫</span>
+              <div>
+                <h4 style={{ margin: 0, color: '#991B1B', fontSize: '16px', fontWeight: 700 }}>
+                  {ctcValidationModal.title || 'Minimum Wage & Monthly CTC Validation Failed'}
+                </h4>
+                <span style={{ fontSize: '12px', color: '#B91C1C' }}>
+                  Employer: <strong>{ctcValidationModal.employerName}</strong>
+                </span>
+              </div>
+            </div>
+
+            <div style={{ padding: '20px', fontSize: '13.5px', lineHeight: '1.5', color: '#374151' }}>
+              <p style={{ margin: '0 0 14px 0' }}>
+                Under DDU-GKY placement guidelines, the entered <strong>Monthly CTC</strong> must meet or exceed the applicable minimum wage under the <strong>Higher-of-Two rule</strong>:
+              </p>
+
+              <div
+                style={{
+                  backgroundColor: '#F9FAFB',
+                  border: '1px solid #E5E7EB',
+                  borderRadius: '6px',
+                  padding: '12px 14px',
+                  marginBottom: '16px',
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '8px 16px',
+                  fontSize: '13px',
+                }}
+              >
+                <div>
+                  <span style={{ color: '#6B7280', fontSize: '11px', display: 'block' }}>Inferred Course Duration</span>
+                  <strong>{ctcValidationModal.courseDuration || 'Uncertain / Out of range'}</strong>
+                </div>
+                <div>
+                  <span style={{ color: '#6B7280', fontSize: '11px', display: 'block' }}>Course Minimum CTC</span>
+                  <strong>
+                    {ctcValidationModal.courseMinCtc != null
+                      ? `₹${Number(ctcValidationModal.courseMinCtc).toLocaleString('en-IN')}`
+                      : 'Not Applicable'}
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: '#6B7280', fontSize: '11px', display: 'block' }}>State Minimum Wage</span>
+                  <strong>
+                    {ctcValidationModal.stateMinWage != null
+                      ? `₹${Number(ctcValidationModal.stateMinWage).toLocaleString('en-IN')} (${ctcValidationModal.workState || 'State'})`
+                      : `Unavailable (${ctcValidationModal.workState || 'State'})`}
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: '#6B7280', fontSize: '11px', display: 'block' }}>Applicable Minimum CTC</span>
+                  <strong style={{ color: '#1E40AF', fontSize: '14px' }}>
+                    {ctcValidationModal.applicableMinCtc != null
+                      ? `₹${Number(ctcValidationModal.applicableMinCtc).toLocaleString('en-IN')}`
+                      : '—'}
+                  </strong>
+                </div>
+                <div
+                  style={{
+                    borderTop: '1px solid #E5E7EB',
+                    paddingTop: '8px',
+                    gridColumn: 'span 2',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div>
+                    <span style={{ color: '#6B7280', fontSize: '11px', display: 'block' }}>Entered Monthly CTC</span>
+                    <span style={{ color: '#DC2626', fontWeight: 700, fontSize: '14px' }}>
+                      {ctcValidationModal.enteredCtc != null
+                        ? `₹${Number(ctcValidationModal.enteredCtc).toLocaleString('en-IN')}`
+                        : '₹0'}
+                    </span>
+                  </div>
+                  {ctcValidationModal.deficit > 0 && (
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ color: '#6B7280', fontSize: '11px', display: 'block' }}>Shortfall Deficit</span>
+                      <span style={{ color: '#DC2626', fontWeight: 700, fontSize: '14px' }}>
+                        - ₹{Number(ctcValidationModal.deficit).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  backgroundColor: '#FEF2F2',
+                  borderLeft: '3px solid #EF4444',
+                  padding: '10px 12px',
+                  borderRadius: '0 4px 4px 0',
+                  fontSize: '12.5px',
+                  color: '#991B1B',
+                }}
+              >
+                Please correct the <strong>Monthly CTC</strong> in Section 2 to at least{' '}
+                <strong>₹{Number(ctcValidationModal.applicableMinCtc).toLocaleString('en-IN')}</strong> before previewing or submitting this Candidate Placement Audit.
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: '12px 20px',
+                backgroundColor: '#F9FAFB',
+                borderTop: '1px solid #E5E7EB',
+                display: 'flex',
+                justifyContent: 'flex-end',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setCtcValidationModal((prev) => ({ ...prev, isOpen: false }))}
+                style={{
+                  padding: '7px 18px',
+                  backgroundColor: '#DC2626',
+                  color: '#FFFFFF',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  borderRadius: '5px',
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                Dismiss &amp; Correct CTC
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Floating Audit Toast Notification */}

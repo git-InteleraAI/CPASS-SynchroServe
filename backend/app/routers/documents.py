@@ -34,6 +34,7 @@ from ..services.google_drive import (
     GoogleDriveService,
     google_drive_service,
 )
+from ..services.audit_lock import check_l1_audit_unlocked
 
 logger = logging.getLogger("cpass.documents")
 
@@ -379,6 +380,7 @@ async def upload_document(
 ):
     """Upload a candidate document to Google Drive and persist metadata in candidate_documents."""
     cand_ctx = _get_candidate_context(candidate_id, user)
+    check_l1_audit_unlocked(candidate_id, user.role, "document upload", db=supabase)
 
     doc_type = document_type.strip().upper()
     if doc_type not in VALID_DOCUMENT_TYPES:
@@ -652,6 +654,7 @@ def sync_documents_to_placement_audit(
     )
 
     cand_ctx = _get_candidate_context(candidate_id, user)
+    check_l1_audit_unlocked(candidate_id, user.role, "batch document submit", db=supabase)
 
     if not audit_res.data:
         # Create baseline audit draft
@@ -1047,6 +1050,7 @@ async def batch_submit_documents(
     Includes Google Drive upload rollback if database persistence fails.
     """
     cand_ctx = _get_candidate_context(candidate_id, user)
+    check_l1_audit_unlocked(candidate_id, user.role, "batch document submit", db=supabase)
 
     # 1. Parse metadata
     try:
@@ -1648,6 +1652,7 @@ def delete_document(
 ):
     """Delete an uploaded document record and remove its file from Google Drive."""
     _get_candidate_context(candidate_id, user)
+    check_l1_audit_unlocked(candidate_id, user.role, "document deletion", db=supabase)
     res = (
         supabase.table("candidate_documents")
         .select("id,drive_file_id")

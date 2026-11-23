@@ -26,6 +26,14 @@ from ..services.min_wages import (
     lookup_minimum_wage_for_period,
 )
 from ..services.location_detector import detect_work_state
+from ..services.course_duration import (
+    ALL_36_INDIAN_STATES_AND_UTS,
+    INDIAN_STATES_28,
+    INDIAN_UTS_8,
+    calculate_course_duration,
+    validate_employer_monthly_ctc,
+)
+from ..services.audit_lock import is_audit_locked_for_l1, check_l1_audit_unlocked
 
 logger = logging.getLogger("cpass.audits")
 
@@ -624,6 +632,17 @@ def lookup_minimum_wage_endpoint(
 
 
 
+@min_wages_router.get("/states")
+@min_wages_router.get("/work-states")
+def get_work_states_endpoint(user: CurrentUser = Depends(get_current_user)):
+    """Return all 28 Indian States and 8 Union Territories for Place of Work dropdown."""
+    return {
+        "states": list(INDIAN_STATES_28),
+        "union_territories": list(INDIAN_UTS_8),
+        "all": list(ALL_36_INDIAN_STATES_AND_UTS),
+    }
+
+
 MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
@@ -734,6 +753,7 @@ def save_audit_draft(
     Preserves single record per candidate across all draft edits.
     """
     cand = _check_candidate_centre(user, candidate_id)
+    check_l1_audit_unlocked(candidate_id, user.role, "save audit draft", db=supabase)
 
     # Check if audit already exists
     existing_res = (
@@ -777,7 +797,7 @@ def save_audit_draft(
 
     if existing_res.data:
         existing = existing_res.data[0]
-        if existing.get("audit_status") == "SUBMITTED" and user.role != "ADMIN":
+        if is_audit_locked_for_l1(existing) and user.role != "ADMIN":
             raise HTTPException(400, "This placement audit has already been finalized/submitted and cannot be edited as a draft.")
 
         # Section 5 read-only enforcement: preserve existing corporate signoff_details from database against L1 modifications
@@ -827,6 +847,7 @@ def submit_audit(
     Transitions status to SUBMITTED and timestamps finalization.
     """
     cand = _check_candidate_centre(user, candidate_id)
+    check_l1_audit_unlocked(candidate_id, user.role, "audit submission", db=supabase)
 
     # 1. Validation: Candidate Administrative Hold
     try:
@@ -1088,6 +1109,26 @@ def submit_audit(
     except ValueError as exc:
         raise HTTPException(400, f"Minimum wage validation failed: {exc}")
 
+    # 5. Course Duration Inference & Monthly CTC Validation (Higher-of-Two rule)
+    batch_start = cand.get("batch_start_date") or snapshot.get("batch_start_date")
+    batch_end = cand.get("batch_end_date") or snapshot.get("batch_end_date")
+    course_info = calculate_course_duration(batch_start, batch_end)
+
+    for emp_dict in authoritative_employers:
+        emp_name = emp_dict.get("employer_name") or "Employer"
+        emp_ctc = emp_dict.get("monthly_ctc")
+        emp_state_wage = emp_dict.get("minimum_wages")
+
+        ctc_val = validate_employer_monthly_ctc(
+            monthly_ctc=emp_ctc,
+            course_duration_info=course_info,
+            state_min_wage=emp_state_wage,
+            employer_name=emp_name,
+        )
+
+        if not ctc_val["is_valid"]:
+            raise HTTPException(400, ctc_val["user_message"])
+
     audit_payload = {
         "candidate_id": candidate_id,
         "candidate_snapshot": snapshot,
@@ -1106,8 +1147,8 @@ def submit_audit(
         existing = existing_res.data[0]
         if existing.get("cpass_status") == "APPROVED":
             raise HTTPException(400, "Cannot submit: This placement audit has already received final approval.")
-        if existing.get("audit_status") == "SUBMITTED":
-            raise HTTPException(400, "This placement audit has already been submitted.")
+        if is_audit_locked_for_l1(existing) and user.role != "ADMIN":
+            raise HTTPException(400, "This placement audit has already been submitted and is locked for review.")
 
         update_q = supabase.table("placement_audits").update(audit_payload)
         if existing.get("id"):

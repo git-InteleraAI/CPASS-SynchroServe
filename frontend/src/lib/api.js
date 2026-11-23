@@ -74,11 +74,50 @@ export async function api(path, params, options = {}, _isRetry = false) {
     headers['Content-Type'] = 'application/json'
   }
 
-  const res = await fetch(`${BASE}${path}${qs}`, {
-    ...options,
-    headers,
-    credentials: 'include',
-  })
+  // Request timeout protection (15s default for /minimum-wages, 30s otherwise, or options.timeout)
+  const timeoutMs =
+    typeof options.timeout === 'number'
+      ? options.timeout
+      : path.startsWith('/minimum-wages')
+      ? 15000
+      : 30000
+
+  const controller = new AbortController()
+  let timer = null
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => {
+      controller.abort()
+    }, timeoutMs)
+  }
+
+  // Link caller signal if provided
+  if (options.signal) {
+    if (options.signal.aborted) {
+      controller.abort()
+    } else {
+      options.signal.addEventListener('abort', () => controller.abort())
+    }
+  }
+
+  let res
+  try {
+    res = await fetch(`${BASE}${path}${qs}`, {
+      ...options,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    })
+  } catch (fetchErr) {
+    if (controller.signal.aborted) {
+      const timeoutErr = new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s (${path})`)
+      timeoutErr.name = 'TimeoutError'
+      timeoutErr.status = 408
+      throw timeoutErr
+    }
+    throw fetchErr
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 
   // Handle 401 with automatic token refresh if token expired and not an auth management endpoint
   const isAuthManagement =

@@ -10,6 +10,7 @@ import {
   formatEmployerSalaryLabel,
   normalizeEmployerId
 } from '../lib/salarySequenceHelper'
+import { calculateCourseDuration } from '../lib/courseDurationHelper'
 
 export default function PlacementAuditStatement({
   statementData,
@@ -394,6 +395,25 @@ export default function PlacementAuditStatement({
           <div className="cpass-dossier-item">
             <span className="k">Batch Code &amp; Dates</span>
             <span className="v">{cand.batch_code || cand.batch_id || 'N/A'}{cand.batch_start_date && cand.batch_start_date !== 'Not Available' ? ` (${cand.batch_start_date} to ${cand.batch_end_date || '—'})` : ''}</span>
+          </div>
+          <div className="cpass-dossier-item">
+            <span className="k">Course Duration</span>
+            <span
+              className="v"
+              title={
+                (() => {
+                  const dur = calculateCourseDuration(cand.batch_start_date, cand.batch_end_date)
+                  return dur.minimum_ctc
+                    ? `${dur.label} (Statutory Min. CTC: ₹${dur.minimum_ctc?.toLocaleString('en-IN')})`
+                    : (dur.message || dur.label || '')
+                })()
+              }
+            >
+              {(() => {
+                const dur = calculateCourseDuration(cand.batch_start_date, cand.batch_end_date)
+                return dur.label || 'Not Available'
+              })()}
+            </span>
           </div>
           <div className="cpass-dossier-item">
             <span className="k">State</span>

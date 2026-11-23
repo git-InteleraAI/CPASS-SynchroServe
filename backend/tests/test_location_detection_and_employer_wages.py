@@ -316,21 +316,29 @@ def test_draft_save_detects_and_persists_work_state():
 
 
 # -----------------------------------------------------------------------------
-# 11: Final Submission Rejection of Unsupported / Ambiguous State
+# 11: Final Submission Validation for Unsupported State
 # -----------------------------------------------------------------------------
 
-def test_final_submission_rejects_unsupported_state():
-    """Verify that final submission raises 400 when an employer is in an unsupported state."""
+def test_final_submission_unsupported_state_validation():
+    """Verify that unsupported state is permitted when Monthly CTC meets course minimum,
+    and rejected when Monthly CTC is below course minimum."""
+    candidate_with_batch = dict(PUNJAB_CANDIDATE)
+    candidate_with_batch["batch_start_date"] = "2024-01-01"
+    candidate_with_batch["batch_end_date"] = "2024-06-30"  # 6 months -> ₹8,000
+
     def table_mock(tbl):
         m = MagicMock()
         if tbl in ("ddugky_candidates", "candidates"):
-            m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[PUNJAB_CANDIDATE])
+            m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[candidate_with_batch])
         elif tbl == "user_centres":
             m.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"tc_id": 501}])
         elif tbl == "placement_audits":
             m.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
                 data=[{"id": "audit-uuid-1", "candidate_id": 88001, "audit_status": "DRAFT", "signoff_details": {}}]
             )
+            up_mock = MagicMock()
+            up_mock.eq.return_value.execute.return_value = MagicMock(data=[{"id": "audit-uuid-1", "audit_status": "SUBMITTED"}])
+            m.update.return_value = up_mock
         elif tbl == "candidate_holds":
             m.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
         elif tbl == "candidate_documents":
@@ -348,10 +356,11 @@ def test_final_submission_rejects_unsupported_state():
     mock_db = MagicMock()
     mock_db.table.side_effect = table_mock
 
-    submit_request = SubmitAuditRequest(
+    # 1. Below course minimum (₹7,000 < ₹8,000) -> Rejected
+    submit_fail = SubmitAuditRequest(
         candidate_snapshot={},
         employer_details=[
-            EmployerEntry(id="emp_1", employer_name="Bengaluru Systems", place_of_work="Whitefield, Bangalore", appointment_date="2026-02-01"),
+            EmployerEntry(id="emp_1", employer_name="Bengaluru Systems", place_of_work="Whitefield, Bangalore", appointment_date="2026-02-01", monthly_ctc=7000.0),
         ],
         salary_details=[
             SalaryEntry(employer_id="emp_1", month=10, year=2026, gross_salary=20000),
@@ -362,9 +371,27 @@ def test_final_submission_rejects_unsupported_state():
 
     with patch("app.routers.audits.supabase", mock_db):
         with pytest.raises(HTTPException) as exc_info:
-            submit_audit(candidate_id=88001, payload=submit_request, user=L1_PUNJAB_USER)
+            submit_audit(candidate_id=88001, payload=submit_fail, user=L1_PUNJAB_USER)
         assert exc_info.value.status_code == 400
-        assert "not supported in the 13-state minimum wage register" in str(exc_info.value.detail)
+        assert "The entered monthly CTC" in str(exc_info.value.detail)
+        assert "Applicable Minimum CTC: ₹8,000" in str(exc_info.value.detail)
+
+    # 2. Meets course minimum (₹9,000 >= ₹8,000) -> Permitted
+    submit_pass = SubmitAuditRequest(
+        candidate_snapshot={},
+        employer_details=[
+            EmployerEntry(id="emp_1", employer_name="Bengaluru Systems", place_of_work="Whitefield, Bangalore", appointment_date="2026-02-01", monthly_ctc=9000.0),
+        ],
+        salary_details=[
+            SalaryEntry(employer_id="emp_1", month=10, year=2026, gross_salary=20000),
+            SalaryEntry(employer_id="emp_1", month=11, year=2026, gross_salary=20000),
+            SalaryEntry(employer_id="emp_1", month=12, year=2026, gross_salary=20000),
+        ],
+    )
+
+    with patch("app.routers.audits.supabase", mock_db):
+        res = submit_audit(candidate_id=88001, payload=submit_pass, user=L1_PUNJAB_USER)
+        assert res["audit"]["audit_status"] == "SUBMITTED"
 
 
 # -----------------------------------------------------------------------------

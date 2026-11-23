@@ -31,6 +31,7 @@ from ..auth import (
 )
 from ..db import retry_read_query, supabase
 from .audits import extract_review_stages
+from ..services.audit_lock import check_l1_audit_unlocked
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -1423,6 +1424,7 @@ def set_payslip_availability(
         raise HTTPException(404, f"Candidate {candidate_id} not found.")
     cand = res_cand.data[0]
     check_candidate_access(user, cand)
+    check_l1_audit_unlocked(candidate_id, user.role, "update payslip availability", db=supabase)
 
     norm_avail = payload.available.strip().capitalize()
     if norm_avail not in ("Yes", "No", "Pending"):
