@@ -71,6 +71,24 @@ function formatL1StageStatus(status) {
   return s
 }
 
+function formatRejectionTimestamp(dateStr) {
+  if (!dateStr) return ''
+  try {
+    const d = new Date(dateStr)
+    if (isNaN(d.getTime())) return String(dateStr)
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    })
+  } catch {
+    return String(dateStr)
+  }
+}
+
 function getStageBadgeClass(status) {
   const s = (status || '').toLowerCase()
   if (s === 'recommended') return 'l1-stage-badge recommended'
@@ -2536,7 +2554,8 @@ export default function L1Home() {
   const isCHRejected = isReturnedToL1 || chStage === 'rejected'
   const isCOPSRejected = copsStage === 'rejected'
   const isBLRejected = blStage === 'rejected'
-  const isAuditReturnedOrRejected = isCHRejected || isCOPSRejected || isBLRejected || rawAuditStatus === 'REJECTED' || rawCpassStatus === 'REJECTED'
+  const isCEORejected = (reviewStagesObj?.ceo?.status || '').toLowerCase() === 'rejected'
+  const isAuditReturnedOrRejected = isCHRejected || isCOPSRejected || isBLRejected || isCEORejected || rawAuditStatus === 'REJECTED' || rawCpassStatus === 'REJECTED'
 
   // Determine reviewing authority, reasons, and metadata
   let rejectionAuthorityName = 'Reviewing Authority'
@@ -2546,7 +2565,14 @@ export default function L1Home() {
   let returnedByName = ''
   let returnedAtDate = ''
 
-  if (isBLRejected) {
+  if (isCEORejected) {
+    rejectionAuthorityName = 'CEO Sanction (L5 CEO)'
+    rejectionStageLabel = 'L5 CEO Sanction'
+    rejectionReason = reviewStagesObj?.ceo?.rejection_reason || signoffObj?.rejection_reason || ''
+    rejectionRemarks = reviewStagesObj?.ceo?.remarks || signoffObj?.ceo_sanction?.remarks || ''
+    returnedByName = reviewStagesObj?.ceo?.reviewed_by || signoffObj?.ceo_sanction?.name || ''
+    returnedAtDate = reviewStagesObj?.ceo?.reviewed_at || auditRecord?.updated_at || ''
+  } else if (isBLRejected) {
     rejectionAuthorityName = 'Business Leader (BL — L4)'
     rejectionStageLabel = 'L4 Business Leader'
     rejectionReason = reviewStagesObj?.bl?.rejection_reason || signoffObj?.rejection_reason || ''
@@ -2568,6 +2594,18 @@ export default function L1Home() {
     rejectionRemarks = retInfo.remarks || reviewStagesObj?.ch?.remarks || signoffObj?.centre_head?.remarks || ''
     returnedByName = retInfo.returned_by_name || retInfo.returned_by || reviewStagesObj?.ch?.returned_by || reviewStagesObj?.ch?.reviewed_by || signoffObj?.centre_head?.name || ''
     returnedAtDate = retInfo.returned_at || reviewStagesObj?.ch?.returned_at || reviewStagesObj?.ch?.reviewed_at || auditRecord?.updated_at || ''
+  } else if (rawAuditStatus === 'REJECTED' || rawCpassStatus === 'REJECTED') {
+    rejectionAuthorityName = 'Reviewing Authority'
+    rejectionStageLabel = 'Review Stage'
+    rejectionReason = signoffObj?.rejection_reason || auditRecord?.rejection_reason || ''
+    rejectionRemarks = signoffObj?.remarks || auditRecord?.remarks || ''
+    returnedByName = signoffObj?.rejected_by || auditRecord?.rejected_by || ''
+    returnedAtDate = auditRecord?.rejected_at || auditRecord?.updated_at || ''
+  }
+
+  // Gracefully fallback to candidate-level rejection/return reasons if still empty
+  if (!rejectionReason) {
+    rejectionReason = candDetail?.return_reason || candDetail?.rejection_reason || ''
   }
 
 
@@ -3777,14 +3815,6 @@ export default function L1Home() {
                           <td>
                             <strong>{cand.name}</strong>
                             <div className="l1-cand-id-small">{cand.candidate_id}</div>
-                            {(cand.return_reason || cand.rejection_reason) && (
-                              <div
-                                className="l1-cand-return-note"
-                                title={`Reason: ${cand.return_reason || cand.rejection_reason}`}
-                              >
-                                ⚠️ {cand.return_reason || cand.rejection_reason}
-                              </div>
-                            )}
                           </td>
                           <td>{cand.father_name || '—'}</td>
                           <td title={cand.tc_name || ''}>{cand.tc_name || '—'}</td>
@@ -4233,39 +4263,77 @@ export default function L1Home() {
               </div>
             ) : (
               <>
-                {/* Rejection / Return Notice Banner */}
+                {/* Rejection / Return Details Panel */}
                 {isAuditReturnedOrRejected && (
-                  <div className="l1-rejection-banner">
-                    <div className="l1-rejection-banner-content">
-                      <span className="l1-rejection-icon">⚠️</span>
-                      <div style={{ flex: 1 }}>
-                        <div className="l1-rejection-title">
-                          <strong>Placement Audit Rejected by {rejectionAuthorityName}</strong>
-                          <span className="l1-stage-badge rejected" style={{ marginLeft: '8px' }}>Rejected</span>
-                        </div>
-                        <div className="l1-rejection-desc">
-                          {isReturnedToL1
-                            ? 'This candidate placement dossier was returned to L1 coordinator for corrections. Please review the reason and remarks below, update any necessary employment records, salary details, or payslips, and resubmit the statement for Centre Head review.'
-                            : 'This candidate placement audit was rejected during verification and review.'}
-                        </div>
-                        {rejectionReason && (
-                          <div className="l1-rejection-reason">
-                            <strong>Rejection Reason:</strong> "{rejectionReason}"
-                          </div>
+                  <div className="l1-rejection-panel" role="region" aria-label="Placement Rejection Details">
+                    {/* 1. Rejection status and review stage */}
+                    <div className="l1-rejection-header">
+                      <div className="l1-rejection-header-badges">
+                        <span className="l1-stage-badge rejected">
+                          {isReturnedToL1 ? 'Returned to L1' : 'Rejected'}
+                        </span>
+                        {rejectionStageLabel && (
+                          <span className="l1-rejection-stage-pill">{rejectionStageLabel}</span>
                         )}
-                        {rejectionRemarks && rejectionRemarks !== rejectionReason && (
-                          <div className="l1-rejection-remarks">
-                            <strong>Reviewer Remarks:</strong> {rejectionRemarks}
-                          </div>
-                        )}
+                      </div>
+                      <h4 className="l1-rejection-heading">
+                        {isReturnedToL1
+                          ? `Placement Dossier Returned by ${rejectionAuthorityName}`
+                          : `Placement Audit Rejected by ${rejectionAuthorityName}`}
+                      </h4>
+                      <p className="l1-rejection-subtext">
+                        {isReturnedToL1
+                          ? 'This candidate placement dossier was returned for corrections. Review the reason and remarks below, make required updates to employment records, salary details, or payslips, and resubmit the statement for Centre Head review.'
+                          : 'This candidate placement audit was rejected during verification and review.'}
+                      </p>
+                    </div>
+
+                    {/* 2. Rejection reason */}
+                    {rejectionReason && (
+                      <div className="l1-rejection-card reason-card">
+                        <div className="l1-rejection-card-label">
+                          {isReturnedToL1 ? 'Return Reason' : 'Rejection Reason'}
+                        </div>
+                        <div className="l1-rejection-card-value">
+                          {rejectionReason}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3. Reviewer remarks */}
+                    {rejectionRemarks && rejectionRemarks !== rejectionReason && (
+                      <div className="l1-rejection-card remarks-card">
+                        <div className="l1-rejection-card-label">Reviewer Remarks</div>
+                        <div className="l1-rejection-card-value">
+                          {rejectionRemarks}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 4. Returned/rejected by and timestamp */}
+                    {(returnedByName || returnedAtDate) && (
+                      <div className="l1-rejection-footer">
                         {returnedByName && (
-                          <div className="l1-rejection-meta">
-                            Returned / Rejected by <strong>{returnedByName}</strong> ({rejectionStageLabel})
-                            {returnedAtDate ? ` on ${new Date(returnedAtDate).toLocaleString('en-IN')}` : ''}
+                          <div className="l1-rejection-footer-item">
+                            <span className="l1-rejection-footer-label">
+                              {isReturnedToL1 ? 'Returned by:' : 'Rejected by:'}
+                            </span>
+                            <span className="l1-rejection-footer-value">
+                              <strong>{returnedByName}</strong>
+                              {rejectionStageLabel ? ` (${rejectionStageLabel})` : ''}
+                            </span>
+                          </div>
+                        )}
+                        {returnedAtDate && (
+                          <div className="l1-rejection-footer-item">
+                            <span className="l1-rejection-footer-label">Date &amp; Time:</span>
+                            <span className="l1-rejection-footer-value">
+                              {formatRejectionTimestamp(returnedAtDate)}
+                            </span>
                           </div>
                         )}
                       </div>
-                    </div>
+                    )}
                   </div>
                 )}
 
